@@ -17,9 +17,11 @@ BUILD="${SRC}/build"
 if [[ ! -d "${SRC}/.git" ]]; then
     echo "==> cloning ${QEMU_TAG}"
     mkdir -p "$(dirname "${SRC}")"
-    git clone --depth 1 --branch "${QEMU_TAG}" \
-              --recurse-submodules --shallow-submodules \
-              "${QEMU_REPO}" "${SRC}"
+    # Deliberately not --recurse-submodules. QEMU's submodules are almost
+    # all ROM sources -- edk2 alone drags in its own openssl, mbedtls and
+    # brotli -- for firmware targets we never build. configure pulls the few
+    # subprojects xtensa-softmmu actually needs.
+    git clone --depth 1 --branch "${QEMU_TAG}" "${QEMU_REPO}" "${SRC}"
 else
     # An unexpected tag here means someone edited the tree in place, which
     # ADR 0001 forbids. Fail loudly rather than build something unidentifiable.
