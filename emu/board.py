@@ -8,6 +8,7 @@ decision 4).
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from emu.bus import Region
@@ -31,10 +32,31 @@ IRQ_SPI2 = 21
 
 EPD_BUSY_PIN = 37
 
+# Peripheral windows the fork leaves to its catch-all region. Claiming them
+# changes no behaviour on its own -- reads still return what was last written --
+# but it makes the traffic visible, which is how you find out what a stalled or
+# crashing firmware was reaching for.
+UNMODELLED = {
+    "ledc": 0x60019000,
+    "i2s0": 0x6002D000,
+    "lcd_cam": 0x60041000,
+    "uhci": 0x60014000,
+    "pcnt": 0x60017000,
+}
+
 
 def i2c_devices() -> list[I2CDevice]:
-    """Addresses are the vendor's own, from lib/TDeckMaxBoard/src/TDeckMaxBoard.h."""
-    return tdeck_max_devices()
+    """Addresses are the vendor's own, from lib/TDeckMaxBoard/src/TDeckMaxBoard.h.
+
+    BOARDEMUL_I2C restricts the set to a comma-separated list of hex addresses,
+    which is how you find out which device's answers a driver actually chokes on.
+    """
+    devices = tdeck_max_devices()
+    only = os.environ.get("BOARDEMUL_I2C")
+    if only:
+        wanted = {int(a, 16) for a in only.replace(" ", "").split(",") if a}
+        devices = [d for d in devices if d.address in wanted]
+    return devices
 
 
 class TraceRegion(Region):
@@ -57,7 +79,8 @@ class TraceRegion(Region):
 
 def build_regions(outdir: Path) -> list[Region]:
     gpio = GpioOut()
-    panel = EPaperPanel(gpio, Path(outdir) / "frames")
+    panel = EPaperPanel(gpio, Path(outdir) / "frames",
+                        quarter_turns=int(os.environ.get("BOARDEMUL_ROTATE", "0")))
     # BUSY idles high on this controller; left undriven it reads low and every
     # wait-while-busy loop in the driver spins forever.
     gpio_in = GpioIn(gpio, high_pins={EPD_BUSY_PIN})
@@ -72,4 +95,4 @@ def build_regions(outdir: Path) -> list[Region]:
         SPIController("spi2", SPI2_BASE, [panel]),
         TraceRegion("spi0", SPI0_BASE),
         TraceRegion("spi3", SPI3_BASE),
-    ]
+    ] + [TraceRegion(n, b) for n, b in UNMODELLED.items()]
