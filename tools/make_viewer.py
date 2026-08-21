@@ -11,6 +11,7 @@ import argparse
 import base64
 import json
 import re
+import struct
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -56,7 +57,7 @@ h1 {
   padding:1.25rem; box-shadow:0 1px 0 var(--line);
 }
 .screen {
-  display:block; width:min(100%,40rem); aspect-ratio:4/3; background:var(--screen);
+  display:block; width:min(100%,__SCREENW__); aspect-ratio:__ASPECT__; background:var(--screen);
   image-rendering:pixelated; border:1px solid var(--line);
 }
 .controls { display:flex; align-items:center; gap:.75rem; flex-wrap:wrap; justify-content:center; }
@@ -98,8 +99,8 @@ code { font-family:"IBM Plex Mono",monospace; font-size:.85em; color:var(--amber
   <h1>What the panel actually drew</h1>
   <p class="lede">
     Frames captured off the emulated SPI2 bus while LilyGO's own unmodified
-    e-paper demo binary ran under QEMU. Nothing here is a mock-up: each image is
-    the GDEQ031T10's frame buffer, decoded from the bytes the firmware sent.
+    factory firmware ran under QEMU. Nothing here is a mock-up: each image is the
+    GDEQ031T10's frame buffer, decoded from the bytes the firmware sent.
   </p>
 
   <div class="stage">
@@ -116,16 +117,27 @@ code { font-family:"IBM Plex Mono",monospace; font-size:.85em; color:var(--amber
   <h2>The run that produced them</h2>
   <dl class="grid" id="stats"></dl>
 
-  <h2>What had to work first</h2>
+  <h2>Three things stood between here and a blank screen</h2>
   <p class="note">
-    The panel is driven over SPI2 with chip-select and data/command on ordinary
-    GPIOs, so the frames only decode once GPIO levels are tracked too. Two
-    self-clearing trigger bits &mdash; <code>I2C_CTR.TRANS_START</code> and
-    <code>SPI_CMD.USR</code> &mdash; had to be masked out of stored register
-    state; left in, the driver's own read-modify-write re-fires every transfer
-    and the firmware appears to hang. The controller turned out to be a
-    UC825x part using <code>0x10</code>/<code>0x13</code> for its data planes,
-    not the SSD16xx command set its part number suggests.
+    <strong>A divider read back as zero.</strong> QEMU maps a catch-all region
+    over the whole peripheral window that discards writes and returns zero. The
+    backlight is PWM, so <code>analogWrite</code> set an LEDC clock divider, read
+    back the zero, and divided by it. Claiming the window &mdash; with no model
+    behind it, just a register file that remembers writes &mdash; ended the
+    crash.
+  </p>
+  <p class="note">
+    <strong>Self-clearing trigger bits.</strong>
+    <code>I2C_CTR.TRANS_START</code> and <code>SPI_CMD.USR</code> clear
+    themselves in hardware. Stored verbatim, the driver's own read-modify-write
+    re-fires every transaction, and the firmware looks hung.
+  </p>
+  <p class="note">
+    <strong>Two wrong assumptions from part numbers.</strong> The panel is a
+    UC825x using <code>0x10</code>/<code>0x13</code> for its data planes, not the
+    SSD16xx its number implies. And the board's octal PSRAM only enumerates when
+    presented as <em>quad</em> &mdash; without it there is no LVGL buffer and no
+    picture at all.
   </p>
 </div>
 <script>
@@ -168,6 +180,12 @@ show(0); start();
 """
 
 
+def png_size(data: bytes) -> tuple[int, int]:
+    """Width and height live in the IHDR chunk, always first and always at a
+    fixed offset, so no decoder is needed to read them."""
+    return struct.unpack(">II", data[16:24])
+
+
 def frame_sort_key(p: Path) -> tuple[int, str]:
     m = re.search(r"(\d+)", p.stem)
     return (int(m.group(1)) if m else 0, p.stem)
@@ -186,10 +204,12 @@ def main(argv: list[str] | None = None) -> int:
         print(f"no frames in {args.frames}")
         return 1
 
-    encoded = ["data:image/png;base64," + base64.b64encode(p.read_bytes()).decode()
-               for p in paths]
+    blobs = [p.read_bytes() for p in paths]
+    encoded = ["data:image/png;base64," + base64.b64encode(b).decode() for b in blobs]
+    width, height = png_size(blobs[0])
 
-    stats = [{"label": "Frames drawn", "value": len(paths), "unit": ""}]
+    stats = [{"label": "Frames drawn", "value": len(paths), "unit": ""},
+             {"label": "Panel", "value": f"{width}&times;{height}", "unit": "1-bit"}]
     if args.manifest and args.manifest.exists():
         m = json.loads(args.manifest.read_text())
         stats += [
@@ -198,8 +218,12 @@ def main(argv: list[str] | None = None) -> int:
             {"label": "QEMU", "value": m.get("qemu_version", "?").split()[-1], "unit": ""},
         ]
 
+    # A portrait panel in a box sized for landscape would letterbox badly, so
+    # the page takes its proportions from the frames themselves.
     html = (PAGE.replace("__FRAMES__", json.dumps(encoded))
-                .replace("__STATS__", json.dumps(stats)))
+                .replace("__STATS__", json.dumps(stats))
+                .replace("__ASPECT__", f"{width}/{height}")
+                .replace("__SCREENW__", "24rem" if height > width else "40rem"))
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(html, encoding="utf-8")
     print(f"wrote {args.out}  ({len(paths)} frames, {args.out.stat().st_size} bytes)")
