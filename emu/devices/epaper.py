@@ -70,22 +70,41 @@ def write_png(path: Path, width: int, height: int, pixels: bytes) -> None:
     path.write_bytes(png)
 
 
-def _rotate_ccw(pixels: bytearray, w: int, h: int) -> tuple[int, int, bytearray]:
-    """Quarter turn anticlockwise: (h x w) becomes (w x h)."""
+def _rotate(pixels: bytearray, w: int, h: int, quarter_turns: int) -> tuple[int, int, bytearray]:
+    """Rotate the raster by whole quarter turns, clockwise.
+
+    The device is portrait and so is the panel's raster, so the shipping
+    firmware needs no turn at all -- its launcher comes out upright as stored.
+    Examples that appear sideways are drawing through a GxEPD2 rotation of their
+    own; that is their choice, not a property of the hardware, which is why this
+    defaults to zero rather than to whatever makes one demo look right.
+    """
+    turns = quarter_turns % 4
+    if turns == 0:
+        return w, h, pixels
+    if turns == 2:
+        return w, h, bytearray(reversed(pixels))
     out = bytearray(w * h)
-    for y in range(w):          # destination rows == source columns, reversed
-        base = y * h
-        src_col = w - 1 - y
-        for x in range(h):
-            out[base + x] = pixels[x * w + src_col]
+    if turns == 1:              # clockwise
+        for y in range(w):
+            base = y * h
+            for x in range(h):
+                out[base + x] = pixels[(h - 1 - x) * w + y]
+    else:                       # anticlockwise
+        for y in range(w):
+            base = y * h
+            src_col = w - 1 - y
+            for x in range(h):
+                out[base + x] = pixels[x * w + src_col]
     return h, w, out
 
 
 class EPaperPanel(SPIDevice):
     name = "GDEQ031T10"
 
-    def __init__(self, gpio: GpioOut, outdir: Path):
+    def __init__(self, gpio: GpioOut, outdir: Path, quarter_turns: int = 1):
         self.gpio = gpio
+        self.quarter_turns = quarter_turns
         self.outdir = Path(outdir)
         self.outdir.mkdir(parents=True, exist_ok=True)
         self.ram = bytearray(b"\xff" * FRAME_BYTES)   # 1 == white
@@ -148,7 +167,7 @@ class EPaperPanel(SPIDevice):
                     pixels[base + xb * 8 + bit] = 0xFF if byte & (0x80 >> bit) else 0x00
         # The firmware draws in landscape on a portrait raster, so the stored
         # image is a quarter turn away from how the device is actually held.
-        out_w, out_h, pixels = _rotate_ccw(pixels, WIDTH, HEIGHT)
+        out_w, out_h, pixels = _rotate(pixels, WIDTH, HEIGHT, self.quarter_turns)
         self.frames += 1
         path = self.outdir / f"frame-{self.frames:03d}.png"
         write_png(path, out_w, out_h, bytes(pixels))
