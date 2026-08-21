@@ -11,3 +11,7 @@ third_party/
 logs/
 build/
 *.log
+
+# Python bytecode
+__pycache__/
+*.pyc
