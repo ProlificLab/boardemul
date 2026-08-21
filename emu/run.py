@@ -94,6 +94,11 @@ def build_argv(qemu: Path, flash: Path, efuse: Path, uart: Path,
                qemu_log: Path, traced: bool, psram_mb: int,
                psram_octal: bool = False) -> list[str]:
     debug = ["unimp", "guest_errors"]
+    # Escape hatch for one-off investigations (in_asm, exec, int...). Not a
+    # supported interface; the supported one is --trace.
+    extra = os.environ.get("BOARDEMUL_QEMU_DFLAGS")
+    if extra:
+        debug += [f.strip() for f in extra.split(",") if f.strip()]
     if traced:
         debug += [f"trace:{e}" for e in TRACE_EVENTS]
     return [
