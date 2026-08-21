@@ -65,15 +65,16 @@ That the bootloader is entirely SRAM-resident is not incidental: it must run
 before the flash cache MMU is configured, so it cannot execute from
 cache-mapped flash. Only the application does that.
 
-### Predicted stage 0 output
+### Stage 0 output — predicted, then confirmed
 
 Because the ROM simply narrates what it loads, its UART output is computable
-from the header above *before running anything*:
+from the header above *before running anything*. This was derived first and
+observed afterwards; the `load:` and `entry` lines matched exactly:
 
 ```
-ESP-ROM:esp32s3-<build date>
-Build:<date>
-rst:0x1 (POWERON),boot:0x8 (SPI_FAST_FLASH_BOOT)
+ESP-ROM:esp32s3-20210327
+Build:Mar 27 2021
+rst:0x1 (POWERON),boot:0x4 (SPI_FLASH_BOOT)
 SPIWP:0xee
 mode:DIO, clock div:1
 load:0x3fce3808,len:0x44c
@@ -81,6 +82,12 @@ load:0x403c9700,len:0xbd8
 load:0x403cc700,len:0x2a80
 entry 0x403c98d0
 ```
+
+The one line that was *not* predicted correctly is the boot mode: `0x4
+(SPI_FLASH_BOOT)` rather than the `0x8 (SPI_FAST_FLASH_BOOT)` expected from
+Espressif's documented `strap_mode=0x04`. Harmless — it boots — but recorded
+because it means the strapping value and the reported boot mode are not the
+same encoding, and assuming they were would mislead later.
 
 The three `load:` lines and the `entry` line are the measured segment table and
 entry address, in order. `SPIWP:0xee` is the `wp_pin` field; `mode:DIO` is
@@ -249,6 +256,14 @@ onward are the substance of the M0 report.
 Because both bootloader stages narrate themselves, the log alone separates
 "our flash image is wrong" from "a peripheral is missing" — the two failures
 that otherwise look identical.
+
+**Correction from the first run: stage 1 does not narrate itself here.** This
+firmware is built with the bootloader log level compiled down, so nothing
+appears between the ROM's `entry` line and the application's first message. The
+rows below that depend on a bootloader banner or a runtime partition dump can
+never fire for these images, and the partition table cross-check has to come
+from `tools/mkflash.py` parsing the image offline instead. Stage 0's oracle is
+unaffected, and it turns out to be sufficient on its own.
 
 | Observed | Verdict |
 |---|---|
