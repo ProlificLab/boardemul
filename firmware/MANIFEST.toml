@@ -1,0 +1,51 @@
+# Vendor firmware images, pinned by content hash.
+#
+# The binaries themselves are gitignored. This file is what makes a run
+# reproducible: if the hash here does not match the file on disk, the run is
+# not the run this repo describes.
+#
+# All four images are complete merged flash images (bootloader at 0x0,
+# partition table at 0x8000, app at 0x10000) and all four share a
+# byte-identical boot stage:
+#
+#   region 0x0000..0x8000  (bootloader)      sha256 491e22feb4ee7f27...
+#   region 0x8000..0x8c00  (partition table) sha256 bd0f7954aca2ef7d...
+#
+# That shared boot stage is why the examples work as controls: boot any one of
+# them to the ROM's `entry` line and the flash/cache/MMU/UART/eFuse path is
+# validated for all of them. See docs/BOOT.md.
+
+source_repo = "https://github.com/Xinyuan-LilyGO/T-Deck-MAX"
+retrieved   = "2026-08-21"
+
+[[image]]
+name    = "factory"
+role    = "Vendor factory demo. Exercises every subsystem at once."
+path    = "T-Deck-MAX_V3.1_20260313.bin"
+url     = "https://raw.githubusercontent.com/Xinyuan-LilyGO/T-Deck-MAX/master/firmware/T-Deck-MAX_V3.1_20260313.bin"
+size    = 3298944
+sha256  = "8278ba63da0eeac64b58d4b46e3043c1e0f3356993d7c347587db14fb6ae8a52"
+
+[[image]]
+name    = "wirescan"
+role    = "I2C bus scanner. Smallest app; isolates the I2C controller."
+path    = "examples/WireScan.bin"
+url     = "https://raw.githubusercontent.com/Xinyuan-LilyGO/T-Deck-MAX/master/firmware/examples/WireScan.bin"
+size    = 334912
+sha256  = "403f3ebd2b7b3eb013241c3c5dfbc1724f3321de325710ffe00b36863d5002a2"
+
+[[image]]
+name    = "gps"
+role    = "MIA-M10Q GPS test. GPS is UART-attached and UART is emulated, so this is the image most likely to run furthest."
+path    = "examples/test_GPS.bin"
+url     = "https://raw.githubusercontent.com/Xinyuan-LilyGO/T-Deck-MAX/master/firmware/examples/test_GPS.bin"
+size    = 386496
+sha256  = "1631daf1b4e02395131e7a1559466810b5b119cb05649c2e8e7add2a708d64ce"
+
+[[image]]
+name    = "epaper"
+role    = "GDEQ031T10 e-paper test. Isolates general-purpose SPI."
+path    = "examples/test_Elink_paper.bin"
+url     = "https://raw.githubusercontent.com/Xinyuan-LilyGO/T-Deck-MAX/master/firmware/examples/test_Elink_paper.bin"
+size    = 346768
+sha256  = "da1a7a42bae3b24e71eada7bad687bafd26fc7ab0242f5df5aaedc4ae8525f86"
