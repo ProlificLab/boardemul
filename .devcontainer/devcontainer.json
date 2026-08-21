@@ -1,0 +1,6 @@
+{
+  "name": "BoardEmul build host",
+  "build": { "dockerfile": "Dockerfile" },
+  "remoteUser": "vscode",
+  "postCreateCommand": "python3 --version && echo 'Next: tools/build_qemu.sh'"
+}
