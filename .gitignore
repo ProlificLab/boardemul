@@ -1,0 +1,13 @@
+# Vendor firmware is pinned by hash in firmware/MANIFEST.toml, not vendored.
+# Committing 4 MB of third-party binaries would bloat history for no gain:
+# the hashes make them verifiable and the manifest makes them re-fetchable.
+firmware/**/*.bin
+
+# QEMU source and build tree. Fetched by tag, never edited in place (ADR 0001).
+third_party/
+
+# Run artefacts. reports/ is deliberately NOT ignored: an M0 report is a result
+# worth committing.
+logs/
+build/
+*.log
