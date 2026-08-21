@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 import shutil
+import logging
 import subprocess
 import sys
 import time
@@ -19,6 +20,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from tools import mkflash  # noqa: E402
+from emu import board  # noqa: E402
+from emu.bus import BusServer  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -111,18 +114,23 @@ def build_argv(qemu: Path, flash: Path, efuse: Path, uart: Path,
     ]
 
 
-def run_qemu(argv: list[str], uart: Path, timeout: float,
-             stall: float) -> tuple[str, float]:
+def run_qemu(argv: list[str], uart: Path, timeout: float, stall: float,
+             server: "BusServer | None" = None) -> tuple[str, float]:
     """Returns (exit_reason, wall_seconds).
 
     The guest will not exit on its own once it starts polling a register that
     never changes, so both a stall watchdog and a hard timeout are required.
+
+    Liveness is UART output *or* bus traffic. Firmware that draws to a screen
+    can be perfectly healthy while saying nothing at all on the serial port, and
+    judging it by UART alone cuts the run off mid-picture.
     """
     uart.write_bytes(b"")
     started = time.monotonic()
     proc = subprocess.Popen(argv, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
 
-    last_size, last_change = 0, time.monotonic()
+    last_size, last_bus = 0, 0
+    last_change = time.monotonic()
     try:
         while True:
             if proc.poll() is not None:
@@ -131,10 +139,11 @@ def run_qemu(argv: list[str], uart: Path, timeout: float,
             if now - started > timeout:
                 return "hard timeout", now - started
             size = uart.stat().st_size if uart.exists() else 0
-            if size != last_size:
-                last_size, last_change = size, now
+            bus_n = server.accesses if server else 0
+            if size != last_size or bus_n != last_bus:
+                last_size, last_bus, last_change = size, bus_n, now
             elif size > 0 and now - last_change > stall:
-                return f"stalled ({stall:.0f}s of UART silence)", now - started
+                return f"stalled ({stall:.0f}s idle)", now - started
             time.sleep(0.25)
     finally:
         if proc.poll() is None:
@@ -158,6 +167,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--psram", type=int, default=8, help="PSRAM size in MB")
     ap.add_argument("--mac", default=mkflash.DEFAULT_MAC)
     ap.add_argument("--qemu", default=None)
+    ap.add_argument("-v", "--verbose", action="store_true",
+                    help="log every bus transaction at DEBUG")
+    ap.add_argument("--bus", action="store_true",
+                    help="intercept unmodelled peripherals with Python models")
     ap.add_argument("--tag", default=None,
                     help="name for this run's logs (default: firmware stem)")
     args = ap.parse_args(argv)
@@ -174,10 +187,25 @@ def main(argv: list[str] | None = None) -> int:
     qlog = args.outdir / f"{tag}.qemu.log"
     cmd = build_argv(qemu, flash, efuse, uart, qlog, args.trace, args.psram)
 
+    server: BusServer | None = None
+    if args.bus:
+        logging.basicConfig(filename=args.outdir / f"{tag}.bus.log", filemode="w",
+                            level=logging.DEBUG if args.verbose else logging.INFO,
+                            format="%(name)s %(message)s")
+        server = BusServer(args.outdir / f"{tag}.bus.sock", board.build_regions(args.outdir))
+        server.start()
+        cmd += server.qemu_args()
+
     print(f"\nqemu    : {qemu}")
     print(f"trace   : {'on (slow)' if args.trace else 'off'}")
+    print(f"bus     : {'on' if server else 'off'}")
     print(f"uart    : {uart}")
-    reason, wall = run_qemu(cmd, uart, args.timeout, args.stall)
+    try:
+        reason, wall = run_qemu(cmd, uart, args.timeout, args.stall, server)
+    finally:
+        if server:
+            _report_bus(server)
+            server.stop()
 
     result = RunResult(
         qemu_version=qemu_version(qemu),
@@ -205,6 +233,48 @@ def main(argv: list[str] | None = None) -> int:
             print("  " + line)
         print("-" * 60)
     return 0
+
+
+def _report_bus(server: BusServer) -> None:
+    from emu.devices.epaper import EPaperPanel
+    from emu.peripherals.gpio import GpioOut
+    from emu.peripherals.i2c import I2CController
+    from emu.peripherals.spi import SPIController
+
+    print(f"\n--- bus " + "-" * 52)
+    print(f"  {server.accesses} access(es), {server.unclaimed} outside any region")
+    for region in server.regions:
+        if isinstance(region, I2CController):
+            probed = sorted(region.acks | region.nacks)
+            print(f"  {region.name}: {region.transactions} transaction(s)")
+            if region.history:
+                print("    recent transactions (addr dir bytes):")
+                for addr, direction, data in list(region.history)[-16:]:
+                    print(f"      0x{addr:02x} {direction} "
+                          + " ".join(f"{b:02x}" for b in data))
+            if probed:
+                print(f"    addresses probed : "
+                      + " ".join(f"0x{a:02x}" for a in probed))
+                print(f"    acked            : "
+                      + (" ".join(f"0x{a:02x}" for a in sorted(region.acks)) or "none"))
+    for region in server.regions:
+        if isinstance(region, SPIController):
+            print(f"  {region.name}: {region.transfers} transfer(s), "
+                  f"{region.bytes_out} byte(s) out")
+            for dev in region.devices:
+                if isinstance(dev, EPaperPanel):
+                    print(f"    {dev.summary()}")
+                    if dev.latest:
+                        print(f"    latest frame: {dev.latest}")
+        elif isinstance(region, GpioOut):
+            print(f"  {region.name}: {region.changes} level change(s), "
+                  f"CS34={region.pin(34)} DC35={region.pin(35)} RST9={region.pin(9)}")
+    if server.recent:
+        print("  last accesses (the tail is what it is stuck on):")
+        for op, addr, size, value in list(server.recent)[-12:]:
+            kind = "rd" if op == 0 else "wr"
+            print(f"    {kind} 0x{addr:08x} size {size} value 0x{value:08x}")
+    print("-" * 60)
 
 
 if __name__ == "__main__":
