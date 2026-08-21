@@ -1,0 +1,5 @@
+# Everything in this repo is consumed on Linux (the devcontainer, ADR 0002).
+# A CRLF checkout would break shell shebangs with "bad interpreter: ...^M",
+# which fails in a way that looks nothing like a line-ending problem.
+* text=auto eol=lf
+*.bin binary
