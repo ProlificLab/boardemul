@@ -1,0 +1,235 @@
+/*
+ * esp_bus_bridge -- forward MMIO out of QEMU to an external device model.
+ *
+ * This file lives in the BoardEmul repository and is copied into hw/misc/ at
+ * build time. It is the entire C footprint of the project (ADR 0001, ADR 0005).
+ *
+ * It deliberately knows nothing about any peripheral. It moves bytes across a
+ * socket and does not interpret them. If a register name ever appears in this
+ * file, the design has gone wrong.
+ */
+
+#include "qemu/osdep.h"
+#include "qemu/cutils.h"
+#include "qemu/error-report.h"
+#include "hw/qdev-properties.h"
+#include "exec/address-spaces.h"
+#include "exec/memory.h"
+#include "qapi/error.h"
+#include "qom/object.h"
+
+#include <sys/socket.h>
+#include <sys/un.h>
+
+#define TYPE_ESP_BUS_BRIDGE "esp-bus-bridge"
+OBJECT_DECLARE_SIMPLE_TYPE(EspBusBridge, ESP_BUS_BRIDGE)
+
+#define BRIDGE_OP_READ  0u
+#define BRIDGE_OP_WRITE 1u
+
+struct EspBusBridge {
+    DeviceState parent_obj;
+
+    MemoryRegion iomem;
+    char *socket_path;
+    char *region_name;
+    uint64_t base;
+    uint64_t size;
+    int32_t priority;
+
+    int fd;
+    bool broken;
+};
+
+/* Fixed 12-byte request, 4-byte reply. Sized and ordered so both sides can use
+ * a single struct/struct.unpack with no framing. */
+typedef struct QEMU_PACKED {
+    uint8_t op;
+    uint8_t size;
+    uint16_t pad;
+    uint32_t addr;
+    uint32_t value;
+} BridgeRequest;
+
+static bool bridge_write_all(EspBusBridge *s, const void *buf, size_t len)
+{
+    const uint8_t *p = buf;
+    while (len) {
+        ssize_t n = send(s->fd, p, len, MSG_NOSIGNAL);
+        if (n <= 0) {
+            if (n < 0 && errno == EINTR) {
+                continue;
+            }
+            return false;
+        }
+        p += n;
+        len -= n;
+    }
+    return true;
+}
+
+static bool bridge_read_all(EspBusBridge *s, void *buf, size_t len)
+{
+    uint8_t *p = buf;
+    while (len) {
+        ssize_t n = recv(s->fd, p, len, 0);
+        if (n <= 0) {
+            if (n < 0 && errno == EINTR) {
+                continue;
+            }
+            return false;
+        }
+        p += n;
+        len -= n;
+    }
+    return true;
+}
+
+/* A dead socket must not take the guest down with it: report once, then behave
+ * like the unmapped region this was overlaying in the first place. */
+static void bridge_fail(EspBusBridge *s, const char *what)
+{
+    if (!s->broken) {
+        s->broken = true;
+        error_report("esp-bus-bridge(%s): %s; region is inert from now on",
+                     s->region_name ? s->region_name : "?", what);
+    }
+}
+
+static uint64_t bridge_mmio_read(void *opaque, hwaddr offset, unsigned size)
+{
+    EspBusBridge *s = opaque;
+    BridgeRequest req = {
+        .op = BRIDGE_OP_READ,
+        .size = size,
+        .pad = 0,
+        .addr = (uint32_t)(s->base + offset),
+        .value = 0,
+    };
+    uint32_t reply = 0;
+
+    if (s->broken) {
+        return 0;
+    }
+    if (!bridge_write_all(s, &req, sizeof(req))) {
+        bridge_fail(s, "send failed");
+        return 0;
+    }
+    if (!bridge_read_all(s, &reply, sizeof(reply))) {
+        bridge_fail(s, "recv failed");
+        return 0;
+    }
+    return reply;
+}
+
+static void bridge_mmio_write(void *opaque, hwaddr offset,
+                              uint64_t value, unsigned size)
+{
+    EspBusBridge *s = opaque;
+    BridgeRequest req = {
+        .op = BRIDGE_OP_WRITE,
+        .size = size,
+        .pad = 0,
+        .addr = (uint32_t)(s->base + offset),
+        .value = (uint32_t)value,
+    };
+    uint32_t ack = 0;
+
+    if (s->broken) {
+        return;
+    }
+    if (!bridge_write_all(s, &req, sizeof(req))) {
+        bridge_fail(s, "send failed");
+        return;
+    }
+    /* Waiting for the ack keeps the guest from racing ahead of the model
+     * (ADR 0005 decision 6). */
+    if (!bridge_read_all(s, &ack, sizeof(ack))) {
+        bridge_fail(s, "recv failed");
+    }
+}
+
+static const MemoryRegionOps bridge_ops = {
+    .read = bridge_mmio_read,
+    .write = bridge_mmio_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid.min_access_size = 1,
+    .valid.max_access_size = 4,
+    .impl.min_access_size = 1,
+    .impl.max_access_size = 4,
+};
+
+static void bridge_realize(DeviceState *dev, Error **errp)
+{
+    EspBusBridge *s = ESP_BUS_BRIDGE(dev);
+    struct sockaddr_un addr;
+
+    if (!s->socket_path) {
+        error_setg(errp, "esp-bus-bridge: 'socket' property is required");
+        return;
+    }
+    if (!s->size) {
+        error_setg(errp, "esp-bus-bridge: 'size' property is required");
+        return;
+    }
+    if (strlen(s->socket_path) >= sizeof(addr.sun_path)) {
+        error_setg(errp, "esp-bus-bridge: socket path too long");
+        return;
+    }
+
+    s->fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (s->fd < 0) {
+        error_setg_errno(errp, errno, "esp-bus-bridge: socket()");
+        return;
+    }
+    memset(&addr, 0, sizeof(addr));
+    addr.sun_family = AF_UNIX;
+    pstrcpy(addr.sun_path, sizeof(addr.sun_path), s->socket_path);
+    if (connect(s->fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+        error_setg_errno(errp, errno, "esp-bus-bridge: connect(%s)",
+                         s->socket_path);
+        close(s->fd);
+        s->fd = -1;
+        return;
+    }
+
+    memory_region_init_io(&s->iomem, OBJECT(s), &bridge_ops, s,
+                          s->region_name ? s->region_name : TYPE_ESP_BUS_BRIDGE,
+                          s->size);
+    /* Overlap rather than replace: the machine's catch-all region stays
+     * underneath, so anything outside our window is unaffected. */
+    memory_region_add_subregion_overlap(get_system_memory(), s->base,
+                                        &s->iomem, s->priority);
+}
+
+static Property bridge_props[] = {
+    DEFINE_PROP_STRING("socket", EspBusBridge, socket_path),
+    DEFINE_PROP_STRING("name", EspBusBridge, region_name),
+    DEFINE_PROP_UINT64("base", EspBusBridge, base, 0),
+    DEFINE_PROP_UINT64("size", EspBusBridge, size, 0),
+    DEFINE_PROP_INT32("priority", EspBusBridge, priority, 100),
+    DEFINE_PROP_END_OF_LIST(),
+};
+
+static void bridge_class_init(ObjectClass *klass, void *data)
+{
+    DeviceClass *dc = DEVICE_CLASS(klass);
+
+    dc->realize = bridge_realize;
+    dc->user_creatable = true;
+    device_class_set_props(dc, bridge_props);
+}
+
+static const TypeInfo bridge_info = {
+    .name = TYPE_ESP_BUS_BRIDGE,
+    .parent = TYPE_DEVICE,
+    .instance_size = sizeof(EspBusBridge),
+    .class_init = bridge_class_init,
+};
+
+static void bridge_register_types(void)
+{
+    type_register_static(&bridge_info);
+}
+
+type_init(bridge_register_types)

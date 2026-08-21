@@ -34,6 +34,16 @@ else
     echo "==> reusing existing clone at ${QEMU_TAG}"
 fi
 
+# ADR 0005: our single C file lives in this repo and is installed into the QEMU
+# tree here, so the tree is never edited by hand and `git status` inside it stays
+# clean apart from these two touches.
+echo "==> installing esp_bus_bridge.c"
+cp "${REPO_ROOT}/qemu-patch/esp_bus_bridge.c" "${SRC}/hw/misc/esp_bus_bridge.c"
+MESON_FILE="${SRC}/hw/misc/meson.build"
+if ! grep -qF "esp_bus_bridge.c" "${MESON_FILE}"; then
+    echo "system_ss.add(files('esp_bus_bridge.c'))" >> "${MESON_FILE}"
+fi
+
 if [[ ! -f "${BUILD}/build.ninja" ]]; then
     echo "==> configuring"
     mkdir -p "${BUILD}"
