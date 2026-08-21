@@ -121,7 +121,6 @@ class BusServer:
             return
         op, size, _pad, addr, value = REQUEST.unpack(raw)
         self.accesses += 1
-        self.recent.append((op, addr, size, value))
 
         region = self._find(addr)
         result = 0
@@ -142,10 +141,11 @@ class BusServer:
                 log.exception("model raised on %s 0x%08x",
                               "read" if op == OP_READ else "write", addr)
             irq = region.irq_level()
-            if _dbg:
-                log.debug("%s %s +0x%03x = 0x%08x irq=%d", region.name,
-                          "rd" if op == OP_READ else "wr", addr - region.base,
-                          result if op == OP_READ else value, irq)
+        self.recent.append((op, addr, size, result if op == OP_READ else value))
+        if _dbg and region is not None:
+            log.debug("%s %s +0x%03x = 0x%08x irq=%d", region.name,
+                      "rd" if op == OP_READ else "wr", addr - region.base,
+                      result if op == OP_READ else value, irq)
         try:
             conn.sendall(RESPONSE.pack(result, irq))
         except OSError:
