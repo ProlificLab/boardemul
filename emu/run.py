@@ -91,7 +91,8 @@ def build_images(firmware: Path, outdir: Path, mac: str) -> tuple[Path, Path]:
 
 
 def build_argv(qemu: Path, flash: Path, efuse: Path, uart: Path,
-               qemu_log: Path, traced: bool, psram_mb: int) -> list[str]:
+               qemu_log: Path, traced: bool, psram_mb: int,
+               psram_octal: bool = False) -> list[str]:
     debug = ["unimp", "guest_errors"]
     if traced:
         debug += [f"trace:{e}" for e in TRACE_EVENTS]
@@ -102,7 +103,8 @@ def build_argv(qemu: Path, flash: Path, efuse: Path, uart: Path,
         "-no-reboot",
         "-drive", f"file={flash},if=mtd,format=raw",
         "-m", f"{psram_mb}M",
-        "-global", "driver=ssi_psram,property=is_octal,value=true",
+        "-global",
+        f"driver=ssi_psram,property=is_octal,value={'true' if psram_octal else 'false'}",
         "-drive", f"file={efuse},if=none,format=raw,id=efuse",
         "-global", "driver=nvram.esp32s3.efuse,property=drive,value=efuse",
         "-global", f"driver=esp32s3.gpio,property=strap_mode,value=0x{STRAP_MODE:02x}",
@@ -165,6 +167,12 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT_SECONDS)
     ap.add_argument("--stall", type=float, default=DEFAULT_STALL_SECONDS)
     ap.add_argument("--psram", type=int, default=8, help="PSRAM size in MB")
+    # The board really has octal PSRAM, but the fork's SPI1 model does not
+    # clock octal DDR the way IDF 4.4.6 drives it, so detection reads back all
+    # zeros. Presented as quad, the same firmware enables PSRAM and runs.
+    ap.add_argument("--psram-octal", action="store_true",
+                    help="present PSRAM in octal line mode (matches the real "
+                         "board, but detection fails under this QEMU fork)")
     ap.add_argument("--mac", default=mkflash.DEFAULT_MAC)
     ap.add_argument("--qemu", default=None)
     ap.add_argument("-v", "--verbose", action="store_true",
@@ -185,7 +193,8 @@ def main(argv: list[str] | None = None) -> int:
 
     uart = args.outdir / f"{tag}.uart.log"
     qlog = args.outdir / f"{tag}.qemu.log"
-    cmd = build_argv(qemu, flash, efuse, uart, qlog, args.trace, args.psram)
+    cmd = build_argv(qemu, flash, efuse, uart, qlog, args.trace, args.psram,
+                     psram_octal=args.psram_octal)
 
     server: BusServer | None = None
     if args.bus:
