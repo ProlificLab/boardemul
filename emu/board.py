@@ -41,8 +41,12 @@ EPD_BUSY_PIN = 37
 KEYBOARD_INT_PIN = 15
 TOUCH_INT_PIN = 12
 
-# Roughly the report rate of the real panel while a finger is down.
-TOUCH_REPORT_INTERVAL = 0.01
+# The real panel reports at roughly 100 Hz while a finger is down. Guest time
+# runs about an order of magnitude slower than wall clock here, so the wall
+# interval has to be stretched to match -- at 10 ms the guest sees an interrupt
+# every emulated millisecond and the ISR starves the UI loop that would service
+# it.
+TOUCH_REPORT_INTERVAL = 0.1
 
 # Peripheral windows the fork leaves to its catch-all region. Claiming them
 # changes no behaviour on its own -- reads still return what was last written --
@@ -93,7 +97,10 @@ def build_regions(outdir: Path) -> list[Region]:
     gpio_out = GpioOut()
     # BUSY idles high on this panel; left undriven it reads low and every
     # wait-while-busy loop in the driver spins forever.
-    gpio_in = GpioInputs(gpio_out, static_high={EPD_BUSY_PIN}, irq=IRQ_GPIO)
+    # No per-access irq here: GPIO interrupts are pushed out of band,
+    # because the guest only touches this window from inside the handler
+    # the interrupt is supposed to start.
+    gpio_in = GpioInputs(gpio_out, static_high={EPD_BUSY_PIN})
     panel = EPaperPanel(gpio_out, Path(outdir) / "frames",
                         quarter_turns=int(os.environ.get("BOARDEMUL_ROTATE", "0")))
     return [
@@ -114,7 +121,8 @@ def find(regions: list[Region], kind: type) -> Region | None:
     return next((r for r in regions if isinstance(r, kind)), None)
 
 
-def attach_input(server: BusServer, regions: list[Region], outdir: Path) -> InputTail:
+def attach_input(server: BusServer, regions: list[Region], outdir: Path,
+                 irq_channel=None) -> InputTail:
     """Route host input events to the devices that report them.
 
     The firmware waits on GPIO interrupts rather than polling, so delivering an
@@ -123,6 +131,8 @@ def attach_input(server: BusServer, regions: list[Region], outdir: Path) -> Inpu
     """
     tail = InputTail(Path(outdir) / "input.jsonl")
     gpio: GpioInputs | None = find(regions, GpioInputs)
+    if gpio is not None and irq_channel is not None:
+        gpio.on_irq = lambda level: irq_channel.set(IRQ_GPIO, level)
     i2c0 = find(regions, I2CController)
     keypad = i2c0.devices.get(0x34) if isinstance(i2c0, I2CController) else None
     touch = i2c0.devices.get(0x1A) if isinstance(i2c0, I2CController) else None

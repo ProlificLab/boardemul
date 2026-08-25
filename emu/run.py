@@ -21,7 +21,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from tools import mkflash  # noqa: E402
 from emu import board  # noqa: E402
-from emu.bus import BusServer  # noqa: E402
+from emu.bus import BusServer, IrqChannel  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -203,15 +203,18 @@ def main(argv: list[str] | None = None) -> int:
 
     server: BusServer | None = None
     tail = None
+    irq: IrqChannel | None = None
     if args.bus:
         logging.basicConfig(filename=args.outdir / f"{tag}.bus.log", filemode="w",
                             level=logging.DEBUG if args.verbose else logging.INFO,
                             format="%(name)s %(message)s")
         regions = board.build_regions(args.outdir)
         server = BusServer(args.outdir / f"{tag}.bus.sock", regions)
-        tail = board.attach_input(server, regions, args.outdir)
+        irq = IrqChannel(args.outdir / f"{tag}.irq.sock")
+        irq.start()
+        tail = board.attach_input(server, regions, args.outdir, irq)
         server.start()
-        cmd += server.qemu_args()
+        cmd += server.qemu_args(irq.socket_path)
 
     print(f"\nqemu    : {qemu}")
     print(f"trace   : {'on (slow)' if args.trace else 'off'}")
@@ -221,10 +224,12 @@ def main(argv: list[str] | None = None) -> int:
         reason, wall = run_qemu(cmd, uart, args.timeout, args.stall, server)
     finally:
         if server:
-            _report_bus(server, tail)
+            _report_bus(server, tail, irq)
             server.stop()
         if tail:
             tail.stop()
+        if irq:
+            irq.stop()
 
     result = RunResult(
         qemu_version=qemu_version(qemu),
@@ -254,7 +259,7 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
-def _report_bus(server: BusServer, tail=None) -> None:
+def _report_bus(server: BusServer, tail=None, irq=None) -> None:
     from emu.devices.epaper import EPaperPanel
     from emu.peripherals.gpio import GpioInputs, GpioOut
     from emu.devices.i2c_devices import CST328, TCA8418
@@ -266,6 +271,8 @@ def _report_bus(server: BusServer, tail=None) -> None:
     if tail is not None:
         print(f"  input: {tail.delivered} event(s) delivered"
               + (f", {tail.malformed} malformed" if tail.malformed else ""))
+    if irq is not None:
+        print(f"  irq channel: {irq.sent} level change(s) pushed")
     for region in server.regions:
         if isinstance(region, I2CController):
             for dev in region.devices.values():

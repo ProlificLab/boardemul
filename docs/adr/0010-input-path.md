@@ -75,19 +75,18 @@ SPI2. The guest touches emulated MMIO constantly even when it looks idle.
 
 **Costs, accepted**
 
-- **Delivery is coupled to guest activity.** Correct for this firmware, wrong in
-  principle, and written down so it is not rediscovered as a mystery.
 - Polling the input file adds latency of its own, bounded by the tail interval.
   Irrelevant against a panel that takes about a second to refresh.
+- **Event timing must be expressed in guest time, not wall time.** Emulated time
+  runs roughly an order of magnitude slower than the host clock, so a
+  human-length tap is a few guest milliseconds and invisible to a UI sampling at
+  30 ms. Anything generating input has to stretch its intervals to match, and
+  the touch report rate is tuned in wall time for that reason.
 - We now own a meaningful slice of the GPIO block. If a future fork tag
   implements GPIO properly, this becomes duplicated work and should be dropped
   in favour of theirs.
 
 ## Alternatives rejected
-
-**Add a second socket and `qemu_set_fd_handler` to the bridge.** The correct
-design, and it is more C for a case this firmware never exercises. Revisit when
-something genuinely idles.
 
 **Drive QEMU's GPIO model through `qdev_get_gpio_in`.** Would reuse their edge
 detection, if they had any. The model has no input lines and no interrupt logic.
@@ -98,3 +97,25 @@ firmware stops reading these devices entirely after init.
 **TCP from the host app straight into the emulator.** More moving parts than a
 file on a mount both sides already see, and it would make the app and the
 emulator care where each other run.
+
+
+## Postscript: what this unblocked, and what it did not
+
+Interrupts now reach the guest correctly and the touch driver services them. It
+is still not possible to land a tap on a button, and the reason is not the input
+path:
+
+A full-screen e-paper refresh pushes about 19,200 bytes over SPI2, and each byte
+costs roughly six bridge round-trips. At the ~7,000 accesses per second the
+bridge sustains, that is on the order of **seventeen seconds of wall time per
+frame** — and LVGL is configured with `full_refresh = 1`, so it redraws
+continuously. The main loop is therefore almost never inside `lv_task_handler`,
+and `touchpad_read` is called a handful of times per run. A press and a release
+have to be sampled in order for a click to form, and there are not enough
+samples.
+
+That makes bridge throughput, not input, the next thing worth working on. The
+obvious first move is the per-access cost: the host currently runs a selector
+loop, so every access costs a `select` on top of the `recv`/`send` pair, and
+QEMU blocks on each one, which makes latency rather than throughput the figure
+that matters.
