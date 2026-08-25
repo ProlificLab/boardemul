@@ -14,6 +14,7 @@ import selectors
 import socket
 import struct
 import threading
+import time
 from collections import deque
 from pathlib import Path
 
@@ -39,6 +40,7 @@ class Region:
         self.size = size
         self.priority = priority
         self.irq = irq
+        self.accesses = 0
 
     def irq_level(self) -> int:
         """Level this peripheral wants on its interrupt line right now. Sampled
@@ -69,11 +71,13 @@ class BusServer:
         self.socket_path = str(socket_path)
         self.regions = sorted(regions, key=lambda r: r.base)
         self._sel = selectors.DefaultSelector()
+        self._bound: dict[socket.socket, Region | None] = {}
         self._listener: socket.socket | None = None
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
         self.accesses = 0
         self.unclaimed = 0
+        self._started = 0.0
         # A stalled guest polls one register forever, so the tail of this ring
         # names the register it is waiting on.
         self.recent: deque[tuple[int, int, int, int]] = deque(maxlen=64)
@@ -81,6 +85,10 @@ class BusServer:
         # reach device state without a second thread touching the models
         # (ADR 0010 decision 6).
         self.pumps: list = []
+
+    @property
+    def wall(self) -> float:
+        return time.monotonic() - self._started if self._started else 0.0
 
     def _find(self, addr: int) -> Region | None:
         for r in self.regions:
@@ -96,6 +104,7 @@ class BusServer:
         self._listener.listen(16)
         self._listener.setblocking(False)
         self._sel.register(self._listener, selectors.EVENT_READ, self._accept)
+        self._started = time.monotonic()
         self._thread = threading.Thread(target=self._serve, name="bus", daemon=True)
         self._thread.start()
         log.info("bus listening on %s with %d region(s)",
@@ -113,6 +122,11 @@ class BusServer:
     def _accept(self, listener: socket.socket) -> None:
         conn, _ = listener.accept()
         conn.setblocking(True)
+        # Each bridge instance owns exactly one window, so the region behind a
+        # connection never changes. Resolving it once removes a linear scan
+        # from the per-access path, which measured ~25 us of the ~95 us round
+        # trip with twelve regions claimed.
+        self._bound[conn] = None
         # Nagle would batch our 4-byte replies and stall the guest for
         # milliseconds per access. Unix sockets ignore TCP_NODELAY, but the
         # blocking-read loop below is what actually keeps latency down.
@@ -122,6 +136,7 @@ class BusServer:
         raw = self._recv_exact(conn, REQUEST.size)
         if raw is None:
             self._sel.unregister(conn)
+            self._bound.pop(conn, None)
             conn.close()
             return
         op, size, _pad, addr, value = REQUEST.unpack(raw)
@@ -132,7 +147,12 @@ class BusServer:
             except Exception:
                 log.exception("input pump raised")
 
-        region = self._find(addr)
+        region = self._bound.get(conn)
+        if region is None or not (region.base <= addr < region.base + region.size):
+            region = self._find(addr)
+            self._bound[conn] = region
+        if region is not None:
+            region.accesses += 1
         result = 0
         irq = 0
         _dbg = log.isEnabledFor(logging.DEBUG)

@@ -268,6 +268,9 @@ def _report_bus(server: BusServer, tail=None, irq=None) -> None:
 
     print(f"\n--- bus " + "-" * 52)
     print(f"  {server.accesses} access(es), {server.unclaimed} outside any region")
+    if server.wall:
+        print(f"  {server.accesses / server.wall:,.0f} access/s over "
+              f"{server.wall:.0f}s")
     if tail is not None:
         print(f"  input: {tail.delivered} event(s) delivered"
               + (f", {tail.malformed} malformed" if tail.malformed else ""))
@@ -295,8 +298,11 @@ def _report_bus(server: BusServer, tail=None, irq=None) -> None:
                       + (" ".join(f"0x{a:02x}" for a in sorted(region.acks)) or "none"))
     for region in server.regions:
         if isinstance(region, SPIController):
+            per_byte = (region.accesses / region.bytes_out) if region.bytes_out else 0
             print(f"  {region.name}: {region.transfers} transfer(s), "
-                  f"{region.bytes_out} byte(s) out")
+                  f"{region.bytes_out} byte(s) out, "
+                  f"{region.accesses} access(es) "
+                  f"({per_byte:.1f} per byte)")
             for dev in region.devices:
                 if isinstance(dev, EPaperPanel):
                     print(f"    {dev.summary()}")
