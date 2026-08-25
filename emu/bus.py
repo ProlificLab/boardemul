@@ -76,6 +76,10 @@ class BusServer:
         # A stalled guest polls one register forever, so the tail of this ring
         # names the register it is waiting on.
         self.recent: deque[tuple[int, int, int, int]] = deque(maxlen=64)
+        # Called before servicing each access. This is how asynchronous events
+        # reach device state without a second thread touching the models
+        # (ADR 0010 decision 6).
+        self.pumps: list = []
 
     def _find(self, addr: int) -> Region | None:
         for r in self.regions:
@@ -121,6 +125,11 @@ class BusServer:
             return
         op, size, _pad, addr, value = REQUEST.unpack(raw)
         self.accesses += 1
+        for pump in self.pumps:
+            try:
+                pump()
+            except Exception:
+                log.exception("input pump raised")
 
         region = self._find(addr)
         result = 0

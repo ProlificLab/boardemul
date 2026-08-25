@@ -202,11 +202,14 @@ def main(argv: list[str] | None = None) -> int:
                      psram_octal=args.psram_octal)
 
     server: BusServer | None = None
+    tail = None
     if args.bus:
         logging.basicConfig(filename=args.outdir / f"{tag}.bus.log", filemode="w",
                             level=logging.DEBUG if args.verbose else logging.INFO,
                             format="%(name)s %(message)s")
-        server = BusServer(args.outdir / f"{tag}.bus.sock", board.build_regions(args.outdir))
+        regions = board.build_regions(args.outdir)
+        server = BusServer(args.outdir / f"{tag}.bus.sock", regions)
+        tail = board.attach_input(server, regions, args.outdir)
         server.start()
         cmd += server.qemu_args()
 
@@ -218,8 +221,10 @@ def main(argv: list[str] | None = None) -> int:
         reason, wall = run_qemu(cmd, uart, args.timeout, args.stall, server)
     finally:
         if server:
-            _report_bus(server)
+            _report_bus(server, tail)
             server.stop()
+        if tail:
+            tail.stop()
 
     result = RunResult(
         qemu_version=qemu_version(qemu),
@@ -249,16 +254,26 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
-def _report_bus(server: BusServer) -> None:
+def _report_bus(server: BusServer, tail=None) -> None:
     from emu.devices.epaper import EPaperPanel
-    from emu.peripherals.gpio import GpioOut
+    from emu.peripherals.gpio import GpioInputs, GpioOut
+    from emu.devices.i2c_devices import CST328, TCA8418
     from emu.peripherals.i2c import I2CController
     from emu.peripherals.spi import SPIController
 
     print(f"\n--- bus " + "-" * 52)
     print(f"  {server.accesses} access(es), {server.unclaimed} outside any region")
+    if tail is not None:
+        print(f"  input: {tail.delivered} event(s) delivered"
+              + (f", {tail.malformed} malformed" if tail.malformed else ""))
     for region in server.regions:
         if isinstance(region, I2CController):
+            for dev in region.devices.values():
+                if isinstance(dev, CST328) and (dev.reports or dev.acks):
+                    print(f"    CST328: {dev.reports} report(s) read, "
+                          f"{dev.acks} acknowledged")
+                elif isinstance(dev, TCA8418) and dev.pending:
+                    print(f"    TCA8418: {len(dev.pending)} event(s) still queued")
             probed = sorted(region.acks | region.nacks)
             print(f"  {region.name}: {region.transactions} transaction(s)")
             if region.history:
@@ -283,6 +298,15 @@ def _report_bus(server: BusServer) -> None:
         elif isinstance(region, GpioOut):
             print(f"  {region.name}: {region.changes} level change(s), "
                   f"CS34={region.pin(34)} DC35={region.pin(35)} RST9={region.pin(9)}")
+        elif isinstance(region, GpioInputs):
+            enabled = [p for p in sorted(region.pin_cfg)
+                       if (region.pin_cfg[p] >> 13) & 1]
+            print(f"  {region.name}: {region.interrupts} interrupt(s) latched, "
+                  f"{region.status_reads} status read(s), "
+                  f"{region.status_clears} clear(s) by the guest")
+            print(f"    pins with CPU interrupt enabled: "
+                  + (" ".join(str(p) for p in enabled) or "none")
+                  + f"   status now 0x{region.status:x}")
     if server.recent:
         print("  last accesses (the tail is what it is stuck on):")
         for op, addr, size, value in list(server.recent)[-12:]:
