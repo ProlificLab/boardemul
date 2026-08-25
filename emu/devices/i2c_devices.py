@@ -188,6 +188,8 @@ class CST328(I2CDevice):
         self.name = "CST328"
         self.reg = 0
         self._written = b""
+        self._out = b""
+        self._out_pos = 0
         self.touch: tuple[int, int] | None = None
         self.reports = 0
         self.acks = 0
@@ -195,6 +197,24 @@ class CST328(I2CDevice):
     def start(self, reading: bool) -> None:
         if not reading:
             self._written = b""
+            return
+        # Snapshot the answer once per addressing, and serve it sequentially.
+        #
+        # The controller splits one logical read into two commands -- n-1 bytes
+        # acknowledged, the last one not -- so a reply regenerated per call
+        # hands out byte 0 where byte 6 was expected. For this device that is
+        # fatal and silent: the driver checks the last byte for 0xAB, discards
+        # the whole report when it does not match, and still writes its
+        # acknowledgement, so the traffic looks perfectly healthy.
+        self._out = self._build()
+        self._out_pos = 0
+
+    def _build(self) -> bytes:
+        if self.reg == self.REG_REPORT:
+            return self._report_bytes()
+        if self.reg == self.REG_CHIP_INFO:
+            return self._chip_info_bytes()
+        return bytes(64)
 
     def write(self, data: bytes) -> bool:
         self._written += data
@@ -208,14 +228,12 @@ class CST328(I2CDevice):
         return True
 
     def read(self, count: int) -> bytes:
-        if self.reg == self.REG_REPORT:
-            return self._report(count)
-        if self.reg == self.REG_CHIP_INFO:
-            return self._chip_info(count)
-        return bytes(count)
+        out = self._out[self._out_pos:self._out_pos + count]
+        self._out_pos += count
+        return out + bytes(count - len(out))
 
-    def _report(self, count: int) -> bytes:
-        buf = bytearray(max(count, 7))
+    def _report_bytes(self) -> bytes:
+        buf = bytearray(16)
         if self.touch is not None:
             x, y = self.touch
             buf[0] = self.CONTACT            # finger 0, contact event
@@ -226,14 +244,14 @@ class CST328(I2CDevice):
             buf[5] = 0x01                    # one finger, not a key event
         buf[6] = self.REPORT_MAGIC
         self.reports += 1
-        return bytes(buf[:count])
+        return bytes(buf)
 
-    def _chip_info(self, count: int) -> bytes:
-        info = bytearray(max(count, 28))
+    def _chip_info_bytes(self) -> bytes:
+        info = bytearray(32)
         info[4:6] = (240).to_bytes(2, "little")   # reported x resolution
         info[6:8] = (320).to_bytes(2, "little")   # reported y resolution
         info[18:20] = (0x0328).to_bytes(2, "little")
-        return bytes(info[:count])
+        return bytes(info)
 
     def __repr__(self) -> str:
         return f"<CST328@0x{self.address:02x} reports={self.reports} acks={self.acks}>"

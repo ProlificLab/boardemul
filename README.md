@@ -26,8 +26,11 @@ python emu/app.py --scale 2
 interrupt delivery; I2C0/I2C1 with the board's devices; GPIO levels; SPI2; the
 e-paper panel; PSRAM.
 
-**Not working yet:** input is one-way, so the keyboard and touch panel cannot
-reach the guest. The LoRa radio shares SPI2 and is ignored rather than modelled.
+Touch input works: tapping an icon navigates. Events are appended as JSON lines
+to `logs/input.jsonl`, which the emulator tails.
+
+**Not working yet:** the keyboard is wired but untested against a screen that
+consumes keys -- the launcher is touch-only. The LoRa radio shares SPI2 and is ignored rather than modelled.
 PSRAM only enumerates when presented in quad line mode, which is not what the
 board actually has — see ADR 0007, which is the first thing to re-test after any
 QEMU tag bump.

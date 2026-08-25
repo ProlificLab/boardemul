@@ -36,28 +36,38 @@ by logging what the firmware actually sent.
    peripheral models must state which bits are self-clearing. This is the first
    thing to check when a driver hangs.
 
-3. **Instrumentation is part of the model, not a debugging afterthought.** Each
+3. **A reply is snapshotted when the device is addressed, not regenerated per
+   read.** An I2C controller splits one logical read into two commands -- n-1
+   bytes acknowledged, the last one not -- so a model that rebuilds its answer
+   on each call hands out byte 0 where byte 6 was expected. This cost a long
+   time to find because it is silent: the touch driver checks the last byte of
+   its report for a magic value, discards the whole report when it does not
+   match, and still writes its acknowledgement. On the wire the traffic looks
+   perfectly healthy. A one-to-one ratio of reads to acknowledgements is worth
+   asserting.
+
+4. **Instrumentation is part of the model, not a debugging afterthought.** Each
    controller keeps a ring of recent transactions and can log decoded command
    lists. Finding the `TRANS_START` bug took minutes with a decoded log after an
    hour of guessing without one.
 
-4. **Chip-select and data/command come from GPIO, not from the SPI
+5. **Chip-select and data/command come from GPIO, not from the SPI
    peripheral.** The board drives them with `digitalWrite`, so the panel cannot
    tell a command from a pixel without GPIO state. `GpioOut` claims only the six
    output registers and `GpioIn` only the two input registers, leaving
    strapping, interrupts and the pin matrix with the machine's own model — which
    the ROM depends on at boot.
 
-5. **Undriven input pins must be answered.** The panel's BUSY line is an input
+6. **Undriven input pins must be answered.** The panel's BUSY line is an input
    nothing drives, so it read low forever and every wait-while-busy loop hung.
    Inputs the firmware polls are given a defined level.
 
-6. **The panel renders on a full frame or a refresh command, whichever comes
+7. **The panel renders on a full frame or a refresh command, whichever comes
    first.** Relying only on a recognised refresh command means an unexpected
    controller variant produces nothing at all; a full frame of data is
    self-evidently a picture and is worth rendering on its own.
 
-7. **Frames are written as PNG using `zlib` and `struct`.** No image library is
+8. **Frames are written as PNG using `zlib` and `struct`.** No image library is
    needed: a greyscale PNG is a header, one zlib stream and a CRC.
 
 ## Consequences
