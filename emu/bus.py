@@ -22,6 +22,7 @@ log = logging.getLogger("bus")
 # u8 op | u8 size | u16 pad | u32 addr | u32 value  -- must match esp_bus_bridge.c
 REQUEST = struct.Struct("<BBHII")
 RESPONSE = struct.Struct("<II")   # value, desired irq level
+IRQ_MSG = struct.Struct("<II")    # interrupt source, level
 
 OP_READ = 0
 OP_WRITE = 1
@@ -179,8 +180,74 @@ class BusServer:
             for key, _ in self._sel.select(timeout=0.2):
                 key.data(key.fileobj)
 
-    def qemu_args(self) -> list[str]:
+    def qemu_args(self, irq_socket: str | None = None) -> list[str]:
         args: list[str] = []
-        for r in self.regions:
-            args += ["-device", r.qemu_device_arg(self.socket_path)]
+        for i, r in enumerate(self.regions):
+            arg = r.qemu_device_arg(self.socket_path)
+            # Only one instance needs to open the interrupt channel; it can
+            # drive any source, so the rest do not duplicate it.
+            if irq_socket and i == 0:
+                arg += f",irqsock={irq_socket}"
+            args += ["-device", arg]
         return args
+
+
+class IrqChannel:
+    """Out-of-band interrupt delivery (ADR 0010, corrected).
+
+    A level returned on the request/response path only reaches the guest when it
+    next accesses that same window. For a peripheral the guest polls -- I2C, SPI
+    -- that is fine, because its own access is what raised the interrupt. For one
+    it *waits* on, it is a deadlock: the handler that would touch the window only
+    runs once the interrupt has been delivered.
+
+    This channel breaks that cycle. QEMU reads it from its main loop, so a level
+    can be raised at any moment regardless of what the guest is doing.
+    """
+
+    def __init__(self, socket_path: str | Path):
+        self.socket_path = str(socket_path)
+        self._listener: socket.socket | None = None
+        self._conn: socket.socket | None = None
+        self._levels: dict[int, int] = {}
+        self._lock = threading.Lock()
+        self.sent = 0
+
+    def start(self) -> None:
+        if os.path.exists(self.socket_path):
+            os.unlink(self.socket_path)
+        self._listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self._listener.bind(self.socket_path)
+        self._listener.listen(1)
+        threading.Thread(target=self._accept, name="irq", daemon=True).start()
+
+    def _accept(self) -> None:
+        try:
+            conn, _ = self._listener.accept()
+        except OSError:
+            return
+        with self._lock:
+            self._conn = conn
+        log.info("interrupt channel connected")
+
+    def set(self, source: int, level: int) -> None:
+        level = 1 if level else 0
+        with self._lock:
+            if self._levels.get(source) == level or self._conn is None:
+                self._levels[source] = level
+                return
+            self._levels[source] = level
+            try:
+                self._conn.sendall(IRQ_MSG.pack(source, level))
+                self.sent += 1
+            except OSError:
+                self._conn = None
+
+    def stop(self) -> None:
+        with self._lock:
+            if self._conn:
+                self._conn.close()
+        if self._listener:
+            self._listener.close()
+        if os.path.exists(self.socket_path):
+            os.unlink(self.socket_path)

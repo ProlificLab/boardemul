@@ -19,6 +19,7 @@
 #include "exec/memory.h"
 #include "qapi/error.h"
 #include "qom/object.h"
+#include "qemu/main-loop.h"
 
 #include <sys/socket.h>
 #include <sys/un.h>
@@ -45,7 +46,20 @@ struct EspBusBridge {
     bool broken;
     qemu_irq irq_line;
     int irq_level;
+
+    /* Optional out-of-band interrupt channel. Levels applied through the
+     * request/response path only reach the guest when it happens to access
+     * *this* window, which is useless for a peripheral it is waiting on rather
+     * than polling. This socket lets the model raise a line at any time. */
+    char *irq_socket_path;
+    int irqfd;
+    DeviceState *intc_dev;
 };
+
+typedef struct QEMU_PACKED {
+    uint32_t source;
+    uint32_t level;
+} BridgeIrqMessage;
 
 /* Fixed-size frames, sized and ordered so both sides use one struct.unpack
  * with no framing. The reply carries the model's desired interrupt level so
@@ -80,6 +94,42 @@ static bool bridge_write_all(EspBusBridge *s, const void *buf, size_t len)
         len -= n;
     }
     return true;
+}
+
+static bool bridge_read_fd(int fd, void *buf, size_t len)
+{
+    uint8_t *p = buf;
+    while (len) {
+        ssize_t n = recv(fd, p, len, 0);
+        if (n <= 0) {
+            if (n < 0 && errno == EINTR) {
+                continue;
+            }
+            return false;
+        }
+        p += n;
+        len -= n;
+    }
+    return true;
+}
+
+/* Runs in the main loop with the BQL already held, which is what makes calling
+ * qemu_set_irq from here safe. */
+static void bridge_irq_readable(void *opaque)
+{
+    EspBusBridge *s = opaque;
+    BridgeIrqMessage msg;
+
+    if (!bridge_read_fd(s->irqfd, &msg, sizeof(msg))) {
+        qemu_set_fd_handler(s->irqfd, NULL, NULL, NULL);
+        close(s->irqfd);
+        s->irqfd = -1;
+        return;
+    }
+    if (!s->intc_dev) {
+        return;
+    }
+    qemu_set_irq(qdev_get_gpio_in(s->intc_dev, msg.source), msg.level);
 }
 
 static bool bridge_read_all(EspBusBridge *s, void *buf, size_t len)
@@ -201,13 +251,17 @@ static void bridge_realize(DeviceState *dev, Error **errp)
 
     /* Looked up by type name rather than by including the machine's header,
      * so this file stays independent of the SoC it is plugged into. */
-    if (s->irq_source >= 0) {
+    if (s->irq_source >= 0 || s->irq_socket_path) {
         Object *intc = object_resolve_path_type("", s->intc_type, NULL);
         if (!intc) {
-            error_setg(errp, "esp-bus-bridge: no '%s' in the machine; "
-                       "cannot attach irq %d", s->intc_type, s->irq_source);
+            error_setg(errp, "esp-bus-bridge: no '%s' in the machine",
+                       s->intc_type);
             return;
         }
+        s->intc_dev = DEVICE(intc);
+    }
+    if (s->irq_source >= 0) {
+        Object *intc = OBJECT(s->intc_dev);
         s->irq_line = qdev_get_gpio_in(DEVICE(intc), s->irq_source);
         if (!s->irq_line) {
             error_setg(errp, "esp-bus-bridge: '%s' has no input %d",
@@ -232,6 +286,31 @@ static void bridge_realize(DeviceState *dev, Error **errp)
         return;
     }
 
+    if (s->irq_socket_path) {
+        struct sockaddr_un iaddr;
+
+        if (strlen(s->irq_socket_path) >= sizeof(iaddr.sun_path)) {
+            error_setg(errp, "esp-bus-bridge: irq socket path too long");
+            return;
+        }
+        s->irqfd = socket(AF_UNIX, SOCK_STREAM, 0);
+        if (s->irqfd < 0) {
+            error_setg_errno(errp, errno, "esp-bus-bridge: irq socket()");
+            return;
+        }
+        memset(&iaddr, 0, sizeof(iaddr));
+        iaddr.sun_family = AF_UNIX;
+        pstrcpy(iaddr.sun_path, sizeof(iaddr.sun_path), s->irq_socket_path);
+        if (connect(s->irqfd, (struct sockaddr *)&iaddr, sizeof(iaddr)) < 0) {
+            error_setg_errno(errp, errno, "esp-bus-bridge: irq connect(%s)",
+                             s->irq_socket_path);
+            close(s->irqfd);
+            s->irqfd = -1;
+            return;
+        }
+        qemu_set_fd_handler(s->irqfd, bridge_irq_readable, NULL, s);
+    }
+
     memory_region_init_io(&s->iomem, OBJECT(s), &bridge_ops, s,
                           s->region_name ? s->region_name : TYPE_ESP_BUS_BRIDGE,
                           s->size);
@@ -245,6 +324,7 @@ static Property bridge_props[] = {
     DEFINE_PROP_STRING("socket", EspBusBridge, socket_path),
     DEFINE_PROP_STRING("name", EspBusBridge, region_name),
     DEFINE_PROP_STRING("intc", EspBusBridge, intc_type),
+    DEFINE_PROP_STRING("irqsock", EspBusBridge, irq_socket_path),
     DEFINE_PROP_UINT64("base", EspBusBridge, base, 0),
     DEFINE_PROP_UINT64("size", EspBusBridge, size, 0),
     DEFINE_PROP_INT32("priority", EspBusBridge, priority, 100),
@@ -259,6 +339,7 @@ static void bridge_init(Object *obj)
     s->intc_type = g_strdup("misc.esp32s3.intmatrix");
     s->irq_level = -1;
     s->fd = -1;
+    s->irqfd = -1;
 }
 
 static void bridge_class_init(ObjectClass *klass, void *data)
