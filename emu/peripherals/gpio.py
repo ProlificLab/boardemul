@@ -141,6 +141,10 @@ class GpioInputs(Region):
         # irq_level() runs on every single bridge access, so the enabled-pin
         # mask is cached and only recomputed when a pin is reconfigured.
         self._enabled = 0
+        # Set by the board to push level changes down the out-of-band channel;
+        # the request/response path cannot deliver these (see IrqChannel).
+        self.on_irq = None
+        self._last_level = 0
 
     # -- level tracking -----------------------------------------------------
 
@@ -192,6 +196,7 @@ class GpioInputs(Region):
             self.status |= 1 << pin
             self.interrupts += 1
             log.debug("pin %d %d->%d latched (type %d)", pin, before, after, int_type)
+            self._notify()
 
     def _recompute_enabled(self) -> None:
         mask = 0
@@ -199,9 +204,17 @@ class GpioInputs(Region):
             if (cfg >> PIN_INT_ENA_SHIFT) & PIN_INT_ENA_MASK & INT_ENA_PRO_CPU:
                 mask |= 1 << pin
         self._enabled = mask
+        self._notify()
 
     def irq_level(self) -> int:
         return 1 if (self.status & self._enabled) else 0
+
+    def _notify(self) -> None:
+        level = self.irq_level()
+        if level != self._last_level:
+            self._last_level = level
+            if self.on_irq is not None:
+                self.on_irq(level)
 
     # -- register interface -------------------------------------------------
 
@@ -262,3 +275,7 @@ class GpioInputs(Region):
             self.status &= ~(value << 32)
         else:
             self.regs[reg] = value
+            return
+        # A status change moves the interrupt line, and the guest clearing
+        # it from inside the handler is what lets the next one through.
+        self._notify()
