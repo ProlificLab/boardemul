@@ -2,6 +2,11 @@
 
 **Status:** Accepted — 2026-08-21
 
+**Amended 2026-08-25:** decisions 5 and 6 are superseded by
+[ADR 0011](0011-transaction-granularity-boundary.md). The wire format now carries a
+transaction rather than a single access, and writes are no longer acknowledged --
+the socket is already FIFO, so a read still observes every write ahead of it.
+
 ## Context
 
 The firmware reaches application code and then stops, polling I2C registers

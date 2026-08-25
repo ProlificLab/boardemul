@@ -2,6 +2,12 @@
 
 **Status:** Accepted — 2026-08-21
 
+**Amended 2026-08-25:** decisions 2 and 3, the boundary rule, are superseded by
+[ADR 0011](0011-transaction-granularity-boundary.md), which moves the boundary from
+register accesses to bus transactions and restates the rule as *no board-specific
+knowledge in C*. The decision to adopt the fork as the CPU and SoC engine, and
+everything in the Context and Alternatives sections, stands.
+
 ## Context
 
 Running unmodified vendor firmware means executing Xtensa LX7 machine code.
