@@ -40,12 +40,9 @@ struct EspBusBridge {
     uint64_t base;
     uint64_t size;
     int32_t priority;
-    int32_t irq_source;
 
     int fd;
     bool broken;
-    qemu_irq irq_line;
-    int irq_level;
 
     /* Optional out-of-band interrupt channel. Levels applied through the
      * request/response path only reach the guest when it happens to access
@@ -62,10 +59,12 @@ typedef struct QEMU_PACKED {
 } BridgeIrqMessage;
 
 /* Fixed-size frames, sized and ordered so both sides use one struct.unpack
- * with no framing. The reply carries the model's desired interrupt level so
- * that a completion raised by the guest's own write is delivered on the same
- * round trip -- no second channel, and no window where the guest could sleep
- * before the interrupt arrives. */
+ * with no framing.
+ *
+ * Writes are not acknowledged (ADR 0011 decision 6). The socket is FIFO, so a
+ * read issued after a write still observes it, and not blocking on writes
+ * removes roughly half the round trips. Interrupts therefore never ride the
+ * reply -- they all arrive on the out-of-band channel. */
 typedef struct QEMU_PACKED {
     uint8_t op;
     uint8_t size;
@@ -76,7 +75,6 @@ typedef struct QEMU_PACKED {
 
 typedef struct QEMU_PACKED {
     uint32_t value;
-    uint32_t irq_level;
 } BridgeResponse;
 
 static bool bridge_write_all(EspBusBridge *s, const void *buf, size_t len)
@@ -160,16 +158,6 @@ static void bridge_fail(EspBusBridge *s, const char *what)
     }
 }
 
-/* Safe to call directly: MMIO handlers already run under the BQL. */
-static void bridge_apply_irq(EspBusBridge *s, uint32_t level)
-{
-    if (!s->irq_line || (int)level == s->irq_level) {
-        return;
-    }
-    s->irq_level = level;
-    qemu_set_irq(s->irq_line, s->irq_level);
-}
-
 static bool bridge_transact(EspBusBridge *s, const BridgeRequest *req,
                             BridgeResponse *rsp)
 {
@@ -184,7 +172,19 @@ static bool bridge_transact(EspBusBridge *s, const BridgeRequest *req,
         bridge_fail(s, "recv failed");
         return false;
     }
-    bridge_apply_irq(s, rsp->irq_level);
+    return true;
+}
+
+/* Fire and forget: no reply is expected, so the vCPU does not stall. */
+static bool bridge_post(EspBusBridge *s, const BridgeRequest *req)
+{
+    if (s->broken) {
+        return false;
+    }
+    if (!bridge_write_all(s, req, sizeof(*req))) {
+        bridge_fail(s, "send failed");
+        return false;
+    }
     return true;
 }
 
@@ -198,7 +198,7 @@ static uint64_t bridge_mmio_read(void *opaque, hwaddr offset, unsigned size)
         .addr = (uint32_t)(s->base + offset),
         .value = 0,
     };
-    BridgeResponse rsp = { 0, 0 };
+    BridgeResponse rsp = { 0 };
 
     return bridge_transact(s, &req, &rsp) ? rsp.value : 0;
 }
@@ -214,11 +214,7 @@ static void bridge_mmio_write(void *opaque, hwaddr offset,
         .addr = (uint32_t)(s->base + offset),
         .value = (uint32_t)value,
     };
-    BridgeResponse rsp = { 0, 0 };
-
-    /* Waiting for the reply keeps the guest from racing ahead of the model
-     * (ADR 0005 decision 6). */
-    bridge_transact(s, &req, &rsp);
+    bridge_post(s, &req);
 }
 
 static const MemoryRegionOps bridge_ops = {
@@ -251,7 +247,7 @@ static void bridge_realize(DeviceState *dev, Error **errp)
 
     /* Looked up by type name rather than by including the machine's header,
      * so this file stays independent of the SoC it is plugged into. */
-    if (s->irq_source >= 0 || s->irq_socket_path) {
+    if (s->irq_socket_path) {
         Object *intc = object_resolve_path_type("", s->intc_type, NULL);
         if (!intc) {
             error_setg(errp, "esp-bus-bridge: no '%s' in the machine",
@@ -259,15 +255,6 @@ static void bridge_realize(DeviceState *dev, Error **errp)
             return;
         }
         s->intc_dev = DEVICE(intc);
-    }
-    if (s->irq_source >= 0) {
-        Object *intc = OBJECT(s->intc_dev);
-        s->irq_line = qdev_get_gpio_in(DEVICE(intc), s->irq_source);
-        if (!s->irq_line) {
-            error_setg(errp, "esp-bus-bridge: '%s' has no input %d",
-                       s->intc_type, s->irq_source);
-            return;
-        }
     }
 
     s->fd = socket(AF_UNIX, SOCK_STREAM, 0);
@@ -328,7 +315,6 @@ static Property bridge_props[] = {
     DEFINE_PROP_UINT64("base", EspBusBridge, base, 0),
     DEFINE_PROP_UINT64("size", EspBusBridge, size, 0),
     DEFINE_PROP_INT32("priority", EspBusBridge, priority, 100),
-    DEFINE_PROP_INT32("irq", EspBusBridge, irq_source, -1),
     DEFINE_PROP_END_OF_LIST(),
 };
 
@@ -337,7 +323,6 @@ static void bridge_init(Object *obj)
     EspBusBridge *s = ESP_BUS_BRIDGE(obj);
 
     s->intc_type = g_strdup("misc.esp32s3.intmatrix");
-    s->irq_level = -1;
     s->fd = -1;
     s->irqfd = -1;
 }

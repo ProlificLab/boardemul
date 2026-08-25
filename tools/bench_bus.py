@@ -33,15 +33,23 @@ class NullRegion(Region):
 
 CLIENT = """
 import socket, struct, sys, time
-REQUEST = struct.Struct("<BBHII"); RESPONSE = struct.Struct("<II")
-path, count, addr = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
+REQUEST = struct.Struct("<BBHII"); RESPONSE = struct.Struct("<I")
+path, count, addr, mode = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), sys.argv[4]
 c = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); c.connect(path)
-req = REQUEST.pack(0, 4, 0, addr, 0)
+rd = REQUEST.pack(0, 4, 0, addr, 0)
+wr = REQUEST.pack(1, 4, 0, addr, 0x1234)
 for _ in range(2000):
-    c.sendall(req); c.recv(RESPONSE.size)
+    c.sendall(rd); c.recv(RESPONSE.size)
 t = time.perf_counter()
-for _ in range(count):
-    c.sendall(req); c.recv(RESPONSE.size)
+if mode == "read":
+    for _ in range(count):
+        c.sendall(rd); c.recv(RESPONSE.size)
+else:
+    # Writes get no reply. One read at the end proves they all landed: the
+    # socket is FIFO, so its answer cannot arrive before they are processed.
+    for _ in range(count):
+        c.sendall(wr)
+    c.sendall(rd); c.recv(RESPONSE.size)
 print(time.perf_counter() - t)
 """
 
@@ -57,19 +65,18 @@ def bench(count: int, regions: int, socket_path: Path) -> None:
     # thread in this one makes the two contend for the GIL and measures a
     # ping-pong QEMU never performs.
     addr = windows[-1].base + 0x40
-    out = subprocess.run([sys.executable, "-c", CLIENT,
-                          str(socket_path), str(count), str(addr)],
-                         capture_output=True, text=True)
-    if out.returncode != 0:
-        print(out.stderr)
-        server.stop()
-        raise SystemExit("benchmark client failed")
-    elapsed = float(out.stdout.strip())
+    for mode in ("read", "write"):
+        out = subprocess.run([sys.executable, "-c", CLIENT,
+                              str(socket_path), str(count), str(addr), mode],
+                             capture_output=True, text=True)
+        if out.returncode != 0:
+            print(out.stderr)
+            server.stop()
+            raise SystemExit("benchmark client failed")
+        elapsed = float(out.stdout.strip())
+        print(f"  regions {regions:2d} {mode:5s}: {count / elapsed:9,.0f} access/s   "
+              f"{elapsed / count * 1e6:6.1f} us/access")
     server.stop()
-
-    rate = count / elapsed
-    print(f"  regions {regions:2d} : {rate:9,.0f} access/s   "
-          f"{elapsed / count * 1e6:6.1f} us/access")
 
 
 def floor(count: int, socket_path: Path) -> None:
@@ -87,7 +94,7 @@ def floor(count: int, socket_path: Path) -> None:
 
     def serve() -> None:
         conn, _ = listener.accept()
-        reply = RESPONSE.pack(0, 0)
+        reply = RESPONSE.pack(0)
         while not stop.is_set():
             data = conn.recv(REQUEST.size)
             if not data:
@@ -98,7 +105,7 @@ def floor(count: int, socket_path: Path) -> None:
     thread.start()
 
     out = subprocess.run([sys.executable, "-c", CLIENT,
-                          str(socket_path), str(count), str(BASE)],
+                          str(socket_path), str(count), str(BASE), "read"],
                          capture_output=True, text=True)
     stop.set()
     listener.close()

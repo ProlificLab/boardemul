@@ -22,7 +22,7 @@ log = logging.getLogger("bus")
 
 # u8 op | u8 size | u16 pad | u32 addr | u32 value  -- must match esp_bus_bridge.c
 REQUEST = struct.Struct("<BBHII")
-RESPONSE = struct.Struct("<II")   # value, desired irq level
+RESPONSE = struct.Struct("<I")    # value; writes get no reply at all
 IRQ_MSG = struct.Struct("<II")    # interrupt source, level
 
 OP_READ = 0
@@ -57,7 +57,7 @@ class Region:
     def qemu_device_arg(self, socket_path: str) -> str:
         return (f"esp-bus-bridge,socket={socket_path},name={self.name},"
                 f"base=0x{self.base:x},size=0x{self.size:x},"
-                f"priority={self.priority},irq={self.irq}")
+                f"priority={self.priority}")
 
     def __repr__(self) -> str:
         return f"<{self.name} 0x{self.base:08x}+0x{self.size:x}>"
@@ -72,6 +72,7 @@ class BusServer:
         self.regions = sorted(regions, key=lambda r: r.base)
         self._sel = selectors.DefaultSelector()
         self._bound: dict[socket.socket, Region | None] = {}
+        self.irq_channel: IrqChannel | None = None
         self._listener: socket.socket | None = None
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
@@ -154,7 +155,6 @@ class BusServer:
         if region is not None:
             region.accesses += 1
         result = 0
-        irq = 0
         _dbg = log.isEnabledFor(logging.DEBUG)
         if region is None:
             self.unclaimed += 1
@@ -170,16 +170,22 @@ class BusServer:
                 # A model bug must not become a guest hang. Log it and answer.
                 log.exception("model raised on %s 0x%08x",
                               "read" if op == OP_READ else "write", addr)
-            irq = region.irq_level()
+            # Every interrupt goes out of band now, including ones a write
+            # raised: a write has no reply to carry it on.
+            if region.irq >= 0 and self.irq_channel is not None:
+                self.irq_channel.set(region.irq, region.irq_level())
         self.recent.append((op, addr, size, result if op == OP_READ else value))
         if _dbg and region is not None:
-            log.debug("%s %s +0x%03x = 0x%08x irq=%d", region.name,
+            log.debug("%s %s +0x%03x = 0x%08x", region.name,
                       "rd" if op == OP_READ else "wr", addr - region.base,
-                      result if op == OP_READ else value, irq)
+                      result if op == OP_READ else value)
+        if op != OP_READ:
+            return          # writes are not acknowledged (ADR 0011)
         try:
-            conn.sendall(RESPONSE.pack(result, irq))
+            conn.sendall(RESPONSE.pack(result))
         except OSError:
             self._sel.unregister(conn)
+            self._bound.pop(conn, None)
             conn.close()
 
     @staticmethod

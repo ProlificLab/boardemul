@@ -212,6 +212,7 @@ def main(argv: list[str] | None = None) -> int:
         server = BusServer(args.outdir / f"{tag}.bus.sock", regions)
         irq = IrqChannel(args.outdir / f"{tag}.irq.sock")
         irq.start()
+        server.irq_channel = irq
         tail = board.attach_input(server, regions, args.outdir, irq)
         server.start()
         cmd += server.qemu_args(irq.socket_path)
