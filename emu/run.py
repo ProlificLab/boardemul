@@ -266,7 +266,6 @@ def main(argv: list[str] | None = None) -> int:
 
 def _report_bus(server: BusServer, tail=None, irq=None, hw=None) -> None:
     from emu.devices.i2c_devices import CST328, TCA8418
-    from emu.peripherals.i2c import I2CController
 
     if hw is not None:
         print(f"  spi2: {hw.spi.segments} segment(s), {hw.spi.bytes_in} byte(s) in"
@@ -275,21 +274,27 @@ def _report_bus(server: BusServer, tail=None, irq=None, hw=None) -> None:
         print(f"    {hw.panel.summary()}")
         if hw.panel.latest:
             print(f"    latest frame: {hw.panel.latest}")
-        print(f"  gpio: {hw.gpio.sent} pin level(s) driven from the host")
-
-    for region in server.regions:
-        if isinstance(region, I2CController):
-            print(f"  {region.name}: {region.transactions} transaction(s)")
-            for dev in region.devices.values():
-                if isinstance(dev, CST328) and (dev.reports or dev.acks):
+        for bus in (hw.i2c0, hw.i2c1):
+            if not bus.transactions:
+                continue
+            print(f"  {bus.name}: {bus.transactions} transaction(s)")
+            acked = " ".join(f"0x{a:02x}" for a in sorted(bus.acks))
+            print(f"    acked: {acked or 'none'}")
+            for dev in bus.devices.values():
+                if isinstance(dev, CST328) and dev.reports:
                     print(f"    CST328: {dev.reports} report(s) read, "
                           f"{dev.acks} acknowledged")
                 elif isinstance(dev, TCA8418) and dev.pending:
                     print(f"    TCA8418: {len(dev.pending)} event(s) still queued")
-            probed = sorted(region.acks | region.nacks)
-            if probed:
-                print(f"    acked: "
-                      + (" ".join(f"0x{a:02x}" for a in sorted(region.acks)) or "none"))
+        print(f"  gpio: {hw.gpio.sent} pin level(s) driven from the host")
+
+    busy = sorted((r for r in server.regions if r.accesses),
+                  key=lambda r: -r.accesses)
+    if busy:
+        print("  register-level bridge traffic:")
+        for r in busy[:6]:
+            print(f"    {r.name:8} {r.accesses:9,}")
+
     if server.recent:
         print("  last accesses (the tail is what it is stuck on):")
         for op, addr, size, value in list(server.recent)[-12:]:

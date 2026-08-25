@@ -195,19 +195,19 @@ class CST328(I2CDevice):
         self.acks = 0
 
     def start(self, reading: bool) -> None:
+        # Deliberately does not re-latch on a read. The reply is built when the
+        # register is selected, and a read simply continues through it, which is
+        # what a real device's internal pointer does.
+        #
+        # This matters because one logical read reaches us as more than one
+        # call: the controller splits it into n-1 acknowledged bytes plus a
+        # final unacknowledged one, and the driver may split it again across
+        # command lists. Rebuilding per call hands out byte 0 where byte 6 was
+        # expected -- and for this device that is silent, because it checks the
+        # last byte for 0xAB, discards the whole report when it does not match,
+        # and still writes its acknowledgement.
         if not reading:
             self._written = b""
-            return
-        # Snapshot the answer once per addressing, and serve it sequentially.
-        #
-        # The controller splits one logical read into two commands -- n-1 bytes
-        # acknowledged, the last one not -- so a reply regenerated per call
-        # hands out byte 0 where byte 6 was expected. For this device that is
-        # fatal and silent: the driver checks the last byte for 0xAB, discards
-        # the whole report when it does not match, and still writes its
-        # acknowledgement, so the traffic looks perfectly healthy.
-        self._out = self._build()
-        self._out_pos = 0
 
     def _build(self) -> bytes:
         if self.reg == self.REG_REPORT:
@@ -225,6 +225,9 @@ class CST328(I2CDevice):
         if (len(self._written) == 3 and self.reg == self.REG_REPORT
                 and self._written[2] == self.REPORT_MAGIC):
             self.acks += 1
+        if len(self._written) >= 2:
+            self._out = self._build()
+            self._out_pos = 0
         return True
 
     def read(self, count: int) -> bytes:

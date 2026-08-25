@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """The T-Deck Max: which windows QEMU handles, which we do, and what is wired up.
 
-The split follows ADR 0011. SoC silicon -- GPIO and the SPI master -- runs in C
-inside QEMU, because chip-select has to be readable on every transfer and
-because a register-level bridge costs 232,320 round trips per display frame.
-Everything board-specific -- the panel, the I2C devices -- stays here in Python,
-where a wrong assumption is a one-line edit rather than a rebuild.
+The split follows ADR 0011. SoC silicon -- GPIO, the SPI master, the I2C master
+-- runs in C inside QEMU and hands over completed transactions. Everything
+board-specific -- the panel, the I2C devices -- stays here in Python, where a
+wrong assumption is a one-line edit rather than a rebuild.
+
+What is left on the register-level bridge is only the windows nothing models at
+all, claimed so that read-modify-write survives (ADR 0008).
 """
 
 from __future__ import annotations
@@ -20,9 +22,10 @@ from pathlib import Path
 from emu.bus import BusServer, Region
 from emu.devices.epaper import EPaperPanel
 from emu.devices.i2c_devices import CST328, TCA8418, tdeck_max_devices
+from emu.i2c_link import I2CServer
 from emu.inputs import InputTail
 from emu.peripherals.gpio import GpioClient
-from emu.peripherals.i2c import I2CController, I2CDevice
+from emu.peripherals.i2c import I2CDevice
 from emu.spi_link import SpiServer
 
 log = logging.getLogger("board")
@@ -52,15 +55,13 @@ TOUCH_INT_PIN = 12
 #
 # The rate has to be comfortably above the rate the UI polls at, not merely
 # close to it. The driver consumes the pending edge on each read and reports
-# "not touched" when there is none, so a poll that lands between edges looks
-# like a finger lift. At the panel's own 100 Hz against a 33 Hz poll, four in
-# ten polls came back released and the click was never seen as a single press.
+# "not touched" when there is none, so a poll landing between edges looks like a
+# finger lift.
 TOUCH_REPORT_HZ = 500
 
-# Peripheral windows the fork leaves to its catch-all region. Claiming them
-# changes no behaviour on its own -- reads still return what was last written --
-# but it stops read-modify-write being silently discarded, which is what made
-# the backlight PWM divide by zero (ADR 0008).
+# Windows nothing models. Claiming them changes no behaviour on its own -- reads
+# still return what was last written -- but it stops read-modify-write being
+# silently discarded, which is what made the backlight PWM divide by zero.
 UNMODELLED = {
     "ledc": 0x60019000,
     "i2s0": 0x6002D000,
@@ -109,19 +110,23 @@ class Board:
     regions: list[Region]
     gpio: GpioClient
     spi: SpiServer
+    i2c0: I2CServer
+    i2c1: I2CServer
     panel: EPaperPanel
     devices: list[str] = field(default_factory=list)
 
     def start(self) -> None:
         self.gpio.start()
         self.spi.start()
+        self.i2c0.start()
+        self.i2c1.start()
         # BUSY idles high on this panel. Set before QEMU connects; the client
         # replays it on connect, so the line is right from the first fetch.
         self.gpio.drive(EPD_BUSY_PIN, 1)
 
     def stop(self) -> None:
-        self.spi.stop()
-        self.gpio.stop()
+        for link in (self.spi, self.i2c0, self.i2c1, self.gpio):
+            link.stop()
 
     def qemu_args(self) -> list[str]:
         args: list[str] = []
@@ -136,11 +141,10 @@ def build(outdir: Path) -> Board:
                         quarter_turns=int(os.environ.get("BOARDEMUL_ROTATE", "0")))
     gpio = GpioClient(outdir / "gpio.sock")
     spi = SpiServer(outdir / "spi2.sock", panel)
+    i2c0 = I2CServer(outdir / "i2c0.sock", i2c_devices(), name="i2c0")
+    i2c1 = I2CServer(outdir / "i2c1.sock", [], name="i2c1")
 
-    regions: list[Region] = [
-        I2CController("i2c0", I2C0_BASE, i2c_devices(), irq=IRQ_I2C_EXT0),
-        I2CController("i2c1", I2C1_BASE, [], irq=IRQ_I2C_EXT1),
-    ] + [TraceRegion(n, b) for n, b in UNMODELLED.items()]
+    regions: list[Region] = [TraceRegion(n, b) for n, b in UNMODELLED.items()]
 
     # GPIO is declared first: the SPI master registers a chip-select watch when
     # it is realized, and -device instances are realized in command-line order.
@@ -151,12 +155,13 @@ def build(outdir: Path) -> Board:
         # The panel drives nothing back, so duplex transfers need no round trip.
         f"cs_gpio={EPD_CS_PIN},dc_gpio={EPD_DC_PIN},miso=off,"
         f"socket={spi.socket_path}",
+        f"esp-i2c-master,name=i2c0,base=0x{I2C0_BASE:x},irq={IRQ_I2C_EXT0},"
+        f"socket={i2c0.socket_path}",
+        f"esp-i2c-master,name=i2c1,base=0x{I2C1_BASE:x},irq={IRQ_I2C_EXT1},"
+        f"socket={i2c1.socket_path}",
     ]
-    return Board(regions=regions, gpio=gpio, spi=spi, panel=panel, devices=devices)
-
-
-def find(regions: list[Region], kind: type) -> Region | None:
-    return next((r for r in regions if isinstance(r, kind)), None)
+    return Board(regions=regions, gpio=gpio, spi=spi, i2c0=i2c0, i2c1=i2c1,
+                 panel=panel, devices=devices)
 
 
 def attach_input(server: BusServer, board: Board, outdir: Path) -> InputTail:
@@ -168,9 +173,8 @@ def attach_input(server: BusServer, board: Board, outdir: Path) -> InputTail:
     interrupt line at all (ADR 0010).
     """
     tail = InputTail(Path(outdir) / "input.jsonl")
-    i2c0 = find(board.regions, I2CController)
-    keypad = i2c0.devices.get(0x34) if isinstance(i2c0, I2CController) else None
-    touch = i2c0.devices.get(0x1A) if isinstance(i2c0, I2CController) else None
+    keypad = board.i2c0.devices.get(0x34)
+    touch = board.i2c0.devices.get(0x1A)
 
     def pump() -> None:
         for event in tail.drain():
@@ -183,27 +187,21 @@ def attach_input(server: BusServer, board: Board, outdir: Path) -> InputTail:
                 down = bool(event.get("down", True))
                 touch.touch = ((int(event.get("x", 0)), int(event.get("y", 0)))
                                if down else None)
-                # The edge has to follow the coordinate, not precede it: the
-                # driver reads the report only because an edge fired.
                 board.gpio.pulse_low(TOUCH_INT_PIN)
             else:
                 log.warning("unknown input event %r", event)
 
-    server.pumps.append(pump)
-
-    def repeat() -> None:
-        """Keep re-arming the touch interrupt while a finger is down.
-
-        This cannot ride the bus pump: the pump only runs when the guest touches
-        an intercepted window, and now that SPI and GPIO are serviced in C an
-        idle UI generates almost no bus traffic at all.
-        """
+    # The pump no longer has a bus to ride: with GPIO, SPI and I2C all serviced
+    # in C, an idle UI produces almost no register-level traffic at all. Both
+    # the event drain and the touch repeat run on their own clock.
+    def ticker() -> None:
         period = 1.0 / TOUCH_REPORT_HZ
         while not tail._stop.is_set():
+            pump()
             if isinstance(touch, CST328) and touch.touch is not None:
                 board.gpio.pulse_low(TOUCH_INT_PIN)
             time.sleep(period)
 
-    threading.Thread(target=repeat, name="touch", daemon=True).start()
+    threading.Thread(target=ticker, name="input", daemon=True).start()
     tail.start()
     return tail
