@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -44,6 +46,16 @@ EPD_DC_PIN = 35
 EPD_BUSY_PIN = 37
 KEYBOARD_INT_PIN = 15
 TOUCH_INT_PIN = 12
+
+# The real panel raises a data-ready interrupt for every frame it captures, so a
+# held finger produces a continuous stream of edges.
+#
+# The rate has to be comfortably above the rate the UI polls at, not merely
+# close to it. The driver consumes the pending edge on each read and reports
+# "not touched" when there is none, so a poll that lands between edges looks
+# like a finger lift. At the panel's own 100 Hz against a 33 Hz poll, four in
+# ten polls came back released and the click was never seen as a single press.
+TOUCH_REPORT_HZ = 500
 
 # Peripheral windows the fork leaves to its catch-all region. Claiming them
 # changes no behaviour on its own -- reads still return what was last written --
@@ -178,5 +190,20 @@ def attach_input(server: BusServer, board: Board, outdir: Path) -> InputTail:
                 log.warning("unknown input event %r", event)
 
     server.pumps.append(pump)
+
+    def repeat() -> None:
+        """Keep re-arming the touch interrupt while a finger is down.
+
+        This cannot ride the bus pump: the pump only runs when the guest touches
+        an intercepted window, and now that SPI and GPIO are serviced in C an
+        idle UI generates almost no bus traffic at all.
+        """
+        period = 1.0 / TOUCH_REPORT_HZ
+        while not tail._stop.is_set():
+            if isinstance(touch, CST328) and touch.touch is not None:
+                board.gpio.pulse_low(TOUCH_INT_PIN)
+            time.sleep(period)
+
+    threading.Thread(target=repeat, name="touch", daemon=True).start()
     tail.start()
     return tail
