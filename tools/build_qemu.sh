@@ -40,7 +40,7 @@ fi
 echo "==> installing BoardEmul sources"
 cp "${REPO_ROOT}/qemu-patch/esp_board_glue.h" "${SRC}/include/hw/misc/"
 MESON_FILE="${SRC}/hw/misc/meson.build"
-for f in esp_bus_bridge esp_gpio_block esp_spi_master; do
+for f in esp_bus_bridge esp_gpio_block esp_spi_master esp_i2c_master; do
     cp "${REPO_ROOT}/qemu-patch/${f}.c" "${SRC}/hw/misc/${f}.c"
     if ! grep -qF "${f}.c" "${MESON_FILE}"; then
         echo "system_ss.add(files('${f}.c'))" >> "${MESON_FILE}"

@@ -1,0 +1,543 @@
+/*
+ * esp_i2c_master -- ESP32-S3 I2C master controller.
+ *
+ * SoC silicon (ADR 0011). It knows how a command list is assembled and how the
+ * FIFOs behave; it knows nothing about any device on the bus.
+ *
+ * Batching is on the transaction, which is what I2C itself defines: everything
+ * from a START to the STOP that ends it. The driver builds that out of roughly
+ * twenty-four register accesses, and measured on the factory firmware I2C was
+ * the whole of the remaining bridge traffic -- 930,502 accesses for 39,128
+ * transactions. Here the registers are serviced natively and one message
+ * carries the transaction.
+ *
+ * Register offsets and bit positions from
+ * components/soc/esp32s3/include/soc/i2c_reg.h, and the command opcodes from
+ * components/hal/esp32s3/include/hal/i2c_ll.h -- they are not the ESP32's.
+ */
+
+#include "qemu/osdep.h"
+#include "qemu/cutils.h"
+#include "qemu/error-report.h"
+#include "hw/qdev-properties.h"
+#include "hw/qdev-core.h"
+#include "hw/irq.h"
+#include "exec/address-spaces.h"
+#include "exec/memory.h"
+#include "qapi/error.h"
+#include "qom/object.h"
+#include "qemu/main-loop.h"
+#include "hw/misc/esp_board_glue.h"
+
+#include <sys/socket.h>
+#include <sys/un.h>
+
+OBJECT_DECLARE_SIMPLE_TYPE(EspI2cMaster, ESP_I2C_MASTER)
+
+#define R_SCL_LOW    0x00
+#define R_CTR        0x04
+#define R_SR         0x08
+#define R_TO         0x0C
+#define R_SLAVE_ADDR 0x10
+#define R_FIFO_ST    0x14
+#define R_FIFO_CONF  0x18
+#define R_DATA       0x1C
+#define R_INT_RAW    0x20
+#define R_INT_CLR    0x24
+#define R_INT_ENA    0x28
+#define R_INT_STATUS 0x2C
+#define R_COMD0      0x58
+#define R_DATE       0xF8
+#define TXFIFO_BASE  0x100
+#define RXFIFO_BASE  0x180
+
+#define CTR_MS_MODE      (1u << 4)
+#define CTR_TRANS_START  (1u << 5)
+#define CTR_FSM_RST      (1u << 10)
+#define CTR_CONF_UPGATE  (1u << 11)
+
+#define INT_RXFIFO_WM      (1u << 0)
+#define INT_END_DETECT     (1u << 3)
+#define INT_TRANS_COMPLETE (1u << 7)
+#define INT_NACK           (1u << 10)
+
+#define FIFO_CONF_RX_RST (1u << 12)
+#define FIFO_CONF_TX_RST (1u << 13)
+
+/* ESP32-S3 opcodes; the ESP32's are different and RESTART is not 0. */
+#define CMD_RSTART 6
+#define CMD_WRITE  1
+#define CMD_READ   3
+#define CMD_STOP   2
+#define CMD_END    4
+#define CMD_DONE   (1u << 31)
+
+#define I2C_REG_COUNT  (0x1000 / 4)
+#define I2C_FIFO_DEPTH 32
+#define I2C_XFER_MAX   1024
+
+typedef struct QEMU_PACKED {
+    uint8_t addr;       /* seven-bit device address */
+    uint8_t flags;      /* bit 0: the driver asked for the ack to be checked */
+    uint16_t wlen;
+    uint16_t rlen;
+    uint16_t pad;
+} EspI2cRequest;
+
+typedef struct QEMU_PACKED {
+    uint8_t ack;        /* zero means nobody answered */
+    uint8_t pad[3];
+} EspI2cReply;
+
+struct EspI2cMaster {
+    DeviceState parent_obj;
+
+    MemoryRegion iomem;
+    char *socket_path;
+    char *region_name;
+    char *intc_type;
+    uint64_t base;
+    uint64_t size;
+    int32_t priority;
+    int32_t irq_source;
+
+    uint32_t regs[I2C_REG_COUNT];
+    uint32_t int_raw;
+
+    uint8_t txfifo[I2C_FIFO_DEPTH];
+    uint32_t tx_count;
+    uint8_t rxfifo[I2C_FIFO_DEPTH];
+    uint32_t rx_count;
+    uint32_t rx_pos;
+
+    /* Assembled across however many command lists the driver splits the
+     * transaction into: the address survives an END, only STOP ends it. */
+    int cur_addr;
+    bool addressing;
+    uint8_t pending[I2C_XFER_MAX];
+    uint32_t pending_len;
+    bool ack_check;
+    bool exchanged;     /* something already went out for this transaction */
+    uint32_t read_total;
+
+    qemu_irq irq_line;
+    int irq_level;
+    QEMUBH *irq_bh;
+    int fd;
+    bool broken;
+};
+
+static bool i2c_send_all(EspI2cMaster *s, const void *buf, size_t len)
+{
+    const uint8_t *p = buf;
+
+    while (len) {
+        ssize_t n = send(s->fd, p, len, MSG_NOSIGNAL);
+        if (n <= 0) {
+            if (n < 0 && errno == EINTR) {
+                continue;
+            }
+            return false;
+        }
+        p += n;
+        len -= n;
+    }
+    return true;
+}
+
+static bool i2c_recv_all(EspI2cMaster *s, void *buf, size_t len)
+{
+    uint8_t *p = buf;
+
+    while (len) {
+        ssize_t n = recv(s->fd, p, len, 0);
+        if (n <= 0) {
+            if (n < 0 && errno == EINTR) {
+                continue;
+            }
+            return false;
+        }
+        p += n;
+        len -= n;
+    }
+    return true;
+}
+
+static void i2c_fail(EspI2cMaster *s, const char *what)
+{
+    if (!s->broken) {
+        s->broken = true;
+        error_report("esp-i2c-master(%s): %s; the bus is inert from now on",
+                     s->region_name ? s->region_name : "?", what);
+    }
+}
+
+static void i2c_irq_bh(void *opaque)
+{
+    EspI2cMaster *s = opaque;
+    int level = (s->int_raw & s->regs[R_INT_ENA / 4]) ? 1 : 0;
+
+    if (!s->irq_line || level == s->irq_level) {
+        return;
+    }
+    s->irq_level = level;
+    qemu_set_irq(s->irq_line, level);
+}
+
+/* Deferred to a bottom half rather than raised from inside the MMIO handler.
+ *
+ * A transaction completes during the guest's own write to CTR, so raising the
+ * line there delivers the interrupt on the very next instruction -- before the
+ * driver has finished the function that started the transfer. That re-enters
+ * it, and the recursion shows up as a stack-canary trip in whichever task was
+ * unlucky, nowhere near the I2C code. The bottom half runs once the current
+ * access is done. */
+static void i2c_update_irq(EspI2cMaster *s)
+{
+    if (s->irq_bh) {
+        qemu_bh_schedule(s->irq_bh);
+    }
+}
+
+/* One exchange with the model: whatever has been written so far, plus however
+ * many bytes are wanted back. Returns false if nobody acknowledged. */
+static bool i2c_exchange(EspI2cMaster *s, uint32_t rlen)
+{
+    EspI2cRequest req;
+    EspI2cReply reply;
+
+    if (s->cur_addr < 0 || s->broken || s->fd < 0) {
+        return false;
+    }
+    if (rlen > I2C_FIFO_DEPTH) {
+        rlen = I2C_FIFO_DEPTH;
+    }
+    req.addr = (uint8_t)s->cur_addr;
+    req.flags = s->ack_check ? 1 : 0;
+    req.wlen = (uint16_t)s->pending_len;
+    req.rlen = (uint16_t)rlen;
+    req.pad = 0;
+
+    if (!i2c_send_all(s, &req, sizeof(req)) ||
+        (s->pending_len && !i2c_send_all(s, s->pending, s->pending_len)) ||
+        !i2c_recv_all(s, &reply, sizeof(reply))) {
+        i2c_fail(s, "exchange failed");
+        return false;
+    }
+    s->pending_len = 0;
+    s->exchanged = true;
+    if (rlen) {
+        if (!i2c_recv_all(s, s->rxfifo, rlen)) {
+            i2c_fail(s, "short read");
+            return false;
+        }
+        s->rx_count = rlen;
+        s->rx_pos = 0;
+    }
+    return reply.ack != 0;
+}
+
+static void i2c_execute(EspI2cMaster *s)
+{
+    bool nacked = false;
+
+    if (!(s->regs[R_CTR / 4] & CTR_MS_MODE)) {
+        s->int_raw |= INT_TRANS_COMPLETE;
+        i2c_update_irq(s);
+        return;
+    }
+    s->int_raw &= ~(INT_NACK | INT_TRANS_COMPLETE | INT_END_DETECT);
+
+    for (int slot = 0; slot < 8; slot++) {
+        uint32_t cmd = s->regs[(R_COMD0 + slot * 4) / 4];
+        uint32_t op = (cmd >> 11) & 0x7;
+        uint32_t count = cmd & 0xFF;
+
+        s->ack_check = (cmd & (1u << 8)) != 0;
+
+        switch (op) {
+        case CMD_RSTART:
+            s->addressing = true;
+            break;
+
+        case CMD_WRITE: {
+            uint32_t take = count > s->tx_count ? s->tx_count : count;
+            const uint8_t *src = s->txfifo;
+
+            if (s->addressing && take) {
+                s->cur_addr = src[0] >> 1;
+                s->addressing = false;
+                src++;
+                take--;
+            }
+            if (take && s->pending_len + take <= I2C_XFER_MAX) {
+                memcpy(s->pending + s->pending_len, src, take);
+                s->pending_len += take;
+            }
+            /* Consume what the command claimed, not what we used. */
+            if (count >= s->tx_count) {
+                s->tx_count = 0;
+            } else {
+                memmove(s->txfifo, s->txfifo + count, s->tx_count - count);
+                s->tx_count -= count;
+            }
+            break;
+        }
+
+        case CMD_READ:
+            /* Accumulated, not exchanged here. A driver reading n bytes emits
+             * two READ commands -- n-1 acknowledged and the last one not -- and
+             * exchanging on each would ask the device for two separate replies,
+             * so it would answer the second from a freshly built one. One
+             * transaction is one question. */
+            s->read_total += count;
+            break;
+
+        case CMD_STOP:
+            /* Only speak if there is something left to say. A read has already
+             * been exchanged; an address-only probe -- which is what a bus scan
+             * is -- has not, and its whole purpose is to see the acknowledgement.
+             */
+            if (s->pending_len || s->read_total || !s->exchanged) {
+                if (!i2c_exchange(s, s->read_total)) {
+                    nacked = true;
+                }
+            }
+            s->cur_addr = -1;
+            s->pending_len = 0;
+            s->read_total = 0;
+            s->exchanged = false;
+            s->regs[(R_COMD0 + slot * 4) / 4] |= CMD_DONE;
+            s->int_raw |= INT_TRANS_COMPLETE;
+            goto done;
+
+        case CMD_END:
+            /* The driver refills the command list and starts again; the address
+             * and anything pending carry over. Reads must be satisfied now
+             * though: it will look at the FIFO before refilling. */
+            if (s->read_total) {
+                if (!i2c_exchange(s, s->read_total)) {
+                    nacked = true;
+                }
+                s->read_total = 0;
+            }
+            s->regs[(R_COMD0 + slot * 4) / 4] |= CMD_DONE;
+            s->int_raw |= INT_END_DETECT;
+            goto done;
+
+        default:
+            break;
+        }
+
+        s->regs[(R_COMD0 + slot * 4) / 4] |= CMD_DONE;
+        if (nacked) {
+            break;
+        }
+    }
+    if (!(s->int_raw & (INT_TRANS_COMPLETE | INT_END_DETECT))) {
+        s->int_raw |= INT_TRANS_COMPLETE;
+    }
+done:
+    if (nacked) {
+        s->int_raw |= INT_NACK | INT_TRANS_COMPLETE;
+        s->cur_addr = -1;
+        s->pending_len = 0;
+        s->read_total = 0;
+        s->exchanged = false;
+    }
+    if (s->rx_count > s->rx_pos) {
+        s->int_raw |= INT_RXFIFO_WM;
+    }
+    i2c_update_irq(s);
+}
+
+static uint64_t i2c_read(void *opaque, hwaddr offset, unsigned size)
+{
+    EspI2cMaster *s = opaque;
+
+    if (offset >= RXFIFO_BASE && offset < RXFIFO_BASE + I2C_FIFO_DEPTH) {
+        uint32_t i = offset - RXFIFO_BASE;
+        return i < s->rx_count ? s->rxfifo[i] : 0;
+    }
+    if (offset >= TXFIFO_BASE && offset < TXFIFO_BASE + I2C_FIFO_DEPTH) {
+        return 0;
+    }
+    switch (offset) {
+    case R_DATA:
+        return s->rx_pos < s->rx_count ? s->rxfifo[s->rx_pos++] : 0;
+    case R_INT_RAW:
+        return s->int_raw;
+    case R_INT_STATUS:
+        return s->int_raw & s->regs[R_INT_ENA / 4];
+    case R_FIFO_ST:
+        return ((s->rx_count - s->rx_pos) & 0x3F) << 8 | (s->tx_count & 0x3F) << 18;
+    case R_SR:
+        /* Transactions complete inside the TRANS_START write, so the bus is
+         * always idle by the time the guest looks. */
+        return 0;
+    case R_DATE:
+        return 0x19071700;
+    default:
+        return offset / 4 < I2C_REG_COUNT ? s->regs[offset / 4] : 0;
+    }
+}
+
+static void i2c_write(void *opaque, hwaddr offset, uint64_t val, unsigned size)
+{
+    EspI2cMaster *s = opaque;
+    uint32_t value = (uint32_t)val;
+
+    if (offset >= TXFIFO_BASE && offset < TXFIFO_BASE + I2C_FIFO_DEPTH) {
+        if (s->tx_count < I2C_FIFO_DEPTH) {
+            s->txfifo[s->tx_count++] = value & 0xFF;
+        }
+        return;
+    }
+    if (offset >= RXFIFO_BASE && offset < RXFIFO_BASE + I2C_FIFO_DEPTH) {
+        return;
+    }
+    switch (offset) {
+    case R_DATA:
+        if (s->tx_count < I2C_FIFO_DEPTH) {
+            s->txfifo[s->tx_count++] = value & 0xFF;
+        }
+        return;
+    case R_INT_CLR:
+        s->int_raw &= ~value;
+        i2c_update_irq(s);
+        return;
+    case R_INT_ENA:
+        s->regs[R_INT_ENA / 4] = value;
+        i2c_update_irq(s);
+        return;
+    case R_FIFO_CONF:
+        if (value & FIFO_CONF_TX_RST) {
+            s->tx_count = 0;
+        }
+        if (value & FIFO_CONF_RX_RST) {
+            s->rx_count = s->rx_pos = 0;
+        }
+        s->regs[offset / 4] = value;
+        return;
+    case R_CTR:
+        /* TRANS_START, FSM_RST and CONF_UPGATE are self-clearing triggers.
+         * Storing them makes the driver's own read-modify-write re-fire the
+         * transaction, which corrupts the FIFOs. */
+        s->regs[R_CTR / 4] =
+            value & ~(CTR_TRANS_START | CTR_FSM_RST | CTR_CONF_UPGATE);
+        if (value & CTR_FSM_RST) {
+            s->tx_count = s->rx_count = s->rx_pos = 0;
+        }
+        if (value & CTR_TRANS_START) {
+            i2c_execute(s);
+        }
+        return;
+    default:
+        if (offset / 4 < I2C_REG_COUNT) {
+            s->regs[offset / 4] = value;
+        }
+        return;
+    }
+}
+
+static const MemoryRegionOps i2c_ops = {
+    .read = i2c_read,
+    .write = i2c_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid.min_access_size = 1,
+    .valid.max_access_size = 4,
+    .impl.min_access_size = 1,
+    .impl.max_access_size = 4,
+};
+
+static void i2c_realize(DeviceState *dev, Error **errp)
+{
+    EspI2cMaster *s = ESP_I2C_MASTER(dev);
+    struct sockaddr_un addr;
+
+    if (!s->socket_path) {
+        error_setg(errp, "esp-i2c-master: 'socket' property is required");
+        return;
+    }
+    if (strlen(s->socket_path) >= sizeof(addr.sun_path)) {
+        error_setg(errp, "esp-i2c-master: socket path too long");
+        return;
+    }
+    if (s->irq_source >= 0) {
+        Object *intc = object_resolve_path_type("", s->intc_type, NULL);
+        if (!intc) {
+            error_setg(errp, "esp-i2c-master: no '%s' in the machine",
+                       s->intc_type);
+            return;
+        }
+        s->irq_line = qdev_get_gpio_in(DEVICE(intc), s->irq_source);
+        s->irq_bh = qemu_bh_new(i2c_irq_bh, s);
+    }
+
+    s->fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (s->fd < 0) {
+        error_setg_errno(errp, errno, "esp-i2c-master: socket()");
+        return;
+    }
+    memset(&addr, 0, sizeof(addr));
+    addr.sun_family = AF_UNIX;
+    pstrcpy(addr.sun_path, sizeof(addr.sun_path), s->socket_path);
+    if (connect(s->fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+        error_setg_errno(errp, errno, "esp-i2c-master: connect(%s)",
+                         s->socket_path);
+        close(s->fd);
+        s->fd = -1;
+        return;
+    }
+
+    memory_region_init_io(&s->iomem, OBJECT(s), &i2c_ops, s,
+                          s->region_name ? s->region_name : TYPE_ESP_I2C_MASTER,
+                          s->size);
+    memory_region_add_subregion_overlap(get_system_memory(), s->base,
+                                        &s->iomem, s->priority);
+}
+
+static Property i2c_props[] = {
+    DEFINE_PROP_STRING("socket", EspI2cMaster, socket_path),
+    DEFINE_PROP_STRING("name", EspI2cMaster, region_name),
+    DEFINE_PROP_STRING("intc", EspI2cMaster, intc_type),
+    DEFINE_PROP_UINT64("base", EspI2cMaster, base, 0x60013000),
+    DEFINE_PROP_UINT64("size", EspI2cMaster, size, 0x1000),
+    DEFINE_PROP_INT32("priority", EspI2cMaster, priority, 100),
+    DEFINE_PROP_INT32("irq", EspI2cMaster, irq_source, -1),
+    DEFINE_PROP_END_OF_LIST(),
+};
+
+static void i2c_instance_init(Object *obj)
+{
+    EspI2cMaster *s = ESP_I2C_MASTER(obj);
+
+    s->intc_type = g_strdup("misc.esp32s3.intmatrix");
+    s->irq_level = -1;
+    s->fd = -1;
+    s->cur_addr = -1;
+}
+
+static void i2c_class_init(ObjectClass *klass, void *data)
+{
+    DeviceClass *dc = DEVICE_CLASS(klass);
+
+    dc->realize = i2c_realize;
+    dc->user_creatable = true;
+    device_class_set_props(dc, i2c_props);
+}
+
+static const TypeInfo i2c_info = {
+    .name = TYPE_ESP_I2C_MASTER,
+    .parent = TYPE_DEVICE,
+    .instance_size = sizeof(EspI2cMaster),
+    .instance_init = i2c_instance_init,
+    .class_init = i2c_class_init,
+};
+
+static void i2c_register_types(void)
+{
+    type_register_static(&i2c_info);
+}
+
+type_init(i2c_register_types)

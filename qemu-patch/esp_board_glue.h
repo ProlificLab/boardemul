@@ -15,6 +15,7 @@
 
 #define TYPE_ESP_GPIO_BLOCK "esp-gpio-block"
 #define TYPE_ESP_SPI_MASTER "esp-spi-master"
+#define TYPE_ESP_I2C_MASTER "esp-i2c-master"
 
 /*
  * Current level of one pin, output or externally driven. Returns 0 for a pin
