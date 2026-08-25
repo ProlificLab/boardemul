@@ -2,7 +2,9 @@
 """GDEQ031T10 e-paper panel, 320x240, 1 bit per pixel.
 
 The panel is driven over SPI2 with chip-select and data/command on ordinary
-GPIOs, so this needs the GPIO tracker to tell a command byte from a pixel byte.
+GPIOs. Both are read by the in-QEMU controller (ADR 0011), which batches on
+chip-select and hands over a whole segment at a time -- so what arrives here is
+a command, or a run of pixel bytes, rather than a stream of single transfers.
 
 Rather than hard-coding one controller's command set, the model watches for a
 full frame's worth of data to accumulate and renders on the next refresh
@@ -17,8 +19,7 @@ import struct
 import zlib
 from pathlib import Path
 
-from emu.peripherals.gpio import GpioOut
-from emu.peripherals.spi import SPIDevice
+from emu.spi_link import SpiDevice
 
 log = logging.getLogger("epd")
 
@@ -29,11 +30,6 @@ WIDTH = 240
 HEIGHT = 320
 ROW_BYTES = WIDTH // 8
 FRAME_BYTES = ROW_BYTES * HEIGHT
-
-# Pins, from lib/TDeckMaxBoard/src/TDeckMaxBoard.h
-PIN_CS = 34
-PIN_DC = 35
-PIN_RST = 9
 
 # Observed on the wire: this panel is a UC825x-family controller, not the
 # SSD16xx the 0x24/0x26 command pair would imply. 0x10 carries the previous
@@ -99,11 +95,10 @@ def _rotate(pixels: bytearray, w: int, h: int, quarter_turns: int) -> tuple[int,
     return h, w, out
 
 
-class EPaperPanel(SPIDevice):
+class EPaperPanel(SpiDevice):
     name = "GDEQ031T10"
 
-    def __init__(self, gpio: GpioOut, outdir: Path, quarter_turns: int = 1):
-        self.gpio = gpio
+    def __init__(self, outdir: Path, quarter_turns: int = 0):
         self.quarter_turns = quarter_turns
         self.outdir = Path(outdir)
         self.outdir.mkdir(parents=True, exist_ok=True)
@@ -116,19 +111,14 @@ class EPaperPanel(SPIDevice):
         self.dirty = False
         self.latest: Path | None = None
 
-    def selected(self) -> bool:
-        return self.gpio.pin(PIN_CS) == 0   # active low
-
-    def _is_command(self) -> bool:
-        return self.gpio.pin(PIN_DC) == 0
-
-    def transfer(self, data: bytes) -> bytes:
-        if self._is_command():
+    def on_segment(self, dc: int, data: bytes, duplex: bool) -> bytes | None:
+        if dc == 0:
             for b in data:
                 self._on_command(b)
         else:
             self._on_data(data)
-        return b"\x00" * len(data)
+        # The panel drives nothing back on MISO; a duplex read gets zeros.
+        return bytes(len(data)) if duplex else None
 
     def _on_command(self, cmd: int) -> None:
         self.command = cmd

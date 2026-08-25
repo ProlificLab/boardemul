@@ -1,29 +1,32 @@
 #!/usr/bin/env python3
-"""The T-Deck Max as a set of intercepted MMIO windows.
+"""The T-Deck Max: which windows QEMU handles, which we do, and what is wired up.
 
-Only windows the fork does not already model belong here. Anything QEMU handles
-correctly -- UART, timers, eFuse, SHA -- is deliberately left alone (ADR 0005
-decision 4).
+The split follows ADR 0011. SoC silicon -- GPIO and the SPI master -- runs in C
+inside QEMU, because chip-select has to be readable on every transfer and
+because a register-level bridge costs 232,320 round trips per display frame.
+Everything board-specific -- the panel, the I2C devices -- stays here in Python,
+where a wrong assumption is a one-line edit rather than a rebuild.
 """
 
 from __future__ import annotations
 
 import logging
 import os
-import time
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from emu.bus import BusServer, Region
 from emu.devices.epaper import EPaperPanel
 from emu.devices.i2c_devices import CST328, TCA8418, tdeck_max_devices
 from emu.inputs import InputTail
-from emu.peripherals.gpio import GpioInputs, GpioOut
+from emu.peripherals.gpio import GpioClient
 from emu.peripherals.i2c import I2CController, I2CDevice
-from emu.peripherals.spi import SPIController
+from emu.spi_link import SpiServer
 
 log = logging.getLogger("board")
 
 # ESP32-S3 peripheral bases, from components/soc/esp32s3/include/soc/reg_base.h
+GPIO_BASE = 0x60004000
 I2C0_BASE = 0x60013000
 I2C1_BASE = 0x60027000
 SPI0_BASE = 0x60003000
@@ -32,21 +35,15 @@ SPI3_BASE = 0x60025000
 
 # Interrupt source numbers, from periph_defs.h for esp32s3.
 IRQ_GPIO = 16
-IRQ_SPI2 = 21
 IRQ_I2C_EXT0 = 42
 IRQ_I2C_EXT1 = 43
 
 # Board pins, from lib/TDeckMaxBoard/src/TDeckMaxBoard.h
+EPD_CS_PIN = 34
+EPD_DC_PIN = 35
 EPD_BUSY_PIN = 37
 KEYBOARD_INT_PIN = 15
 TOUCH_INT_PIN = 12
-
-# The real panel reports at roughly 100 Hz while a finger is down. Guest time
-# runs about an order of magnitude slower than wall clock here, so the wall
-# interval has to be stretched to match -- at 10 ms the guest sees an interrupt
-# every emulated millisecond and the ISR starves the UI loop that would service
-# it.
-TOUCH_REPORT_INTERVAL = 0.1
 
 # Peripheral windows the fork leaves to its catch-all region. Claiming them
 # changes no behaviour on its own -- reads still return what was last written --
@@ -58,21 +55,9 @@ UNMODELLED = {
     "lcd_cam": 0x60041000,
     "uhci": 0x60014000,
     "pcnt": 0x60017000,
+    "spi0": SPI0_BASE,
+    "spi3": SPI3_BASE,
 }
-
-
-def i2c_devices() -> list[I2CDevice]:
-    """Addresses are the vendor's own, from lib/TDeckMaxBoard/src/TDeckMaxBoard.h.
-
-    BOARDEMUL_I2C restricts the set to a comma-separated list of hex addresses,
-    which is how you find out which device's answers a driver actually chokes on.
-    """
-    devices = tdeck_max_devices()
-    only = os.environ.get("BOARDEMUL_I2C")
-    if only:
-        wanted = {int(a, 16) for a in only.replace(" ", "").split(",") if a}
-        devices = [d for d in devices if d.address in wanted]
-    return devices
 
 
 class TraceRegion(Region):
@@ -93,55 +78,87 @@ class TraceRegion(Region):
         self.regs[offset] = value
 
 
-def build_regions(outdir: Path) -> list[Region]:
-    gpio_out = GpioOut()
-    # BUSY idles high on this panel; left undriven it reads low and every
-    # wait-while-busy loop in the driver spins forever.
-    # No per-access irq here: GPIO interrupts are pushed out of band,
-    # because the guest only touches this window from inside the handler
-    # the interrupt is supposed to start.
-    gpio_in = GpioInputs(gpio_out, static_high={EPD_BUSY_PIN})
-    panel = EPaperPanel(gpio_out, Path(outdir) / "frames",
+def i2c_devices() -> list[I2CDevice]:
+    """Addresses are the vendor's own, from lib/TDeckMaxBoard/src/TDeckMaxBoard.h.
+
+    BOARDEMUL_I2C restricts the set to a comma-separated list of hex addresses,
+    which is how you find out which device's answers a driver actually chokes on.
+    """
+    devices = tdeck_max_devices()
+    only = os.environ.get("BOARDEMUL_I2C")
+    if only:
+        wanted = {int(a, 16) for a in only.replace(" ", "").split(",") if a}
+        devices = [d for d in devices if d.address in wanted]
+    return devices
+
+
+@dataclass
+class Board:
+    regions: list[Region]
+    gpio: GpioClient
+    spi: SpiServer
+    panel: EPaperPanel
+    devices: list[str] = field(default_factory=list)
+
+    def start(self) -> None:
+        self.gpio.start()
+        self.spi.start()
+        # BUSY idles high on this panel. Set before QEMU connects; the client
+        # replays it on connect, so the line is right from the first fetch.
+        self.gpio.drive(EPD_BUSY_PIN, 1)
+
+    def stop(self) -> None:
+        self.spi.stop()
+        self.gpio.stop()
+
+    def qemu_args(self) -> list[str]:
+        args: list[str] = []
+        for spec in self.devices:
+            args += ["-device", spec]
+        return args
+
+
+def build(outdir: Path) -> Board:
+    outdir = Path(outdir)
+    panel = EPaperPanel(outdir / "frames",
                         quarter_turns=int(os.environ.get("BOARDEMUL_ROTATE", "0")))
-    return [
+    gpio = GpioClient(outdir / "gpio.sock")
+    spi = SpiServer(outdir / "spi2.sock", panel)
+
+    regions: list[Region] = [
         I2CController("i2c0", I2C0_BASE, i2c_devices(), irq=IRQ_I2C_EXT0),
         I2CController("i2c1", I2C1_BASE, [], irq=IRQ_I2C_EXT1),
-        gpio_out,
-        gpio_in,
-        # SPI2 carries both the panel and the LoRa radio, distinguished by
-        # chip-select. Only the panel is modelled so far, and it checks its own
-        # CS, so radio traffic is simply ignored rather than misread.
-        SPIController("spi2", SPI2_BASE, [panel]),
-        TraceRegion("spi0", SPI0_BASE),
-        TraceRegion("spi3", SPI3_BASE),
     ] + [TraceRegion(n, b) for n, b in UNMODELLED.items()]
+
+    # GPIO is declared first: the SPI master registers a chip-select watch when
+    # it is realized, and -device instances are realized in command-line order.
+    devices = [
+        f"esp-gpio-block,base=0x{GPIO_BASE:x},irq={IRQ_GPIO},"
+        f"socket={gpio.socket_path}",
+        f"esp-spi-master,name=spi2,base=0x{SPI2_BASE:x},"
+        # The panel drives nothing back, so duplex transfers need no round trip.
+        f"cs_gpio={EPD_CS_PIN},dc_gpio={EPD_DC_PIN},miso=off,"
+        f"socket={spi.socket_path}",
+    ]
+    return Board(regions=regions, gpio=gpio, spi=spi, panel=panel, devices=devices)
 
 
 def find(regions: list[Region], kind: type) -> Region | None:
     return next((r for r in regions if isinstance(r, kind)), None)
 
 
-def attach_input(server: BusServer, regions: list[Region], outdir: Path,
-                 irq_channel=None) -> InputTail:
+def attach_input(server: BusServer, board: Board, outdir: Path) -> InputTail:
     """Route host input events to the devices that report them.
 
-    The firmware waits on GPIO interrupts rather than polling, so delivering an
-    event means both giving the device something to report and raising its
-    interrupt line (ADR 0010).
+    The touch controller waits on a GPIO interrupt rather than polling, so
+    delivering a touch means both giving it something to report and producing an
+    edge. The keyboard is the opposite: it is polled, and nothing listens on its
+    interrupt line at all (ADR 0010).
     """
     tail = InputTail(Path(outdir) / "input.jsonl")
-    gpio: GpioInputs | None = find(regions, GpioInputs)
-    if gpio is not None and irq_channel is not None:
-        gpio.on_irq = lambda level: irq_channel.set(IRQ_GPIO, level)
-    i2c0 = find(regions, I2CController)
+    i2c0 = find(board.regions, I2CController)
     keypad = i2c0.devices.get(0x34) if isinstance(i2c0, I2CController) else None
     touch = i2c0.devices.get(0x1A) if isinstance(i2c0, I2CController) else None
-
-    # A real panel raises a new data-ready interrupt for every frame it
-    # captures, so a held finger produces a continuous stream of edges. Firing
-    # once per event instead makes the press visible to LVGL for a single read,
-    # which is too brief to become a click.
-    held = {"since": 0.0}
 
     def pump() -> None:
         for event in tail.drain():
@@ -154,27 +171,12 @@ def attach_input(server: BusServer, regions: list[Region], outdir: Path,
                 down = bool(event.get("down", True))
                 touch.touch = ((int(event.get("x", 0)), int(event.get("y", 0)))
                                if down else None)
-                # The report is only read if an edge fired, so the edge has to
-                # come after the coordinate is in place, not before.
-                if gpio is not None:
-                    gpio.pulse_low(TOUCH_INT_PIN)
+                # The edge has to follow the coordinate, not precede it: the
+                # driver reads the report only because an edge fired.
+                board.gpio.pulse_low(TOUCH_INT_PIN)
             else:
                 log.warning("unknown input event %r", event)
-
-        if isinstance(touch, CST328) and touch.touch is not None and gpio is not None:
-            now = time.monotonic()
-            if now - held["since"] >= TOUCH_REPORT_INTERVAL:
-                held["since"] = now
-                gpio.pulse_low(TOUCH_INT_PIN)
-
-        # The INT line follows the FIFO rather than being pulsed: the driver
-        # drains events until the controller stops asserting, so releasing the
-        # line is what ends its read loop. Both controllers signal active-low.
-        if keypad is not None and gpio is not None:
-            gpio.drive(KEYBOARD_INT_PIN, 0 if keypad.pending else 1)
 
     server.pumps.append(pump)
     tail.start()
     return tail
-
-

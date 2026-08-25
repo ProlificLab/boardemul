@@ -204,18 +204,20 @@ def main(argv: list[str] | None = None) -> int:
     server: BusServer | None = None
     tail = None
     irq: IrqChannel | None = None
+    hw: board.Board | None = None
     if args.bus:
         logging.basicConfig(filename=args.outdir / f"{tag}.bus.log", filemode="w",
                             level=logging.DEBUG if args.verbose else logging.INFO,
                             format="%(name)s %(message)s")
-        regions = board.build_regions(args.outdir)
-        server = BusServer(args.outdir / f"{tag}.bus.sock", regions)
+        hw = board.build(args.outdir)
+        hw.start()
+        server = BusServer(args.outdir / f"{tag}.bus.sock", hw.regions)
         irq = IrqChannel(args.outdir / f"{tag}.irq.sock")
         irq.start()
         server.irq_channel = irq
-        tail = board.attach_input(server, regions, args.outdir, irq)
+        tail = board.attach_input(server, hw, args.outdir)
         server.start()
-        cmd += server.qemu_args(irq.socket_path)
+        cmd += server.qemu_args(irq.socket_path) + hw.qemu_args()
 
     print(f"\nqemu    : {qemu}")
     print(f"trace   : {'on (slow)' if args.trace else 'off'}")
@@ -225,12 +227,14 @@ def main(argv: list[str] | None = None) -> int:
         reason, wall = run_qemu(cmd, uart, args.timeout, args.stall, server)
     finally:
         if server:
-            _report_bus(server, tail, irq)
+            _report_bus(server, tail, irq, hw)
             server.stop()
         if tail:
             tail.stop()
         if irq:
             irq.stop()
+        if hw:
+            hw.stop()
 
     result = RunResult(
         qemu_version=qemu_version(qemu),
@@ -260,25 +264,22 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
-def _report_bus(server: BusServer, tail=None, irq=None) -> None:
-    from emu.devices.epaper import EPaperPanel
-    from emu.peripherals.gpio import GpioInputs, GpioOut
+def _report_bus(server: BusServer, tail=None, irq=None, hw=None) -> None:
     from emu.devices.i2c_devices import CST328, TCA8418
     from emu.peripherals.i2c import I2CController
-    from emu.peripherals.spi import SPIController
 
-    print(f"\n--- bus " + "-" * 52)
-    print(f"  {server.accesses} access(es), {server.unclaimed} outside any region")
-    if server.wall:
-        print(f"  {server.accesses / server.wall:,.0f} access/s over "
-              f"{server.wall:.0f}s")
-    if tail is not None:
-        print(f"  input: {tail.delivered} event(s) delivered"
-              + (f", {tail.malformed} malformed" if tail.malformed else ""))
-    if irq is not None:
-        print(f"  irq channel: {irq.sent} level change(s) pushed")
+    if hw is not None:
+        print(f"  spi2: {hw.spi.segments} segment(s), {hw.spi.bytes_in} byte(s) in"
+              + (f"  ({hw.spi.bytes_in / hw.spi.segments:.0f} bytes/segment)"
+                 if hw.spi.segments else ""))
+        print(f"    {hw.panel.summary()}")
+        if hw.panel.latest:
+            print(f"    latest frame: {hw.panel.latest}")
+        print(f"  gpio: {hw.gpio.sent} pin level(s) driven from the host")
+
     for region in server.regions:
         if isinstance(region, I2CController):
+            print(f"  {region.name}: {region.transactions} transaction(s)")
             for dev in region.devices.values():
                 if isinstance(dev, CST328) and (dev.reports or dev.acks):
                     print(f"    CST328: {dev.reports} report(s) read, "
@@ -286,41 +287,9 @@ def _report_bus(server: BusServer, tail=None, irq=None) -> None:
                 elif isinstance(dev, TCA8418) and dev.pending:
                     print(f"    TCA8418: {len(dev.pending)} event(s) still queued")
             probed = sorted(region.acks | region.nacks)
-            print(f"  {region.name}: {region.transactions} transaction(s)")
-            if region.history:
-                print("    recent transactions (addr dir bytes):")
-                for addr, direction, data in list(region.history)[-16:]:
-                    print(f"      0x{addr:02x} {direction} "
-                          + " ".join(f"{b:02x}" for b in data))
             if probed:
-                print(f"    addresses probed : "
-                      + " ".join(f"0x{a:02x}" for a in probed))
-                print(f"    acked            : "
+                print(f"    acked: "
                       + (" ".join(f"0x{a:02x}" for a in sorted(region.acks)) or "none"))
-    for region in server.regions:
-        if isinstance(region, SPIController):
-            per_byte = (region.accesses / region.bytes_out) if region.bytes_out else 0
-            print(f"  {region.name}: {region.transfers} transfer(s), "
-                  f"{region.bytes_out} byte(s) out, "
-                  f"{region.accesses} access(es) "
-                  f"({per_byte:.1f} per byte)")
-            for dev in region.devices:
-                if isinstance(dev, EPaperPanel):
-                    print(f"    {dev.summary()}")
-                    if dev.latest:
-                        print(f"    latest frame: {dev.latest}")
-        elif isinstance(region, GpioOut):
-            print(f"  {region.name}: {region.changes} level change(s), "
-                  f"CS34={region.pin(34)} DC35={region.pin(35)} RST9={region.pin(9)}")
-        elif isinstance(region, GpioInputs):
-            enabled = [p for p in sorted(region.pin_cfg)
-                       if (region.pin_cfg[p] >> 13) & 1]
-            print(f"  {region.name}: {region.interrupts} interrupt(s) latched, "
-                  f"{region.status_reads} status read(s), "
-                  f"{region.status_clears} clear(s) by the guest")
-            print(f"    pins with CPU interrupt enabled: "
-                  + (" ".join(str(p) for p in enabled) or "none")
-                  + f"   status now 0x{region.status:x}")
     if server.recent:
         print("  last accesses (the tail is what it is stuck on):")
         for op, addr, size, value in list(server.recent)[-12:]:
