@@ -20,6 +20,7 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-ins
         pkg-config \
         python3 \
         python3-pip \
+        python3-pytest \
         python3-venv \
         xz-utils \
         zlib1g-dev \
