@@ -15,6 +15,7 @@ resolution besides.
 from __future__ import annotations
 
 import argparse
+import json
 import math
 import sys
 import time
@@ -23,6 +24,10 @@ import tkinter.font as tkfont
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+# Launched as a script rather than as a module, so the package root has to be
+# put on the path before importing from it.
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 DEFAULT_FRAMES = REPO_ROOT / "logs" / "frames"
 
@@ -30,38 +35,15 @@ DEFAULT_FRAMES = REPO_ROOT / "logs" / "frames"
 # enough that the stat() call is free.
 POLL_MS = 250
 
-# The firmware draws the launcher upright on the panel's native raster, so the
-# PNG on disk is portrait and so is the device: screen on top, keyboard under
-# it, in a tall narrow body.
-SCREEN_W, SCREEN_H = 240, 320
-
-# Body geometry in panel pixels, so that --scale multiplies the whole device and
-# the screen stays pixel-exact at every setting.
-DESK = 14          # empty space around the body, for the drop shadow
-SIDE = 20          # body edge to screen edge
-HEAD = 26          # body top to screen top: grille, brand, indicator
-GAP = 14           # screen bezel to keyboard; must clear BEZEL + the plate ring
-KEYPAD_H = 96
-FOOT = 12
-BEZEL = 7          # width of the recess ring around the glass
-RADIUS = 22        # shell corner radius
-
-# The keyboard is the full four-row QWERTY, with the trackball and its two keys
-# in a column to its right rather than beside the screen, as on the hardware.
-KB_INSET = 14      # body edge to keyboard block
-BALL_COL = 38
-BALL_GAP = 6
-
-BODY_W = SCREEN_W + 2 * SIDE
-BODY_H = HEAD + SCREEN_H + GAP + KEYPAD_H + FOOT
-CANVAS_W = BODY_W + 2 * DESK
-CANVAS_H = BODY_H + 2 * DESK
-
-SCREEN_X = DESK + SIDE
-SCREEN_Y = DESK + HEAD
-BODY_X0, BODY_Y0 = DESK, DESK
-BODY_X1, BODY_Y1 = DESK + BODY_W, DESK + BODY_H
-BODY_CX = DESK + BODY_W // 2
+# Layout, key matrix and the input protocol live in emu/skin.py: they are
+# arithmetic and data, and keeping them out of here lets the tests import
+# them on a machine with no display.
+from emu.skin import (  # noqa: E402
+    BALL_COL, BALL_GAP, BEZEL, BODY_CX, BODY_H, BODY_W, BODY_X0, BODY_X1,
+    BODY_Y0, BODY_Y1, CANVAS_H, CANVAS_W, DESK, FOOT, GAP, HEAD, KB_INSET,
+    KEY_NAMES, KEY_ROWS, KEYPAD_H, KEYSYMS, LETTER_KEYS, RADIUS, SCREEN_H,
+    SCREEN_W, SCREEN_X, SCREEN_Y, SIDE, InputWriter, panel_point,
+)
 
 # Lit from the top left throughout: highlights go on top and left edges,
 # shadows on bottom and right. Consistency is what sells the depth, since
@@ -87,16 +69,6 @@ C_LED = "#5fbf6a"
 
 # Ten columns across, spans in column units. Labels are the T-Deck's BlackBerry
 # keyboard; they are decoration, as nothing here feeds input back to the guest.
-KEY_ROWS = (
-    (("Q", 1), ("W", 1), ("E", 1), ("R", 1), ("T", 1),
-     ("Y", 1), ("U", 1), ("I", 1), ("O", 1), ("P", 1)),
-    (("A", 1), ("S", 1), ("D", 1), ("F", 1), ("G", 1),
-     ("H", 1), ("J", 1), ("K", 1), ("L", 1), ("DEL", 1)),
-    (("SYM", 1), ("Z", 1), ("X", 1), ("C", 1), ("V", 1),
-     ("B", 1), ("N", 1), ("M", 1), (",", 1), (".", 1)),
-    (("ALT", 1), ("SHF", 1), ("SPACE", 5), ("/", 1), ("ENT", 2)),
-)
-LETTER_KEYS = set("QWERTYUIOPASDFGHJKLZXCVBNM,./")
 
 
 def _family(root: tk.Misc, *names: str) -> str:
@@ -126,10 +98,15 @@ def _round_rect(canvas: tk.Canvas, x0: float, y0: float, x1: float, y1: float,
 class DeckWindow:
     """The window: a drawn shell, plus whatever the panel last wrote."""
 
-    def __init__(self, root: tk.Tk, path: Path, scale: int):
+    def __init__(self, root: tk.Tk, path: Path, scale: int,
+                 events: "InputWriter | None" = None):
         self.root = root
         self.path = path
         self.scale = scale
+        self.events = events
+        self.key_hits: list[tuple[float, float, float, float, str]] = []
+        self.pressed: int | None = None
+        self.touching = False
         self.frames = 0
         self.stamp: tuple[int, int] | None = None
         self.photo: tk.PhotoImage | None = None
@@ -154,8 +131,100 @@ class DeckWindow:
 
         self._draw_shell()
         self._show_idle()
+        self._bind_input()
         self._refresh_status()
         self._poll()
+
+    # -- input -----------------------------------------------------------
+
+    def _bind_input(self) -> None:
+        if self.events is None:
+            return
+        self.canvas.bind("<Button-1>", self._on_press)
+        self.canvas.bind("<B1-Motion>", self._on_drag)
+        self.canvas.bind("<ButtonRelease-1>", self._on_release)
+        self.root.bind("<KeyPress>", self._on_keypress)
+        self.root.bind("<KeyRelease>", self._on_keyrelease)
+
+    def _panel_point(self, x: float, y: float) -> tuple[int, int] | None:
+        return panel_point(x, y, self.scale)
+
+    def _key_at(self, x: float, y: float) -> str | None:
+        ux, uy = x / self.scale, y / self.scale
+        for x0, y0, x1, y1, label in self.key_hits:
+            if x0 <= ux <= x1 and y0 <= uy <= y1:
+                return label
+        return None
+
+    def _on_press(self, event: "tk.Event") -> None:
+        point = self._panel_point(event.x, event.y)
+        if point is not None:
+            self.touching = True
+            self.events.touch(*point)
+            return
+        label = self._key_at(event.x, event.y)
+        if label is not None:
+            self._flash(label, True)
+            self.events.key(KEY_NAMES.get(label, label), True)
+
+    def _on_drag(self, event: "tk.Event") -> None:
+        if not self.touching:
+            return
+        point = self._panel_point(event.x, event.y)
+        if point is not None:
+            self.events.touch(*point)
+
+    def _on_release(self, _event: "tk.Event") -> None:
+        if self.touching:
+            self.touching = False
+            self.events.release()
+        if self.pressed is not None:
+            label = self._flash(None, False)
+            if label:
+                self.events.key(KEY_NAMES.get(label, label), False)
+
+    def _on_keypress(self, event: "tk.Event") -> None:
+        name = self._keysym(event)
+        if name:
+            self.events.key(name, True)
+            self._flash(name if name != "ENTER" else "ENT", True)
+
+    def _on_keyrelease(self, event: "tk.Event") -> None:
+        name = self._keysym(event)
+        if name:
+            self.events.key(name, False)
+            self._flash(None, False)
+
+    @staticmethod
+    def _keysym(event: "tk.Event") -> str | None:
+        if event.keysym in KEYSYMS:
+            return KEYSYMS[event.keysym]
+        if len(event.char) == 1 and event.char.upper() in LETTER_KEYS:
+            return event.char.upper()
+        return None
+
+    def _flash(self, label: str | None, down: bool) -> str | None:
+        """Light the cap while it is held, so a click has a visible effect even
+        before the panel refreshes -- which on e-paper takes a second."""
+        if self.pressed is not None:
+            self.canvas.delete(self.pressed)
+            self.pressed = None
+        held = getattr(self, "_held_label", None)
+        if not down:
+            self._held_label = None
+            return held
+        for x0, y0, x1, y1, name in self.key_hits:
+            if name == label:
+                self.pressed = self._rr(x0, y0, x1, y1, 3,
+                                        fill=C_KEY_LIT, outline="")
+                self.canvas.tag_raise(self.pressed)
+                self._text((x0 + x1) / 2, (y0 + y1) / 2, name,
+                           9 if name in LETTER_KEYS else 5.5, C_DESK,
+                           bold=name in LETTER_KEYS)
+                self._held_label = name
+                return name
+        self._held_label = label
+        return label
 
     # -- geometry helpers ------------------------------------------------
     # Everything below lays out in panel pixels and converts on the way to the
@@ -287,6 +356,7 @@ class DeckWindow:
             self._oval(ball_cx, cy + dy - 0.8, 5, fill="#333940", outline="")
 
     def _key(self, x0: float, y0: float, x1: float, y1: float, label: str) -> None:
+        self.key_hits.append((x0, y0, x1, y1, label))
         self._rr(x0, y0 + 1.2, x1, y1 + 1.2, 3, fill=C_KEY_DIM, outline="")
         self._rr(x0, y0, x1, y1, 3, fill=C_KEY, outline="#1b1f22")
         self.canvas.create_line(*self.s(x0 + 2.5, y0 + 1.2, x1 - 2.5, y0 + 1.2),
@@ -422,14 +492,21 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--frames", type=Path, default=DEFAULT_FRAMES,
                     help="frame directory, or a single PNG, to watch "
                          "(default: logs/frames)")
+    ap.add_argument("--input", type=Path, default=None,
+                    help="event file the emulator tails "
+                         "(default: input.jsonl beside the frame directory)")
+    ap.add_argument("--read-only", action="store_true",
+                    help="watch without sending anything")
     ap.add_argument("--scale", type=int, default=2, choices=(1, 2, 3, 4),
                     help="integer pixel zoom; a 1-bit panel must not be "
                          "interpolated (default: 2)")
     args = ap.parse_args(argv)
 
-    path = args.frames
-    if path.is_dir() or not path.suffix:
-        path = path / "latest.png"
+    frames = args.frames
+    path = frames / "latest.png" if (frames.is_dir() or not frames.suffix) else frames
+    events = None
+    if not args.read_only:
+        events = InputWriter(args.input or (path.parent.parent / "input.jsonl"))
 
     # On a display scaled above 100%, Windows bitmap-stretches a DPI-unaware
     # window: the integer zoom below would then be resampled back to fractional
@@ -453,7 +530,7 @@ def main(argv: list[str] | None = None) -> int:
     root.resizable(False, False)
     root.bind("<Escape>", lambda _e: root.destroy())
 
-    app = DeckWindow(root, path, args.scale)
+    app = DeckWindow(root, path, args.scale, events)
 
     root.update_idletasks()
     w, h = root.winfo_reqwidth(), root.winfo_reqheight()

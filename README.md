@@ -18,7 +18,7 @@ always holds the current screen.
 python3 emu/run.py firmware/T-Deck-MAX_V3.1_20260313.bin --bus --timeout 200
 python3 tools/make_viewer.py            # single-file HTML of the captured frames
 
-# on the host, to watch it live inside a drawn device
+# on the host, to watch it live inside a drawn device -- and click it
 python emu/app.py --scale 2
 ```
 
@@ -26,8 +26,11 @@ python emu/app.py --scale 2
 interrupt delivery; I2C0/I2C1 with the board's devices; GPIO levels; SPI2; the
 e-paper panel; PSRAM.
 
-Touch input works: tapping an icon navigates. Events are appended as JSON lines
-to `logs/input.jsonl`, which the emulator tails.
+Touch input works: tapping an icon navigates. Click the panel in `emu/app.py`,
+or type on it -- the keyboard drawn on the shell is the vendor's own matrix, so
+a cap that exists sends a key the firmware has. Events are appended as JSON
+lines to `logs/input.jsonl`, which the emulator tails, so a script can drive it
+just as well as a person.
 
 **Not working yet:** the keyboard is wired but untested against a screen that
 consumes keys -- the launcher is touch-only. The LoRa radio shares SPI2 and is ignored rather than modelled.
