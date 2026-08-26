@@ -35,12 +35,23 @@ PSRAM only enumerates when presented in quad line mode, which is not what the
 board actually has — see ADR 0007, which is the first thing to re-test after any
 QEMU tag bump.
 
+## Tests
+
+```
+python3 -m pytest tests/            # 80 device and image tests, ~1.5s
+python3 -m pytest tests/ -m slow    # boots real firmware under QEMU, ~5 min
+```
+
+The slow tests skip cleanly without a built QEMU or the vendor firmware. See
+ADR 0012.
+
 ## Structure
 
     docs/BOOT.md      the ESP32-S3 boot chain, and what QEMU provides for each stage
     docs/adr/         numbered architecture decision records
     qemu-patch/       our single C file, installed into the QEMU tree at build time
     tools/            QEMU fetch and build, flash image assembly, frame viewer
+    tests/            fast device tests, plus golden-frame tests behind -m slow
     emu/              the emulator: launcher, bus bridge host side, device models
     firmware/         vendor binaries (not committed; see MANIFEST.toml)
 

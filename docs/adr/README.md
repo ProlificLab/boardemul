@@ -17,3 +17,4 @@ superseded ADR is marked superseded and points forward.
 | [0009](0009-desktop-viewer.md) | A desktop viewer that watches a file and draws its own device | Accepted |
 | [0010](0010-input-path.md) | Deliver input by modelling GPIO interrupts and pushing them out of band | Accepted |
 | [0011](0011-transaction-granularity-boundary.md) | Carry transactions, not register accesses; scope the C tier to SoC silicon | Accepted |
+| [0012](0012-testing.md) | Two tiers of test: device models in milliseconds, pixels in minutes | Accepted |
