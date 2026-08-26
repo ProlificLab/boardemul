@@ -21,6 +21,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from tools import mkflash  # noqa: E402
 from emu import board  # noqa: E402
+from emu import board_tdeck  # noqa: E402
 from emu.bus import BusServer, IrqChannel  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -179,6 +180,8 @@ def main(argv: list[str] | None = None) -> int:
                     help="present PSRAM in octal line mode (matches the real "
                          "board, but detection fails under this QEMU fork)")
     ap.add_argument("--mac", default=mkflash.DEFAULT_MAC)
+    ap.add_argument("--board", default="tdeck-max", choices=("tdeck-max", "tdeck"),
+                    help="which board to wire up (default: tdeck-max)")
     ap.add_argument("--qemu", default=None)
     ap.add_argument("-v", "--verbose", action="store_true",
                     help="log every bus transaction at DEBUG")
@@ -209,13 +212,14 @@ def main(argv: list[str] | None = None) -> int:
         logging.basicConfig(filename=args.outdir / f"{tag}.bus.log", filemode="w",
                             level=logging.DEBUG if args.verbose else logging.INFO,
                             format="%(name)s %(message)s")
-        hw = board.build(args.outdir)
+        hw_module = {"tdeck-max": board, "tdeck": board_tdeck}[args.board]
+        hw = hw_module.build(args.outdir)
         hw.start()
         server = BusServer(args.outdir / f"{tag}.bus.sock", hw.regions)
         irq = IrqChannel(args.outdir / f"{tag}.irq.sock")
         irq.start()
         server.irq_channel = irq
-        tail = board.attach_input(server, hw, args.outdir)
+        tail = hw_module.attach_input(server, hw, args.outdir)
         server.start()
         cmd += server.qemu_args(irq.socket_path) + hw.qemu_args()
 
@@ -272,8 +276,9 @@ def _report_bus(server: BusServer, tail=None, irq=None, hw=None) -> None:
               + (f"  ({hw.spi.bytes_in / hw.spi.segments:.0f} bytes/segment)"
                  if hw.spi.segments else ""))
         print(f"    {hw.panel.summary()}")
-        if hw.panel.latest:
-            print(f"    latest frame: {hw.panel.latest}")
+        latest = getattr(hw.panel, "latest", None)
+        if latest:
+            print(f"    latest frame: {latest}")
         for bus in (hw.i2c0, hw.i2c1):
             if not bus.transactions:
                 continue

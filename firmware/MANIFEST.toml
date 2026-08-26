@@ -49,3 +49,30 @@ path    = "examples/test_Elink_paper.bin"
 url     = "https://raw.githubusercontent.com/Xinyuan-LilyGO/T-Deck-MAX/master/firmware/examples/test_Elink_paper.bin"
 size    = 346768
 sha256  = "da1a7a42bae3b24e71eada7bad687bafd26fc7ab0242f5df5aaedc4ae8525f86"
+
+# --- LilyGO T-Deck (the original): ESP32-S3, ST7789 LCD, GT911 touch ---
+# Pins from examples/UnitTest/utilities.h in Xinyuan-LilyGO/T-Deck.
+
+[[image]]
+name    = "tdeck-unittest"
+role    = "LilyGO factory unit-test build. Panics on an FPU coprocessor exception during app startup, before any output."
+path    = "T-Deck_UnitTest_251113.bin"
+url     = "https://raw.githubusercontent.com/Xinyuan-LilyGO/T-Deck/master/firmware/T-Deck_UnitTest_251113.bin"
+size    = 1869008
+sha256  = "b4c60f11b94c626dee8cbe1b6226c508b3463e50ce8f5d3a138993f1208f8dad"
+
+[[image]]
+name    = "tdeck-unittest-debug"
+role    = "Same, debug variant. Same panic."
+path    = "T-Deck_UnitTest_Debug_251222.bin"
+url     = "https://raw.githubusercontent.com/Xinyuan-LilyGO/T-Deck/master/firmware/T-Deck_UnitTest_Debug_251222.bin"
+size    = 1890112
+sha256  = "995c6d0a9e60ee94910b93e9d2427982c756b1d2a3cdaf89d9cead63ef138317"
+
+[[image]]
+name    = "tdeck-meshtastic"
+role    = "Meshtastic 2.7.10 for T-Deck. Boots furthest of the four: reaches I2C, SD and LittleFS, and drives the ST7789."
+path    = "firmware-t-deck-tft-2.7.10.94d4bdf.bin"
+url     = "https://raw.githubusercontent.com/Xinyuan-LilyGO/T-Deck/master/firmware/firmware-t-deck-tft-2.7.10.94d4bdf.bin"
+size    = 3563024
+sha256  = "39249b3db92f4b4c59fe8615fa1391cb05b358601f23be8fe19869e4e813336d"
