@@ -37,6 +37,10 @@ class SpiDevice:
     def on_segment(self, dc: int, data: bytes, duplex: bool) -> bytes | None:
         return None
 
+    def flush(self) -> None:
+        """Called once the run is over. A panel with nothing pending does
+        nothing; one caught part-way through an update emits what it has."""
+
 
 class SpiServer:
     """Listens for the controller and services it on its own thread.

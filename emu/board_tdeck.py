@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 """The original LilyGO T-Deck: ESP32-S3, ST7789 LCD, GT911 touch.
 
-Second board, and deliberately minimal. Nothing here is modelled yet: the point
-is to measure what the firmware does before deciding what to build, the way the
-first board went. In particular it answers the question ADR 0011 left open --
-whether a DMA-driven display puts its pixels anywhere we can see.
+Second board. The display is modelled; touch, the keyboard and the radio are
+not, and the I2C bus deliberately carries no devices yet, so the controller
+records every address the firmware probes -- which is how the first board's
+device list was established.
+
+Measuring first also settled the question ADR 0011 left open: this display is
+driven through the SPI data path, so its pixels do cross our boundary.
 
 Pins are the vendor's own, from examples/UnitTest/utilities.h.
 """
@@ -19,8 +22,9 @@ from pathlib import Path
 from emu.board import TraceRegion, Board  # shared with the first board
 from emu.bus import Region
 from emu.i2c_link import I2CServer
+from emu.devices.lcd import St7789Panel
 from emu.peripherals.gpio import GpioClient
-from emu.spi_link import SpiDevice, SpiServer
+from emu.spi_link import SpiServer
 
 log = logging.getLogger("tdeck")
 
@@ -62,49 +66,11 @@ UNMODELLED = {
 }
 
 
-class SpiProbe(SpiDevice):
-    """Counts what arrives without pretending to be anything.
-
-    A display driven by the CPU sends every pixel through the SPI data
-    register, so the byte count here is the whole framebuffer. One driven by
-    DMA sends almost nothing -- the engine reads guest RAM directly and the
-    pixels never cross this boundary at all. Which of those is true decides
-    whether the architecture needs a path to guest memory.
-    """
-
-    name = "spi-probe"
-
-    def __init__(self) -> None:
-        self.commands: list[int] = []
-        self.command_bytes = 0
-        self.data_bytes = 0
-        self.segments = 0
-        self.largest = 0
-
-    def on_segment(self, dc: int, data: bytes, duplex: bool) -> bytes | None:
-        self.segments += 1
-        self.largest = max(self.largest, len(data))
-        if dc == 0:
-            self.command_bytes += len(data)
-            for b in data:
-                if len(self.commands) < 400:
-                    self.commands.append(b)
-        else:
-            self.data_bytes += len(data)
-        return bytes(len(data)) if duplex else None
-
-    def summary(self) -> str:
-        seen = ", ".join(f"0x{c:02x}" for c in dict.fromkeys(self.commands))
-        return (f"{self.segments} segment(s), {self.command_bytes} command byte(s), "
-                f"{self.data_bytes} data byte(s), largest {self.largest}\n"
-                f"    commands seen: [{seen}]")
-
-
 def build(outdir: Path) -> Board:
     outdir = Path(outdir)
-    probe = SpiProbe()
+    panel = St7789Panel(outdir / "frames")
     gpio = GpioClient(outdir / "gpio.sock")
-    spi = SpiServer(outdir / "spi2.sock", probe)
+    spi = SpiServer(outdir / "spi2.sock", panel)
     # No devices: the controller records every address the firmware probes,
     # which is how the first board's device list was established.
     i2c0 = I2CServer(outdir / "i2c0.sock", [], name="i2c0")
@@ -124,7 +90,7 @@ def build(outdir: Path) -> Board:
         f"socket={i2c1.socket_path}",
     ]
     board = Board(regions=regions, gpio=gpio, spi=spi, i2c0=i2c0, i2c1=i2c1,
-                  panel=probe, devices=devices)
+                  panel=panel, devices=devices)
     return board
 
 

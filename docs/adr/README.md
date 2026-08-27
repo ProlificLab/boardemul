@@ -19,3 +19,4 @@ superseded ADR is marked superseded and points forward.
 | [0011](0011-transaction-granularity-boundary.md) | Carry transactions, not register accesses; scope the C tier to SoC silicon | Accepted |
 | [0012](0012-testing.md) | Two tiers of test: device models in milliseconds, pixels in minutes | Accepted |
 | [0013](0013-coprocessor-enable-at-reset.md) | Enable the FPU at reset, per board, and say so out loud | Accepted |
+| [0014](0014-what-counts-as-a-frame.md) | Decide what a frame is, for a display that does not have any | Accepted |

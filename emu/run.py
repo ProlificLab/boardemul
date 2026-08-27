@@ -279,6 +279,7 @@ def _report_bus(server: BusServer, tail=None, irq=None, hw=None) -> None:
     from emu.devices.i2c_devices import CST328, TCA8418
 
     if hw is not None:
+        hw.panel.flush()
         print(f"  spi2: {hw.spi.segments} segment(s), {hw.spi.bytes_in} byte(s) in"
               + (f"  ({hw.spi.bytes_in / hw.spi.segments:.0f} bytes/segment)"
                  if hw.spi.segments else ""))

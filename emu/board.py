@@ -26,7 +26,7 @@ from emu.i2c_link import I2CServer
 from emu.inputs import InputTail
 from emu.peripherals.gpio import GpioClient
 from emu.peripherals.i2c import I2CDevice
-from emu.spi_link import SpiServer
+from emu.spi_link import SpiDevice, SpiServer
 
 log = logging.getLogger("board")
 
@@ -116,7 +116,7 @@ class Board:
     spi: SpiServer
     i2c0: I2CServer
     i2c1: I2CServer
-    panel: EPaperPanel
+    panel: SpiDevice        # whichever panel this board carries
     devices: list[str] = field(default_factory=list)
 
     def start(self) -> None:
