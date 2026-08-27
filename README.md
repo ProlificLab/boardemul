@@ -3,8 +3,10 @@
 An emulator for one specific device: the LilyGO T-Deck Max (ESP32-S3), complete
 enough that the real, unmodified, vendor-compiled firmware boots and runs.
 
-This is not a network simulator and not a general emulation framework. It
-targets one board.
+This is not a network simulator and not a general emulation framework. A
+second board, the original T-Deck, is brought up alongside the first -- not to
+become a framework, but because one board cannot tell you which parts of a
+design were general and which were that board's accidents.
 
 ## State
 
@@ -38,11 +40,31 @@ PSRAM only enumerates when presented in quad line mode, which is not what the
 board actually has — see ADR 0007, which is the first thing to re-test after any
 QEMU tag bump.
 
+### The T-Deck, second board
+
+LilyGO's `UnitTest` firmware boots, completes startup, and runs on into the
+app's own setup, where SPIFFS and the SD card both fail -- the image carries no
+filesystem data and no card is modelled.
+
+Getting there took one deliberate divergence: the FPU is left enabled out of
+reset, because this firmware runs a float in a C++ global constructor, before
+FreeRTOS exists to own the FPU state. It is opt-in per board and argued in
+ADR 0013, which is also honest about what it could not confirm.
+
+The ST7789 display, GT911 touch and the keyboard are not modelled, so there are
+no pixels yet. What is established is that the display's pixels *do* cross our
+SPI boundary -- 307,258 bytes of them, two full frames -- which is the question
+ADR 0011 left open.
+
+```
+python3 emu/run.py firmware/T-Deck_UnitTest_251113.bin --board tdeck --bus
+```
+
 ## Tests
 
 ```
-python3 -m pytest tests/            # 80 device and image tests, ~1.5s
-python3 -m pytest tests/ -m slow    # boots real firmware under QEMU, ~5 min
+python3 -m pytest tests/            # 98 device, image and board tests, ~3s
+python3 -m pytest tests/ -m slow    # boots both boards under QEMU, ~6 min
 ```
 
 The slow tests skip cleanly without a built QEMU or the vendor firmware. See
@@ -52,7 +74,7 @@ ADR 0012.
 
     docs/BOOT.md      the ESP32-S3 boot chain, and what QEMU provides for each stage
     docs/adr/         numbered architecture decision records
-    qemu-patch/       our single C file, installed into the QEMU tree at build time
+    qemu-patch/       the C we own, installed into the QEMU tree at build time
     tools/            QEMU fetch and build, flash image assembly, frame viewer
     tests/            fast device tests, plus golden-frame tests behind -m slow
     emu/              the emulator: launcher, bus bridge host side, device models
@@ -60,14 +82,17 @@ ADR 0012.
 
 ## How it fits together
 
-QEMU runs the CPU and the parts of the SoC it already models. A single C file
-(`qemu-patch/esp_bus_bridge.c`) claims chosen MMIO windows and forwards every
-access over a Unix socket. Everything with behaviour — the I2C controller, SPI2,
-GPIO, the panel, the I2C devices — is Python on the other end of that socket.
+QEMU runs the CPU and the parts of the SoC it already models. The boundary
+between C and Python is a bus transaction, not a register access (ADR 0011):
+the SoC's controllers -- GPIO, SPI2, I2C0 and I2C1 -- are C, and what a
+transaction then *means* is Python. The panel sees whole segments and an I2C
+device sees whole exchanges, instead of either side counting FIFO writes. That
+is what took the first board from 232,320 round trips per frame to about 44.
 
-The QEMU tree's total modification is **one appended line** in
-`hw/misc/meson.build`; the C file is copied in by `tools/build_qemu.sh` rather
-than committed to their tree. See ADR 0001 and ADR 0005.
+Our C is five files we own plus a header, copied into the QEMU tree by
+`tools/build_qemu.sh` rather than committed to it. The tree's own modification
+is **five build lines** across two `meson.build` files, and nothing else. See
+ADR 0001, ADR 0005 and ADR 0011.
 
 ## Dependencies
 
