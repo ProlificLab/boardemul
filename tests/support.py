@@ -25,18 +25,29 @@ FIRMWARE = REPO_ROOT / "firmware" / "T-Deck-MAX_V3.1_20260313.bin"
 FIRMWARE_TDECK = REPO_ROOT / "firmware" / "T-Deck_UnitTest_251113.bin"
 
 
+PNG_MAGIC = bytes([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])
+
+
+def png_colour_type(path: Path) -> int:
+    """0 for greyscale, 2 for truecolour, straight out of the IHDR."""
+    data = Path(path).read_bytes()
+    return data[8 + 8 + 9]
+
+
 def read_png(path: Path) -> tuple[int, int, bytes]:
-    """Decode an 8-bit greyscale PNG to (width, height, pixels).
+    """Decode an 8-bit PNG, greyscale or truecolour, to (width, height, bytes).
 
     Only the shape our own writer produces: one IDAT, no interlace, no palette.
-    Anything else is a bug in the writer, so it raises rather than coping.
+    Anything else is a bug in the writer, so it raises rather than coping. The
+    returned buffer is one byte per pixel for greyscale and three for colour.
     """
     data = Path(path).read_bytes()
-    if data[:8] != b"\x89PNG\r\n\x1a\n":
+    if data[:8] != PNG_MAGIC:
         raise ValueError("not a PNG")
 
     pos = 8
     width = height = 0
+    channels = 1
     idat = b""
     while pos < len(data):
         (length,) = struct.unpack(">I", data[pos:pos + 4])
@@ -45,44 +56,48 @@ def read_png(path: Path) -> tuple[int, int, bytes]:
         pos += 12 + length
         if tag == b"IHDR":
             width, height, depth, colour = struct.unpack(">IIBB", body[:10])
-            if (depth, colour) != (8, 0):
-                raise ValueError(f"expected 8-bit greyscale, got {depth}/{colour}")
+            if depth != 8 or colour not in (0, 2):
+                raise ValueError(f"expected 8-bit grey or RGB, got {depth}/{colour}")
+            channels = 3 if colour == 2 else 1
         elif tag == b"IDAT":
             idat += body
         elif tag == b"IEND":
             break
 
     raw = zlib.decompress(idat)
-    out = bytearray(width * height)
-    prev = bytearray(width)
+    stride = width * channels
+    out = bytearray(stride * height)
+    prev = bytearray(stride)
     pos = 0
     for y in range(height):
         filter_type = raw[pos]
         pos += 1
-        line = bytearray(raw[pos:pos + width])
-        pos += width
+        line = bytearray(raw[pos:pos + stride])
+        pos += stride
+        # The filters predict from the pixel to the left, which is `channels`
+        # bytes back, not one -- the same code has to serve both formats.
         if filter_type == 1:            # Sub
-            for x in range(1, width):
-                line[x] = (line[x] + line[x - 1]) & 0xFF
+            for x in range(channels, stride):
+                line[x] = (line[x] + line[x - channels]) & 0xFF
         elif filter_type == 2:          # Up
-            for x in range(width):
+            for x in range(stride):
                 line[x] = (line[x] + prev[x]) & 0xFF
         elif filter_type == 3:          # Average
-            for x in range(width):
-                left = line[x - 1] if x else 0
+            for x in range(stride):
+                left = line[x - channels] if x >= channels else 0
                 line[x] = (line[x] + ((left + prev[x]) >> 1)) & 0xFF
         elif filter_type == 4:          # Paeth
-            for x in range(width):
-                a = line[x - 1] if x else 0
+            for x in range(stride):
+                a = line[x - channels] if x >= channels else 0
                 b = prev[x]
-                c = prev[x - 1] if x else 0
+                c = prev[x - channels] if x >= channels else 0
                 p = a + b - c
                 pa, pb, pc = abs(p - a), abs(p - b), abs(p - c)
                 pred = a if (pa <= pb and pa <= pc) else (b if pb <= pc else c)
                 line[x] = (line[x] + pred) & 0xFF
         elif filter_type != 0:
             raise ValueError(f"unsupported PNG filter {filter_type}")
-        out[y * width:(y + 1) * width] = line
+        out[y * stride:(y + 1) * stride] = line
         prev = line
     return width, height, bytes(out)
 

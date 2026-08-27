@@ -15,10 +15,9 @@ the command log says what it actually sent.
 from __future__ import annotations
 
 import logging
-import struct
-import zlib
 from pathlib import Path
 
+from emu.png import write_png
 from emu.spi_link import SpiDevice
 
 log = logging.getLogger("epd")
@@ -48,22 +47,6 @@ CMD_MASTER_ACTIVATION = 0x20
 RAM_WRITE_COMMANDS = {CMD_DTM1_OLD, CMD_DTM2_NEW, CMD_WRITE_RAM_BW, CMD_WRITE_RAM_RED}
 IGNORED_PLANE_COMMANDS = {CMD_DTM1_OLD, CMD_WRITE_RAM_RED}
 REFRESH_COMMANDS = {CMD_DISPLAY_REFRESH, CMD_MASTER_ACTIVATION}
-
-
-def write_png(path: Path, width: int, height: int, pixels: bytes) -> None:
-    """Minimal 8-bit greyscale PNG. zlib is in the allowed dependency set and
-    is all a PNG actually needs."""
-    raw = b"".join(b"\x00" + pixels[y * width:(y + 1) * width] for y in range(height))
-
-    def chunk(tag: bytes, body: bytes) -> bytes:
-        return (struct.pack(">I", len(body)) + tag + body
-                + struct.pack(">I", zlib.crc32(tag + body) & 0xFFFFFFFF))
-
-    png = (b"\x89PNG\r\n\x1a\n"
-           + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 0, 0, 0, 0))
-           + chunk(b"IDAT", zlib.compress(raw, 9))
-           + chunk(b"IEND", b""))
-    path.write_bytes(png)
 
 
 def _rotate(pixels: bytearray, w: int, h: int, quarter_turns: int) -> tuple[int, int, bytearray]:
