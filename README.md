@@ -51,10 +51,16 @@ reset, because this firmware runs a float in a C++ global constructor, before
 FreeRTOS exists to own the FPU state. It is opt-in per board and argued in
 ADR 0013, which is also honest about what it could not confirm.
 
-The ST7789 display, GT911 touch and the keyboard are not modelled, so there are
-no pixels yet. What is established is that the display's pixels *do* cross our
-SPI boundary -- 307,258 bytes of them, two full frames -- which is the question
-ADR 0011 left open.
+The ST7789 display is modelled and renders colour frames; GT911 touch and the
+keyboard are not. The vendor firmware blocks on I2S before it reaches its
+display test, so the pictures so far come from Meshtastic, which draws two
+full-screen fills during boot. Its pixels *do* cross our SPI boundary -- 307,200
+bytes of them, exactly two frames -- which is the question ADR 0011 left open.
+
+Because that firmware exercises so little of the panel, the window arithmetic,
+orientation and segment handling are checked against synthetic wire traffic
+instead (`tests/test_lcd.py`), and what a frame even means on a display with no
+refresh command is ADR 0014.
 
 ```
 python3 emu/run.py firmware/T-Deck_UnitTest_251113.bin --board tdeck --bus
@@ -63,7 +69,7 @@ python3 emu/run.py firmware/T-Deck_UnitTest_251113.bin --board tdeck --bus
 ## Tests
 
 ```
-python3 -m pytest tests/            # 98 device, image and board tests, ~3s
+python3 -m pytest tests/            # 124 device, image and board tests, ~6s
 python3 -m pytest tests/ -m slow    # boots both boards under QEMU, ~6 min
 ```
 
