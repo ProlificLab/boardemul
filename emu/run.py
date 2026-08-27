@@ -204,6 +204,12 @@ def main(argv: list[str] | None = None) -> int:
     cmd = build_argv(qemu, flash, efuse, uart, qlog, args.trace, args.psram,
                      psram_octal=args.psram_octal)
 
+    hw_module = {"tdeck-max": board, "tdeck": board_tdeck}[args.board]
+    # SoC-level, so it applies with or without --bus: these describe the chip
+    # the board is built around, not the peripherals we model in Python.
+    for spec in hw_module.SOC_DEVICES:
+        cmd += ["-device", spec]
+
     server: BusServer | None = None
     tail = None
     irq: IrqChannel | None = None
@@ -212,7 +218,6 @@ def main(argv: list[str] | None = None) -> int:
         logging.basicConfig(filename=args.outdir / f"{tag}.bus.log", filemode="w",
                             level=logging.DEBUG if args.verbose else logging.INFO,
                             format="%(name)s %(message)s")
-        hw_module = {"tdeck-max": board, "tdeck": board_tdeck}[args.board]
         hw = hw_module.build(args.outdir)
         hw.start()
         server = BusServer(args.outdir / f"{tag}.bus.sock", hw.regions)
@@ -226,6 +231,8 @@ def main(argv: list[str] | None = None) -> int:
     print(f"\nqemu    : {qemu}")
     print(f"trace   : {'on (slow)' if args.trace else 'off'}")
     print(f"bus     : {'on' if server else 'off'}")
+    if hw_module.SOC_DEVICES:
+        print(f"soc     : {', '.join(hw_module.SOC_DEVICES)}")
     print(f"uart    : {uart}")
     try:
         reason, wall = run_qemu(cmd, uart, args.timeout, args.stall, server)

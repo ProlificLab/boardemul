@@ -59,6 +59,10 @@ TOUCH_INT_PIN = 12
 # finger lift.
 TOUCH_REPORT_HZ = 500
 
+# This board's firmware never executes a float before the scheduler starts, so
+# it needs no help from ADR 0013 and does not get any.
+SOC_DEVICES: list[str] = []
+
 # Windows nothing models. Claiming them changes no behaviour on its own -- reads
 # still return what was last written -- but it stops read-modify-write being
 # silently discarded, which is what made the backlight PWM divide by zero.

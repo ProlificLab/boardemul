@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""End-to-end tests: real firmware, real QEMU, real pixels.
+"""End-to-end tests for the T-Deck Max: real firmware, real QEMU, real pixels.
 
 These are minutes rather than milliseconds, so they are marked slow and skipped
 unless asked for:
@@ -13,20 +13,16 @@ emulator draws the right picture.
 
 from __future__ import annotations
 
-import json
-import os
-import shutil
-import subprocess
 import sys
-import time
-from dataclasses import dataclass, field
 from pathlib import Path
 
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from tests.support import FIRMWARE, REPO_ROOT, region_digest  # noqa: E402
+from tests.support import (  # noqa: E402
+    FIRMWARE, Run, qemu_available, region_digest, run_emulator,
+)
 
 pytestmark = [
     pytest.mark.slow,
@@ -39,83 +35,20 @@ SETTING_ICON = (120, 75)
 LAUNCHER_FRAMES = 3         # clear, splash, then the menu
 
 
-def qemu_available() -> bool:
-    local = REPO_ROOT / "third_party" / "qemu" / "build" / "qemu-system-xtensa"
-    return bool(os.environ.get("BOARDEMUL_QEMU")
-                or local.is_file()
-                or shutil.which("qemu-system-xtensa"))
-
-
-@dataclass
-class Run:
-    outdir: Path
-    frames: list[Path] = field(default_factory=list)
-    uart: str = ""
-
-    def digests(self) -> list[str]:
-        return [region_digest(f) for f in self.frames]
-
-
-def _frames(outdir: Path) -> list[Path]:
-    return sorted((outdir / "frames").glob("frame-*.png"))
-
-
-def run_emulator(outdir: Path, *, tap: tuple[int, int] | None = None,
-                 timeout: int = 150, settle: int = 25) -> Run:
-    """Boot the factory firmware, optionally tap once the launcher is up."""
-    proc = subprocess.Popen(
-        [sys.executable, "emu/run.py", str(FIRMWARE), "--bus", "--tag", "t",
-         "--outdir", str(outdir), "--timeout", str(timeout),
-         "--stall", str(timeout)],
-        cwd=REPO_ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
-    try:
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            if len(_frames(outdir)) >= LAUNCHER_FRAMES:
-                break
-            if proc.poll() is not None:
-                break
-            time.sleep(1)
-
-        if tap is not None:
-            events = outdir / "input.jsonl"
-            with events.open("a") as fh:
-                fh.write(json.dumps({"type": "touch", "x": tap[0],
-                                     "y": tap[1], "down": True}) + "\n")
-                fh.flush()
-                time.sleep(0.8)
-                fh.write(json.dumps({"type": "touch", "down": False}) + "\n")
-                fh.flush()
-            # A refresh takes a couple of seconds of emulated time; give the
-            # firmware room to redraw before looking.
-            time.sleep(settle)
-        proc.wait(timeout=timeout)
-    finally:
-        if proc.poll() is None:
-            proc.terminate()
-            try:
-                proc.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-
-    uart = ""
-    for log in outdir.glob("*.uart.log"):
-        uart = log.read_text(errors="replace")
-    return Run(outdir=outdir, frames=_frames(outdir), uart=uart)
-
-
 @pytest.fixture(scope="module")
 def booted(tmp_path_factory) -> Run:
     if not qemu_available():
         pytest.skip("no qemu-system-xtensa; run tools/build_qemu.sh")
-    return run_emulator(tmp_path_factory.mktemp("boot"))
+    return run_emulator(tmp_path_factory.mktemp("boot"),
+                        wait_frames=LAUNCHER_FRAMES)
 
 
 @pytest.fixture(scope="module")
 def tapped(tmp_path_factory) -> Run:
     if not qemu_available():
         pytest.skip("no qemu-system-xtensa; run tools/build_qemu.sh")
-    return run_emulator(tmp_path_factory.mktemp("tap"), tap=SETTING_ICON)
+    return run_emulator(tmp_path_factory.mktemp("tap"), tap=SETTING_ICON,
+                        wait_frames=LAUNCHER_FRAMES)
 
 
 # -- boot -------------------------------------------------------------------

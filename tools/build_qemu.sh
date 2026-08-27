@@ -34,9 +34,9 @@ else
     echo "==> reusing existing clone at ${QEMU_TAG}"
 fi
 
-# ADR 0005: our single C file lives in this repo and is installed into the QEMU
-# tree here, so the tree is never edited by hand and `git status` inside it stays
-# clean apart from these two touches.
+# ADR 0005: our C sources live in this repo and are installed into the QEMU tree
+# here, so that tree is never edited by hand and `git status` inside it shows
+# only our added files plus the build lines that name them.
 echo "==> installing BoardEmul sources"
 cp "${REPO_ROOT}/qemu-patch/esp_board_glue.h" "${SRC}/include/hw/misc/"
 MESON_FILE="${SRC}/hw/misc/meson.build"
@@ -46,6 +46,19 @@ for f in esp_bus_bridge esp_gpio_block esp_spi_master esp_i2c_master; do
         echo "system_ss.add(files('${f}.c'))" >> "${MESON_FILE}"
     fi
 done
+
+# ADR 0013: this one touches CPUXtensaState, so it must be compiled as a
+# target-specific source and cannot sit in hw/misc with the others.
+cp "${REPO_ROOT}/qemu-patch/esp_coproc_enable.c" "${SRC}/hw/xtensa/esp_coproc_enable.c"
+XTENSA_MESON="${SRC}/hw/xtensa/meson.build"
+if ! grep -qF "esp_coproc_enable.c" "${XTENSA_MESON}"; then
+    LINE="xtensa_ss.add(when: 'CONFIG_XTENSA_ESP32S3', if_true: files('esp_coproc_enable.c'))"
+    # Inserted before the hw_arch aggregation rather than appended after it,
+    # because meson has already consumed the source set by that point.
+    awk -v line="$LINE" '/^hw_arch \+=/ && !seen { print line; seen=1 } { print }' \
+        "${XTENSA_MESON}" > "${XTENSA_MESON}.tmp"
+    mv "${XTENSA_MESON}.tmp" "${XTENSA_MESON}"
+fi
 
 if [[ ! -f "${BUILD}/build.ninja" ]]; then
     echo "==> configuring"

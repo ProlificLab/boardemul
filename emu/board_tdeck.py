@@ -44,6 +44,13 @@ KEYBOARD_INT_PIN = 46
 SD_CS_PIN = 39
 RADIO_CS_PIN = 9
 
+# ADR 0013. This board's vendor firmware runs a float in a C++ global
+# constructor, before FreeRTOS exists to own the FPU state, and IDF panics.
+# Leaving CP0 enabled out of reset is a divergence from the architectural reset
+# value that we could not confirm against silicon, so it is stated here per
+# board rather than applied to every board quietly.
+SOC_DEVICES = ["esp-coproc-enable,mask=0x1"]
+
 UNMODELLED = {
     "ledc": 0x60019000,
     "i2s0": 0x6002D000,
