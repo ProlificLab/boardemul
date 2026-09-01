@@ -48,7 +48,9 @@ stays on our side of the boundary.
    no patch, and a tag bump is exactly when that happens.
 
 3. **Send it upstream.** It is a real bug in their model, not a local
-   preference, and it is better fixed there than carried here forever.
+   preference, and it is better fixed there than carried here forever. Reported
+   as <https://github.com/espressif/qemu/issues/168>, with the diagnosis, the
+   register evidence and this diff.
 
 4. **The boundary is otherwise unchanged.** One patch, one file, declared in the
    repository and argued for here. If a second one is ever proposed, this ADR is
@@ -73,7 +75,7 @@ stays on our side of the boundary.
 - Every tag bump has to re-apply it, and the build stops if it will not. That is
   the intended cost -- it is how the patch stays honest.
 - If it is accepted upstream, this ADR should be superseded and the patch
-  deleted rather than left to rot.
+  deleted rather than left to rot. Issue 168 is the thing to watch.
 
 ## Alternatives rejected
 

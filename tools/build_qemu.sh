@@ -61,6 +61,8 @@ if ! grep -qF "esp_coproc_enable.c" "${XTENSA_MESON}"; then
 fi
 
 # ADR 0017: the one place we change QEMU's own logic rather than adding to it.
+# Reported upstream as https://github.com/espressif/qemu/issues/168; when that
+# lands, delete the patch and supersede the ADR rather than carrying it on.
 # Applied from a patch file rather than by hand so that it is declared, reviewed
 # like anything else, and fails loudly if a tag bump moves the code under it.
 PATCH="${REPO_ROOT}/qemu-patch/gdma-out-eof-desc.patch"
