@@ -130,6 +130,11 @@ def attach_input(server, board: Board, outdir: Path) -> InputTail:
                 if not keypad.key_event(str(event.get("key", "")),
                                         bool(event.get("down", True))):
                     log.debug("no character for key %r", event.get("key"))
+                elif bool(event.get("down", True)):
+                    # This keyboard has its own interrupt line, unlike the
+                    # Max's, so a firmware that has stopped polling still has
+                    # to be told a key is waiting.
+                    board.gpio.pulse_low(KEYBOARD_INT_PIN)
             elif kind == "touch" and isinstance(touch, GT911):
                 if bool(event.get("down", True)):
                     touch.touch(int(event.get("x", 0)), int(event.get("y", 0)))
