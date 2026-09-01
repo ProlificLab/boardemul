@@ -44,9 +44,11 @@ CMD_MADCTL = 0x36
 CMD_COLMOD = 0x3A
 
 # MADCTL bits.
-MADCTL_MY = 0x80        # row address order    -- flips vertically
-MADCTL_MX = 0x40        # column address order -- flips horizontally
-MADCTL_MV = 0x20        # row/column exchange  -- landscape
+# Recorded, not applied -- see render(). Only MV changes anything here,
+# because it changes the shape of the space the driver addresses.
+MADCTL_MY = 0x80        # row address order
+MADCTL_MX = 0x40        # column address order
+MADCTL_MV = 0x20        # row/column exchange -- landscape
 MADCTL_BGR = 0x08       # the attached panel has a BGR colour filter
 
 # Parameter bytes each command consumes. Anything absent is part of the init
@@ -250,35 +252,31 @@ class St7789Panel(SpiDevice):
         return self._lut_cache
 
     def render(self) -> Path:
-        """Two bits that look like they should transform the image, and do not.
+        """What the driver addressed is what the viewer sees.
 
-        MADCTL's BGR bit tells the controller which colour filter the glass in
-        front of it uses, and the controller then reorders so that ordinary
-        RGB-ordered host data comes out right. Swapping here as well would
-        double-compensate. INVON is the same shape of thing: these IPS panels
-        are natively inverted, so the driver turns inversion on to arrive back
-        at normal. Both are recorded in the summary and neither is applied.
+        Every bit that looks like an image transform here is really a statement
+        about the hardware, and the controller has already accounted for it. A
+        driver picks MADCTL so that its own coordinate system lands the right
+        way up on the glass it is wired to, so re-applying MX or MY at render
+        time double-counts and comes out mirrored. BGR says which colour filter
+        the glass uses, and the controller reorders so ordinary RGB-ordered
+        host data is correct. INVON is there because these IPS panels are
+        natively inverted, so enabling inversion arrives back at normal.
+
+        Only MV is different, and only because it changes the shape of the
+        addressed space rather than transforming what is in it. All of them are
+        reported in the summary so nothing is hidden.
         """
         w, h = self.size
         table = self._lut()
         fb = self.fb
         row_format = f">{w}H"
-        mx = bool(self.madctl & MADCTL_MX)
 
         rows: list[bytes] = []
         for y in range(h):
             base = y * w * 2
             values = struct.unpack(row_format, bytes(fb[base:base + w * 2]))
-            pixels = [table[v] for v in values]
-            if mx:
-                pixels.reverse()
-            rows.append(b"".join(pixels))
-
-        # MX and MY describe the direction the controller scans RAM out to the
-        # glass, so they belong to how the picture is presented rather than to
-        # how it was stored.
-        if self.madctl & MADCTL_MY:
-            rows.reverse()
+            rows.append(b"".join([table[v] for v in values]))
 
         image = b"".join(rows)
         self.frames += 1

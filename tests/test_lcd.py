@@ -150,33 +150,25 @@ def test_pixels_wrap_within_the_window(tmp_path: Path) -> None:
     assert pixel(pixels, width, 10, 0) == (0, 0, 0), "it must not spill sideways"
 
 
-def test_mx_mirrors_horizontally(tmp_path: Path) -> None:
-    plain = make_panel(tmp_path / "a", madctl=MADCTL_MV)
-    mirrored = make_panel(tmp_path / "b", madctl=MADCTL_MV | MADCTL_MX)
-    for p in (plain, mirrored):
+@pytest.mark.parametrize("mirror", [MADCTL_MX, MADCTL_MY, MADCTL_MX | MADCTL_MY])
+def test_the_mirror_bits_do_not_transform_the_picture(tmp_path: Path,
+                                                      mirror: int) -> None:
+    """The driver chooses MADCTL so that its own coordinate system lands the
+    right way up on the glass it is wired to. Applying the mirror here as well
+    double-counts it, which is how Meshtastic's boot screen first rendered with
+    its logo and version text written backwards."""
+    plain = make_panel(tmp_path / f"plain{mirror}", madctl=MADCTL_MV)
+    flagged = make_panel(tmp_path / f"flag{mirror}", madctl=MADCTL_MV | mirror)
+    for p in (plain, flagged):
         fill_screen(p, BLACK)
         window(p, 0, 9, 0, 9)
         fill(p, RED, 100)
         p.flush()
 
-    width, _, left = read_png(plain.latest)
-    _, _, right = read_png(mirrored.latest)
-    assert pixel(left, width, 0, 0) == (255, 0, 0)
-    assert pixel(left, width, 319, 0) == (0, 0, 0)
-    assert pixel(right, width, 0, 0) == (0, 0, 0)
-    assert pixel(right, width, 319, 0) == (255, 0, 0)
-
-
-def test_my_mirrors_vertically(tmp_path: Path) -> None:
-    p = make_panel(tmp_path, madctl=MADCTL_MV | MADCTL_MY)
-    fill_screen(p, BLACK)
-    window(p, 0, 9, 0, 9)
-    fill(p, RED, 100)
-    p.flush()
-
-    width, _, pixels = read_png(p.latest)
-    assert pixel(pixels, width, 0, 239) == (255, 0, 0)
-    assert pixel(pixels, width, 0, 0) == (0, 0, 0)
+    assert read_png(flagged.latest) == read_png(plain.latest)
+    width, _, pixels = read_png(flagged.latest)
+    assert pixel(pixels, width, 0, 0) == (255, 0, 0)
+    assert pixel(pixels, width, 319, 239) == (0, 0, 0)
 
 
 # -- segmentation, which is where this project's bugs have lived -------------
