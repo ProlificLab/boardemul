@@ -2,6 +2,12 @@
 
 **Status:** Accepted — 2026-08-21
 
+**Amended 2026-09-01.** The rule needs its converse stated: check that nothing
+already models a window before claiming it. GDMA was claimed here on the
+assumption it was unmodelled, and the fork models it -- so the claim replaced a
+real device with a store-and-return stub, and the improvement that seemed to
+follow was misattributed to it.
+
 ## Context
 
 The factory firmware died in an `IntegerDivideByZero` immediately after I2C came
