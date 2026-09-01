@@ -2,6 +2,13 @@
 
 **Status:** Accepted — 2026-08-21
 
+**Amended 2026-08-27.** The second board showed this is a property of the
+firmware rather than of the fork: the T-Deck's Meshtastic build drives octal
+PSRAM in a way the fork does handle, and only enumerates its memory when
+presented as octal -- the opposite of what is described below. So the line
+mode stayed a launch option rather than becoming a board constant, and which
+setting a given image needs is now something to determine per firmware.
+
 ## Context
 
 Every firmware image failed PSRAM detection identically:

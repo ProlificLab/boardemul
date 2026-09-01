@@ -51,25 +51,38 @@ reset, because this firmware runs a float in a C++ global constructor, before
 FreeRTOS exists to own the FPU state. It is opt-in per board and argued in
 ADR 0013, which is also honest about what it could not confirm.
 
-The ST7789 display is modelled and renders colour frames; GT911 touch and the
-keyboard are not. The vendor firmware blocks on I2S before it reaches its
-display test, so the pictures so far come from Meshtastic, which draws two
-full-screen fills during boot. Its pixels *do* cross our SPI boundary -- 307,200
-bytes of them, exactly two frames -- which is the question ADR 0011 left open.
+The second board is live and interactive: ST7789 display, GT911 touch and the
+keyboard are all modelled, and the drawn device in `emu/app.py` knows how to be
+a T-Deck as well as a T-Deck Max.
 
-Because that firmware exercises so little of the panel, the window arithmetic,
+LilyGO's own `UnitTest` firmware boots, initialises the display, reports
+`Init GT911 Sensor success!` and `Keyboard registered!!` against our models, and
+draws its splash screen. It then blocks in its audio test, waiting on a GDMA
+transfer that nothing completes -- so for something that keeps responding, the
+Meshtastic build is the one to drive:
+
+```
+python3 emu/run.py firmware/firmware-t-deck-tft-2.7.10.94d4bdf.bin     --board tdeck --bus --psram-octal --timeout 600
+```
+
+```
+python emu/app.py --board tdeck --scale 2
+```
+
+Typing and tapping in that window reach the firmware: it polls the keyboard
+hundreds of times a run, reads touch reports, and redraws in response. Note the
+`--psram-octal`: which line mode an image needs turns out to depend on the
+firmware, not the board (ADR 0007, amended).
+
+Because the firmware exercises so little of the panel, the window arithmetic,
 orientation and segment handling are checked against synthetic wire traffic
-instead (`tests/test_lcd.py`), and what a frame even means on a display with no
-refresh command is ADR 0014.
-
-```
-python3 emu/run.py firmware/T-Deck_UnitTest_251113.bin --board tdeck --bus
-```
+(`tests/test_lcd.py`), and what a frame even means on a display with no refresh
+command is ADR 0014.
 
 ## Tests
 
 ```
-python3 -m pytest tests/            # 124 device, image and board tests, ~6s
+python3 -m pytest tests/            # 158 device, image and board tests, ~7s
 python3 -m pytest tests/ -m slow    # boots both boards under QEMU, ~6 min
 ```
 
