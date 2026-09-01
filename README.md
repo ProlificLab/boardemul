@@ -42,27 +42,28 @@ QEMU tag bump.
 
 ### The T-Deck, second board
 
-LilyGO's `UnitTest` firmware boots, completes startup, and runs on into the
-app's own setup, where SPIFFS and the SD card both fail -- the image carries no
-filesystem data and no card is modelled.
-
-Getting there took one deliberate divergence: the FPU is left enabled out of
-reset, because this firmware runs a float in a C++ global constructor, before
-FreeRTOS exists to own the FPU state. It is opt-in per board and argued in
-ADR 0013, which is also honest about what it could not confirm.
-
-The second board is live and interactive: ST7789 display, GT911 touch and the
-keyboard are all modelled, and the drawn device in `emu/app.py` knows how to be
-a T-Deck as well as a T-Deck Max.
+The second board is live and interactive: ST7789 display, GT911 touch, the
+keyboard and both I2S blocks are modelled, and the drawn device in `emu/app.py`
+knows how to be a T-Deck as well as a T-Deck Max.
 
 LilyGO's own `UnitTest` firmware boots, initialises the display, reports
-`Init GT911 Sensor success!` and `Keyboard registered!!` against our models, and
-draws its splash screen. It then blocks in its audio test, waiting on a GDMA
-transfer that nothing completes -- so for something that keeps responding, the
-Meshtastic build is the one to drive:
+`Init GT911 Sensor success!` and `Keyboard registered!!` against our models,
+draws its splash, and completes its audio test. Getting that far took three
+deliberate pieces of work, each argued in its own record: the FPU is left
+enabled out of reset because this firmware runs a float in a global constructor
+(ADR 0013), the I2S receive and transmit paths are modelled (ADR 0016), and one
+patch is carried against QEMU's own GDMA (ADR 0017).
+
+It then stops in `setupWiFi()`, where `WiFi.begin()` waits inside
+`esp_wifi_start()` for a radio nothing models. The last bus traffic is the RF
+front end at `0x60006000`, after which the CPU keeps ticking and issues no MMIO
+at all. `setupUI()` is the second-to-last line of the vendor's `setup()`, so its
+interface is never built -- which is why only the splash is ever drawn.
+
+So for something that keeps responding, drive the Meshtastic build:
 
 ```
-python3 emu/run.py firmware/firmware-t-deck-tft-2.7.10.94d4bdf.bin     --board tdeck --bus --psram-octal --timeout 600
+python3 emu/run.py firmware/firmware-t-deck-tft-2.7.10.94d4bdf.bin --board tdeck --bus --psram-octal --timeout 600
 ```
 
 ```
@@ -70,11 +71,12 @@ python emu/app.py --board tdeck --scale 2
 ```
 
 Typing and tapping in that window reach the firmware: it polls the keyboard
-hundreds of times a run, reads touch reports, and redraws in response. Note the
-`--psram-octal`: which line mode an image needs turns out to depend on the
-firmware, not the board (ADR 0007, amended).
+hundreds of times a run, reads touch reports, and redraws in response, during
+the first minute or so before it gives up on storage. Note the `--psram-octal`:
+which line mode an image needs turns out to depend on the firmware, not the
+board (ADR 0007, amended).
 
-Because the firmware exercises so little of the panel, the window arithmetic,
+Because neither firmware exercises much of the panel, the window arithmetic,
 orientation and segment handling are checked against synthetic wire traffic
 (`tests/test_lcd.py`), and what a frame even means on a display with no refresh
 command is ADR 0014.
