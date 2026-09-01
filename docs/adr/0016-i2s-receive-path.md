@@ -67,16 +67,31 @@ Model the receive path, and only that.
   ended.
 - Every number in the file is sourced rather than inferred, and says so.
 
-**What it does not achieve, which is the honest headline**
+**The path works end to end, which took instrumenting to establish**
 
-The firmware still does not get past its audio test. The status bits stay set
-across every delivery, which means the guest never clears them, which means its
-handler never runs. So the transfer is right and the interrupt is raised, and
-something between the GDMA and the CPU does not deliver it.
+This ADR first claimed the interrupt was raised but never delivered. That was
+wrong, and the error was in the reasoning rather than the code: the status bits
+looked permanently set, but every reading was taken immediately after this model
+had set them, so they would have looked that way either way.
 
-That is downstream of this model. The machine wires receive channel *n* to
-`ETS_DMA_IN_CH0_INTR_SOURCE + n`, and that matches Espressif's own numbering, so
-the interrupt matrix is the next place to look rather than the wiring.
+Instrumenting the interrupt matrix settled it. At the moment of assertion,
+CPU1 has `INTENABLE = 0x1300121c` -- bit 12 set, which is what the guest mapped
+source 66 to -- `INTSET` shows bit 12 pending, and `PS` has INTLEVEL 0 with EXCM
+clear, so nothing is masked. On the next transition `INTSET` bit 12 has cleared
+and `PS.INTLEVEL` is 1: the core is inside a level-1 handler. The guest is
+servicing it.
+
+So the whole chain runs: capture completes, the engine raises IN_SUC_EOF, the
+matrix maps source 66 to CPU1 interrupt 12, and the handler executes. Buffers
+continue to be delivered around the ring rather than stalling after one, which
+is the same conclusion from the other end.
+
+**What is still unexplained, and is now a different question**
+
+The vendor firmware does not visibly get further for it: its LVGL loop still
+runs about seventeen iterations and stops. Since audio no longer blocks, that is
+a separate matter from this ADR, and guessing at it is what produced the mistake
+above.
 
 **Costs, accepted**
 
