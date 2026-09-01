@@ -68,11 +68,6 @@ UNMODELLED = {
     "pcnt": 0x60017000,
     "spi0": 0x60003000,
     "spi3": 0x60025000,
-    # I2S moves its samples with GDMA on this chip, and an unclaimed window
-    # discards writes and reads back zero (ADR 0008). Claiming it makes the
-    # traffic visible, which is the first thing needed to find out what the
-    # audio test is waiting for.
-    "gdma": 0x6003F000,
 }
 
 
