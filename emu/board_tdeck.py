@@ -60,14 +60,14 @@ RADIO_CS_PIN = 9
 # board rather than applied to every board quietly.
 SOC_DEVICES = ["esp-coproc-enable,mask=0x1"]
 
-# The microphone captures on I2S1, modelled in C because completing a capture
-# means walking DMA descriptors in guest memory. The speaker plays on I2S0,
-# which is only claimed as an unmodelled window: completing its transfers makes
-# the firmware's own handler crash (ADR 0016), and a stall is better than that.
+# Audio both ways, in C because completing a transfer means walking DMA
+# descriptors in guest memory: the microphone captures on I2S1 and the speaker
+# plays on I2S0. The firmware waits for each in turn during startup, so leaving
+# either unmodelled stops it dead.
+I2S0_BASE, GDMA_PERIPH_I2S0 = 0x6000F000, 3
 I2S1_BASE, GDMA_PERIPH_I2S1 = 0x6002D000, 4
 
 UNMODELLED = {
-    "i2s0": 0x6000F000,
     "ledc": 0x60019000,
     "lcd_cam": 0x60041000,
     "uhci": 0x60014000,
@@ -103,6 +103,8 @@ def build(outdir: Path) -> Board:
         f"socket={i2c1.socket_path}",
         # No socket: it says nothing to Python. Its job is to let the DMA
         # engine finish the capture the firmware waits on at startup.
+        f"esp-i2s-master,name=i2s0,base=0x{I2S0_BASE:x},"
+        f"periph={GDMA_PERIPH_I2S0}",
         f"esp-i2s-master,name=i2s1,base=0x{I2S1_BASE:x},"
         f"periph={GDMA_PERIPH_I2S1}",
     ]

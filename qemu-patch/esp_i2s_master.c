@@ -49,9 +49,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(EspI2sMaster, ESP_I2S_MASTER)
 #define R_RX_CONF       0x20
 #define RX_START        (1u << 2)
 
-/* i2s_reg.h: I2S_TX_CONF_REG is at +0x24 with I2S_TX_START at bit 2. Recorded
- * because it is where the vendor firmware stops, and deliberately not acted on
- * -- see ADR 0016. */
+/* i2s_reg.h: I2S_TX_CONF_REG is at +0x24, I2S_TX_START at bit 2. */
 #define R_TX_CONF       0x24
 #define TX_START        (1u << 2)
 
@@ -78,6 +76,10 @@ OBJECT_DECLARE_SIMPLE_TYPE(EspI2sMaster, ESP_I2S_MASTER)
 #define DESC_BYTES 12
 #define DESC_MAX_SIZE 4092
 
+/* Bounds on a transmit list; beyond these it is not a list. */
+#define TX_MAX_DESCRIPTORS 64
+#define TX_MAX_TRANSFER (256 * 1024)
+
 struct EspI2sMaster {
     DeviceState parent_obj;
 
@@ -91,7 +93,9 @@ struct EspI2sMaster {
 
     uint32_t regs[I2S_REG_COUNT];
     bool rx_armed;
-    uint32_t rx_cursor;         /* our way around the descriptor ring */
+    bool tx_armed;
+    uint32_t rx_cursor;         /* our way around the receive ring */
+    uint32_t tx_head;           /* start of the queued transmit list */
     uint64_t buffers;
     uint64_t bytes;
     bool complained;
@@ -222,6 +226,89 @@ static void i2s_receive(EspI2sMaster *s)
     s->bytes += bytes;
 }
 
+/* Total the queued transmit list, from its head to its end marker.
+ *
+ * Transmit is not receive turned round. `suc_eof` ends a transmit list, where on
+ * receive it only raises a status bit and the ring keeps turning. And the
+ * engine's read side is built to be handed a whole list at once -- it walks the
+ * chain, clears the owner bits and raises EOF -- which is how the AES and SHA
+ * models drive it. So the list is summed here and passed in one call.
+ *
+ * It has to be properly terminated to be touched at all. Stepping through it a
+ * descriptor at a time, trusting each owner bit, walked straight past the
+ * queued buffers and off the end of DRAM, clearing owner bits through
+ * everything it crossed.
+ */
+static bool i2s_tx_total(uint32_t head, uint32_t *total)
+{
+    uint8_t raw[DESC_BYTES];
+    uint32_t at = head;
+
+    *total = 0;
+    for (int i = 0; i < TX_MAX_DESCRIPTORS; i++) {
+        if (address_space_read(&address_space_memory, at, MEMTXATTRS_UNSPECIFIED,
+                               raw, sizeof(raw)) != MEMTX_OK) {
+            return false;
+        }
+        uint32_t config = ldl_le_p(raw);
+        uint32_t length = (config >> 12) & 0xFFF;
+        uint32_t next = ldl_le_p(raw + 8);
+
+        if (!((config >> 31) & 1) || length > DESC_MAX_SIZE) {
+            return false;               /* not ours, or not a descriptor */
+        }
+        *total += length;
+        if (*total > TX_MAX_TRANSFER) {
+            return false;
+        }
+        if ((config >> 30) & 1) {
+            return *total != 0;         /* end marker */
+        }
+        if (next == 0 || next == at) {
+            return false;               /* ran out without one */
+        }
+        at = next;
+    }
+    return false;
+}
+
+static void i2s_transmit(EspI2sMaster *s)
+{
+    uint32_t chan = 0;
+    uint32_t total = 0;
+
+    if (!(s->regs[R_TX_CONF / 4] & TX_START)) {
+        s->tx_armed = false;
+        return;
+    }
+    if (!i2s_find_channel(s, ESP_GDMA_OUT_IDX, &s->tx_armed, &s->tx_head,
+                          &chan)) {
+        return;
+    }
+    if (!i2s_tx_total(s->tx_head, &total)) {
+        return;
+    }
+
+    i2s_aim(s, ESP_GDMA_OUT_IDX, chan, s->tx_head);
+
+    /* The samples are read and dropped: there is nowhere for audio to go, and
+     * the firmware waits for the transfer to finish, not for a sound. */
+    g_autofree uint8_t *played = g_malloc(total);
+    if (!esp_gdma_read_channel(s->gdma, chan, played, total)) {
+        if (!s->complained) {
+            s->complained = true;
+            warn_report("%s: GDMA refused %u transmit bytes on channel %u",
+                        s->name ? s->name : "i2s", total, chan);
+        }
+        return;
+    }
+
+    /* That list is done; the driver arms the link again for the next one. */
+    s->tx_armed = false;
+    s->buffers++;
+    s->bytes += total;
+}
+
 static void i2s_tick(void *opaque)
 {
     EspI2sMaster *s = opaque;
@@ -230,6 +317,7 @@ static void i2s_tick(void *opaque)
         return;
     }
     i2s_receive(s);
+    i2s_transmit(s);
     timer_mod_ns(s->timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + I2S_POLL_NS);
 }
 

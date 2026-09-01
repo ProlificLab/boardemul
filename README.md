@@ -108,10 +108,13 @@ transaction then *means* is Python. The panel sees whole segments and an I2C
 device sees whole exchanges, instead of either side counting FIFO writes. That
 is what took the first board from 232,320 round trips per frame to about 44.
 
-Our C is five files we own plus a header, copied into the QEMU tree by
-`tools/build_qemu.sh` rather than committed to it. The tree's own modification
-is **five build lines** across two `meson.build` files, and nothing else. See
-ADR 0001, ADR 0005 and ADR 0011.
+Our C is six files we own plus a header, copied into the QEMU tree by
+`tools/build_qemu.sh` rather than committed to it. Their tree's own modification
+is six build lines across two `meson.build` files, plus exactly one patch to
+their own logic -- a GDMA transmit path that never reported which descriptor
+finished, which crashed the firmware's interrupt handler. It is applied from a
+declared patch file, the build stops if it ever fails to apply, and it has been
+sent upstream. See ADR 0001, ADR 0011 and ADR 0017.
 
 ## Dependencies
 

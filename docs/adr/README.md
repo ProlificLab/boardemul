@@ -22,3 +22,4 @@ superseded ADR is marked superseded and points forward.
 | [0014](0014-what-counts-as-a-frame.md) | Decide what a frame is, for a display that does not have any | Accepted |
 | [0015](0015-i2s-left-unmodelled.md) | Leave I2S unmodelled, and record why the obvious route fails | Superseded by 0016 |
 | [0016](0016-i2s-receive-path.md) | Model the I2S receive path, from the reference manual | Accepted |
+| [0017](0017-carry-one-qemu-patch.md) | Carry one patch to QEMU's own logic, and send it upstream | Accepted |

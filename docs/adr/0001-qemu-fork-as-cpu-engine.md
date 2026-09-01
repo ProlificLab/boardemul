@@ -8,6 +8,10 @@ register accesses to bus transactions and restates the rule as *no board-specifi
 knowledge in C*. The decision to adopt the fork as the CPU and SoC engine, and
 everything in the Context and Alternatives sections, stands.
 
+**Amended 2026-09-01.** The boundary now admits exactly one patch to their own
+logic, applied from a declared patch file and argued in ADR 0017. The rule was
+never "no patches"; it was "no undeclared drift".
+
 ## Context
 
 Running unmodified vendor firmware means executing Xtensa LX7 machine code.
