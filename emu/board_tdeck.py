@@ -15,15 +15,17 @@ Pins are the vendor's own, from examples/UnitTest/utilities.h.
 from __future__ import annotations
 
 import logging
-import os
-from dataclasses import dataclass, field
+import threading
+import time
 from pathlib import Path
 
 from emu.board import TraceRegion, Board  # shared with the first board
 from emu.bus import Region
 from emu.i2c_link import I2CServer
 from emu.devices.lcd import St7789Panel
+from emu.devices.tdeck_i2c import GT911, TDeckKeyboard
 from emu.peripherals.gpio import GpioClient
+from emu.inputs import InputTail
 from emu.spi_link import SpiServer
 
 log = logging.getLogger("tdeck")
@@ -45,6 +47,9 @@ TFT_DC_PIN = 11
 TFT_BACKLIGHT = 42
 TOUCH_INT_PIN = 16
 KEYBOARD_INT_PIN = 46
+
+# The touch controller reports on an interrupt rather than being polled.
+TOUCH_REPORT_HZ = 500
 SD_CS_PIN = 39
 RADIO_CS_PIN = 9
 
@@ -63,6 +68,11 @@ UNMODELLED = {
     "pcnt": 0x60017000,
     "spi0": 0x60003000,
     "spi3": 0x60025000,
+    # I2S moves its samples with GDMA on this chip, and an unclaimed window
+    # discards writes and reads back zero (ADR 0008). Claiming it makes the
+    # traffic visible, which is the first thing needed to find out what the
+    # audio test is waiting for.
+    "gdma": 0x6003F000,
 }
 
 
@@ -71,9 +81,11 @@ def build(outdir: Path) -> Board:
     panel = St7789Panel(outdir / "frames")
     gpio = GpioClient(outdir / "gpio.sock")
     spi = SpiServer(outdir / "spi2.sock", panel)
-    # No devices: the controller records every address the firmware probes,
-    # which is how the first board's device list was established.
-    i2c0 = I2CServer(outdir / "i2c0.sock", [], name="i2c0")
+    # Discovered by watching the firmware probe: it looks for 0x14 and 0x5d
+    # (touch), 0x55 (the keyboard) and 0x40 (an audio ADC we do not model).
+    touch = GT911()
+    keypad = TDeckKeyboard()
+    i2c0 = I2CServer(outdir / "i2c0.sock", [touch, keypad], name="i2c0")
     i2c1 = I2CServer(outdir / "i2c1.sock", [], name="i2c1")
 
     regions: list[Region] = [TraceRegion(n, b) for n, b in UNMODELLED.items()]
@@ -91,9 +103,50 @@ def build(outdir: Path) -> Board:
     ]
     board = Board(regions=regions, gpio=gpio, spi=spi, i2c0=i2c0, i2c1=i2c1,
                   panel=panel, devices=devices)
+    board.touch = touch
+    board.keypad = keypad
     return board
 
 
-def attach_input(server, board: Board, outdir: Path):
-    """No input routing yet: nothing on this board is modelled to receive it."""
-    return None
+def attach_input(server, board: Board, outdir: Path) -> InputTail:
+    """Route host input to the touch controller and the keyboard.
+
+    Same shape as the first board, and the same reason for the ticker: with
+    GPIO, SPI and I2C all serviced in C, an idle UI produces almost no
+    register-level traffic, so there is no bus activity for a pump to ride on.
+
+    The touch controller raises an interrupt when it has something to report,
+    which is why a held finger has to keep producing edges rather than being
+    delivered once.
+    """
+    tail = InputTail(Path(outdir) / "input.jsonl")
+    touch = board.i2c0.devices.get(GT911().address)
+    keypad = board.i2c0.devices.get(TDeckKeyboard().address)
+
+    def pump() -> None:
+        for event in tail.drain():
+            kind = event.get("type")
+            if kind == "key" and isinstance(keypad, TDeckKeyboard):
+                if not keypad.key_event(str(event.get("key", "")),
+                                        bool(event.get("down", True))):
+                    log.debug("no character for key %r", event.get("key"))
+            elif kind == "touch" and isinstance(touch, GT911):
+                if bool(event.get("down", True)):
+                    touch.touch(int(event.get("x", 0)), int(event.get("y", 0)))
+                else:
+                    touch.release()
+                board.gpio.pulse_low(TOUCH_INT_PIN)
+            else:
+                log.warning("unknown input event %r", event)
+
+    def ticker() -> None:
+        period = 1.0 / TOUCH_REPORT_HZ
+        while not tail._stop.is_set():
+            pump()
+            if isinstance(touch, GT911) and touch.point is not None:
+                board.gpio.pulse_low(TOUCH_INT_PIN)
+            time.sleep(period)
+
+    threading.Thread(target=ticker, name="input", daemon=True).start()
+    tail.start()
+    return tail

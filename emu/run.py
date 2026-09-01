@@ -277,6 +277,7 @@ def main(argv: list[str] | None = None) -> int:
 
 def _report_bus(server: BusServer, tail=None, irq=None, hw=None) -> None:
     from emu.devices.i2c_devices import CST328, TCA8418
+    from emu.devices.tdeck_i2c import GT911, TDeckKeyboard
 
     if hw is not None:
         hw.panel.flush()
@@ -293,12 +294,24 @@ def _report_bus(server: BusServer, tail=None, irq=None, hw=None) -> None:
             print(f"  {bus.name}: {bus.transactions} transaction(s)")
             acked = " ".join(f"0x{a:02x}" for a in sorted(bus.acks))
             print(f"    acked: {acked or 'none'}")
+            # What the firmware looked for and did not find is how a board's
+            # device list gets discovered in the first place (ADR 0006).
+            missing = " ".join(f"0x{a:02x}" for a in sorted(bus.nacks))
+            if missing:
+                print(f"    probed, no model: {missing}")
             for dev in bus.devices.values():
                 if isinstance(dev, CST328) and dev.reports:
                     print(f"    CST328: {dev.reports} report(s) read, "
                           f"{dev.acks} acknowledged")
                 elif isinstance(dev, TCA8418) and dev.pending:
                     print(f"    TCA8418: {len(dev.pending)} event(s) still queued")
+                elif isinstance(dev, GT911):
+                    print(f"    GT911: {dev.reports} report(s) read, "
+                          f"{dev.acks} acknowledged")
+                elif isinstance(dev, TDeckKeyboard):
+                    print(f"    keyboard: polled {dev.reads} time(s), "
+                          f"{dev.delivered} character(s) delivered, "
+                          f"{len(dev.pending)} still queued")
         print(f"  gpio: {hw.gpio.sent} pin level(s) driven from the host")
 
     busy = sorted((r for r in server.regions if r.accesses),
