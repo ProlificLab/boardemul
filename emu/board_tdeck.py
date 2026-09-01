@@ -60,14 +60,15 @@ RADIO_CS_PIN = 9
 # board rather than applied to every board quietly.
 SOC_DEVICES = ["esp-coproc-enable,mask=0x1"]
 
-# The microphone is on I2S1. Its receive path is modelled in C, because
-# completing a capture means walking DMA descriptors in guest memory.
-I2S1_BASE = 0x6002D000
-GDMA_PERIPH_I2S1 = 4
+# The microphone captures on I2S1, modelled in C because completing a capture
+# means walking DMA descriptors in guest memory. The speaker plays on I2S0,
+# which is only claimed as an unmodelled window: completing its transfers makes
+# the firmware's own handler crash (ADR 0016), and a stall is better than that.
+I2S1_BASE, GDMA_PERIPH_I2S1 = 0x6002D000, 4
 
 UNMODELLED = {
-    "ledc": 0x60019000,
     "i2s0": 0x6000F000,
+    "ledc": 0x60019000,
     "lcd_cam": 0x60041000,
     "uhci": 0x60014000,
     "pcnt": 0x60017000,

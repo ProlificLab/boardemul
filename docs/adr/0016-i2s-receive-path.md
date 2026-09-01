@@ -86,12 +86,37 @@ matrix maps source 66 to CPU1 interrupt 12, and the handler executes. Buffers
 continue to be delivered around the ring rather than stalling after one, which
 is the same conclusion from the other end.
 
-**What is still unexplained, and is now a different question**
+**Where the vendor firmware actually stops, which is the other half of audio**
 
-The vendor firmware does not visibly get further for it: its LVGL loop still
-runs about seventeen iterations and stops. Since audio no longer blocks, that is
-a separate matter from this ADR, and guessing at it is what produced the mistake
-above.
+Its LVGL loop still runs about seventeen iterations and stops, and that turns
+out to be the *transmit* side. Running the same firmware for thirty seconds and
+for ninety produces byte-identical counters -- the same 96 SPI segments, 60 I2C
+transactions, 17 keyboard polls -- so it is frozen rather than idle. The last
+bus access is `0x6000f024`, which is `I2S_TX_CONF_REG` of I2S0, written
+`0x80100` then `0x80104`: TX_UPDATE, then TX_START. `OUT_PERI_SEL_CH0` is 3,
+which is I2S0. So after the capture the firmware plays a sound and waits for the
+playback DMA, and nothing completes it.
+
+Completing it was tried and is not kept. Two things were learned:
+
+- **A transmit list is not a receive ring.** `suc_eof` ends a transmit list,
+  where on receive it only raises a status bit. Stepping a transmit list
+  descriptor by descriptor, trusting the owner bit, therefore walks straight
+  past the queued buffers -- 179 of them, off the end of DRAM, clearing owner
+  bits through everything it crossed. The engine's read side is built to be
+  handed a whole terminated list in one call, which is how AES and SHA use it.
+
+- **Even done correctly it crashes the firmware.** One drain of a properly
+  terminated 2048-byte list at `0x3fca88c0` kills it with a null load at
+  `PS = 0x00060031` -- INTLEVEL 1, so inside a level-1 handler. Its own
+  interrupt handler runs and dereferences something not yet built. Slowing
+  delivery from 5 ms to 50 ms, which is closer to the real time 2048 bytes of
+  audio takes, does not change it, so it is not a simple race.
+
+So I2S0 is left as an unmodelled window. The firmware stalls there, visibly and
+harmlessly, and a stall is better than a crash. What the handler expects that it
+has not got is the next thing to find out, and it wants instrumenting rather
+than guessing.
 
 **Costs, accepted**
 

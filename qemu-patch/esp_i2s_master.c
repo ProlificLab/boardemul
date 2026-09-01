@@ -49,10 +49,18 @@ OBJECT_DECLARE_SIMPLE_TYPE(EspI2sMaster, ESP_I2S_MASTER)
 #define R_RX_CONF       0x20
 #define RX_START        (1u << 2)
 
-/* gdma_reg.h: GDMA_INLINK_START_CHn is bit 22 -- the transmit side's is 21, and
- * the fork's own field definitions agree. */
+/* i2s_reg.h: I2S_TX_CONF_REG is at +0x24 with I2S_TX_START at bit 2. Recorded
+ * because it is where the vendor firmware stops, and deliberately not acted on
+ * -- see ADR 0016. */
+#define R_TX_CONF       0x24
+#define TX_START        (1u << 2)
+
+/* gdma_reg.h: the receive link's start is bit 22 and the transmit link's is 21.
+ * They genuinely differ, and reading one with the other's layout finds a
+ * channel that is not running. */
 #define IN_LINK_START   (1u << 22)
-#define IN_LINK_ADDR    0x000FFFFF
+#define OUT_LINK_START  (1u << 21)
+#define LINK_ADDR       0x000FFFFF
 
 /* GDMA_PERI_IN_SEL is six bits. */
 #define PERI_SEL_MASK   0x3F
@@ -82,26 +90,69 @@ struct EspI2sMaster {
     QEMUTimer *timer;
 
     uint32_t regs[I2S_REG_COUNT];
-    bool armed;
-    uint32_t cursor;            /* our way around the descriptor ring */
+    bool rx_armed;
+    uint32_t rx_cursor;         /* our way around the descriptor ring */
     uint64_t buffers;
     uint64_t bytes;
     bool complained;
 };
 
-/* Look at the descriptor the cursor is on.
+/* Find a channel bound to this block in the given direction and running.
  *
- * One descriptor, never the chain: a receive chain is a ring, so walking it
- * looking for an end runs until the loop guard stops it. A receiver fills one
- * buffer per period, and the owner bit is the handshake -- the engine clears it
- * once filled, the driver sets it again once it has taken the data. Refusing a
- * buffer the CPU still owns is both what the hardware does and what stops the
- * same buffer being delivered twice.
- *
- * `size` is the room in the buffer; `length` is what the hardware reports it
- * put there, so `size` is what says how much to deliver.
+ * The link's START bit is a one-shot arm which the engine clears once it has
+ * run, but the stream is still going -- what says so is I2S_RX_START or
+ * I2S_TX_START, checked by the callers. So take the start bit as permission to
+ * begin, and keep going afterwards until the stream is stopped.
  */
-static bool i2s_buffer_at(uint32_t at, uint32_t *capacity, uint32_t *next)
+static bool i2s_find_channel(EspI2sMaster *s, int dir, bool *armed,
+                             uint32_t *cursor, uint32_t *chan)
+{
+    const uint32_t start_bit = (dir == ESP_GDMA_IN_IDX) ? IN_LINK_START
+                                                        : OUT_LINK_START;
+
+    for (uint32_t i = 0; i < ESP32S3_GDMA_CHANNEL_COUNT; i++) {
+        uint64_t sel = esp_gdma_read_chan_register(s->gdma, dir, i,
+                                                   GDMA_PERI_SEL_REG);
+        if ((sel & PERI_SEL_MASK) != s->periph) {
+            continue;
+        }
+        uint64_t link = esp_gdma_read_chan_register(s->gdma, dir, i,
+                                                    GDMA_LINK_REG);
+        uint32_t addr = (uint32_t)(link & LINK_ADDR);
+        if (addr == 0) {
+            continue;
+        }
+        if (!(link & start_bit) && !*armed) {
+            continue;
+        }
+        if (!*armed) {
+            *cursor = DRAM_TOP_BITS | addr;
+            *armed = true;
+        }
+        *chan = i;
+        return true;
+    }
+    return false;
+}
+
+/* The descriptor the cursor is on, and how many bytes it is worth.
+ *
+ * One descriptor, never the chain: these are rings, so walking one looking for
+ * an end does not terminate. A stream moves one buffer per period and the owner
+ * bit is the handshake -- the engine clears it, the driver sets it again once
+ * it has dealt with the buffer. Refusing one the CPU still owns is what the
+ * hardware does and what stops a buffer being handled twice.
+ *
+ * Receiving, the interesting number is `size`, the room available. Transmitting
+ * it is `length`, the bytes the driver actually put there.
+ *
+ * `suc_eof` means different things by direction, which matters a great deal.
+ * Transmitting, it marks the last buffer of the list and the transfer ends
+ * there. Receiving, the engine's own comment is that it only raises a status
+ * bit and does not stop anything, because the ring keeps turning.
+ */
+static bool i2s_descriptor(uint32_t at, bool receiving, uint32_t *bytes,
+                           uint32_t *next, bool *eof)
 {
     uint8_t raw[DESC_BYTES];
 
@@ -110,97 +161,75 @@ static bool i2s_buffer_at(uint32_t at, uint32_t *capacity, uint32_t *next)
         return false;
     }
     uint32_t config = ldl_le_p(raw);
-    uint32_t size = config & 0xFFF;
+    uint32_t want = receiving ? (config & 0xFFF) : ((config >> 12) & 0xFFF);
     bool owner = (config >> 31) & 1;
 
-    if (!owner || size == 0 || size > DESC_MAX_SIZE) {
+    if (!owner || want == 0 || want > DESC_MAX_SIZE) {
         return false;
     }
-    *capacity = size;
+    *bytes = want;
     *next = ldl_le_p(raw + 8);
+    *eof = (config >> 30) & 1;
     return true;
 }
 
-static bool i2s_find_rx_channel(EspI2sMaster *s, uint32_t *chan)
+/* Point the engine at the buffer being worked on. It always starts from the
+ * link address and never advances it, whereas the hardware works its way around
+ * the ring, so the cursor is ours to carry. Only the address is written: the
+ * start bits would re-trigger a transfer. */
+static void i2s_aim(EspI2sMaster *s, int dir, uint32_t chan, uint32_t cursor)
 {
-    for (uint32_t i = 0; i < ESP32S3_GDMA_CHANNEL_COUNT; i++) {
-        uint64_t sel = esp_gdma_read_chan_register(s->gdma, ESP_GDMA_IN_IDX, i,
-                                                   GDMA_PERI_SEL_REG);
-        if ((sel & PERI_SEL_MASK) != s->periph) {
-            continue;
-        }
-        uint64_t link = esp_gdma_read_chan_register(s->gdma, ESP_GDMA_IN_IDX, i,
-                                                    GDMA_LINK_REG);
-        uint32_t addr = (uint32_t)(link & IN_LINK_ADDR);
-        if (addr == 0) {
-            continue;
-        }
-        /* The link's START bit is a one-shot arm, and the engine clears it once
-         * it has run -- but the capture is still going, and what says so is
-         * I2S_RX_START. So take the start bit as permission to begin, and keep
-         * going afterwards until the capture is stopped. */
-        if (!(link & IN_LINK_START) && !s->armed) {
-            continue;
-        }
-        if (!s->armed) {
-            s->cursor = DRAM_TOP_BITS | addr;
-            s->armed = true;
-        }
-        *chan = i;
-        return true;
-    }
-    return false;
+    esp_gdma_write_chan_register(s->gdma, dir, chan, GDMA_LINK_REG,
+                                 cursor & LINK_ADDR);
 }
 
-static void i2s_deliver(EspI2sMaster *s)
+static void i2s_receive(EspI2sMaster *s)
 {
-    uint32_t chan = 0;
-    uint32_t capacity = 0;
-    uint32_t next = 0;
+    uint32_t chan = 0, bytes = 0, next = 0;
+    bool eof = false;
 
-    if (!s->gdma || !(s->regs[R_RX_CONF / 4] & RX_START)) {
-        /* Capture stopped; the next one arms itself again. */
-        s->armed = false;
+    if (!(s->regs[R_RX_CONF / 4] & RX_START)) {
+        s->rx_armed = false;
         return;
     }
-    if (!i2s_find_rx_channel(s, &chan)) {
+    if (!i2s_find_channel(s, ESP_GDMA_IN_IDX, &s->rx_armed, &s->rx_cursor,
+                          &chan)) {
         return;
     }
-    if (!i2s_buffer_at(s->cursor, &capacity, &next)) {
-        /* The CPU still owns this one. On real hardware that is an overrun and
-         * the receiver stalls, which is exactly what happens here. */
+    if (!i2s_descriptor(s->rx_cursor, true, &bytes, &next, &eof)) {
+        /* The CPU still owns it. On real hardware that is an overrun and the
+         * receiver stalls, which is what happens here too. */
         return;
     }
 
-    /* Point the engine at the buffer being filled. It always starts from the
-     * link address and never advances it, whereas the hardware works its way
-     * around the ring, so the cursor is ours to carry. Only the address is
-     * written: the start bits would re-trigger a transfer. */
-    esp_gdma_write_chan_register(s->gdma, ESP_GDMA_IN_IDX, chan, GDMA_LINK_REG,
-                                 s->cursor & IN_LINK_ADDR);
+    i2s_aim(s, ESP_GDMA_IN_IDX, chan, s->rx_cursor);
 
-    g_autofree uint8_t *silence = g_malloc0(capacity);
-    if (!esp_gdma_write_channel(s->gdma, chan, silence, capacity)) {
+    /* Silence is the honest sample value: there is no audio into this
+     * emulator, and what the firmware waits for is the transfer. */
+    g_autofree uint8_t *silence = g_malloc0(bytes);
+    if (!esp_gdma_write_channel(s->gdma, chan, silence, bytes)) {
         if (!s->complained) {
             s->complained = true;
-            warn_report("%s: GDMA refused %u bytes on channel %u",
-                        s->name ? s->name : "i2s", capacity, chan);
+            warn_report("%s: GDMA refused %u receive bytes on channel %u",
+                        s->name ? s->name : "i2s", bytes, chan);
         }
         return;
     }
-
     if (next) {
-        s->cursor = DRAM_TOP_BITS | (next & IN_LINK_ADDR);
+        s->rx_cursor = DRAM_TOP_BITS | (next & LINK_ADDR);
     }
     s->buffers++;
-    s->bytes += capacity;
+    s->bytes += bytes;
 }
 
 static void i2s_tick(void *opaque)
 {
     EspI2sMaster *s = opaque;
 
-    i2s_deliver(s);
+    if (!s->gdma) {
+        return;
+    }
+    i2s_receive(s);
     timer_mod_ns(s->timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + I2S_POLL_NS);
 }
 
