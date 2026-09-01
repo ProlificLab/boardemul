@@ -1,6 +1,10 @@
 # ADR 0015 — Leave I2S unmodelled, and record why the obvious route fails
 
-**Status:** Accepted — 2026-09-01
+**Status:** Superseded by [ADR 0016](0016-i2s-receive-path.md) — 2026-09-01.
+The reference manual showed that four of the facts this record reasons from are
+wrong: the block is I2S1 rather than I2S0, the transfer is a capture rather than
+a playback, and the register and link bits were read with the transmit layout.
+Kept because the failure modes it describes are real and were expensive.
 
 ## Context
 

@@ -60,9 +60,14 @@ RADIO_CS_PIN = 9
 # board rather than applied to every board quietly.
 SOC_DEVICES = ["esp-coproc-enable,mask=0x1"]
 
+# The microphone is on I2S1. Its receive path is modelled in C, because
+# completing a capture means walking DMA descriptors in guest memory.
+I2S1_BASE = 0x6002D000
+GDMA_PERIPH_I2S1 = 4
+
 UNMODELLED = {
     "ledc": 0x60019000,
-    "i2s0": 0x6002D000,
+    "i2s0": 0x6000F000,
     "lcd_cam": 0x60041000,
     "uhci": 0x60014000,
     "pcnt": 0x60017000,
@@ -95,6 +100,10 @@ def build(outdir: Path) -> Board:
         f"socket={i2c0.socket_path}",
         f"esp-i2c-master,name=i2c1,base=0x{I2C1_BASE:x},irq={IRQ_I2C_EXT1},"
         f"socket={i2c1.socket_path}",
+        # No socket: it says nothing to Python. Its job is to let the DMA
+        # engine finish the capture the firmware waits on at startup.
+        f"esp-i2s-master,name=i2s1,base=0x{I2S1_BASE:x},"
+        f"periph={GDMA_PERIPH_I2S1}",
     ]
     board = Board(regions=regions, gpio=gpio, spi=spi, i2c0=i2c0, i2c1=i2c1,
                   panel=panel, devices=devices)
