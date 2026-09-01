@@ -68,6 +68,13 @@ I2S0_BASE, GDMA_PERIPH_I2S0 = 0x6000F000, 3
 I2S1_BASE, GDMA_PERIPH_I2S1 = 0x6002D000, 4
 
 UNMODELLED = {
+    # The radio front end. Claimed not because anything models it, but because
+    # this is where the vendor firmware stops: with these invisible, the last
+    # bus access looked like PSRAM timing calibration on SPI0, which sent a
+    # whole investigation the wrong way.
+    "fe": 0x60006000,
+    "nrx": 0x6001C000,
+    "bb": 0x6001D000,
     "ledc": 0x60019000,
     "lcd_cam": 0x60041000,
     "uhci": 0x60014000,
