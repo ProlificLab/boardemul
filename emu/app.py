@@ -31,6 +31,8 @@ if str(REPO_ROOT) not in sys.path:
 
 DEFAULT_FRAMES = REPO_ROOT / "logs" / "frames"
 
+TITLES = {"tdeck-max": "T-Deck Max", "tdeck": "T-Deck"}
+
 # Faster than the panel can refresh (real e-paper needs hundreds of ms) and slow
 # enough that the stat() call is free.
 POLL_MS = 250
@@ -39,10 +41,7 @@ POLL_MS = 250
 # arithmetic and data, and keeping them out of here lets the tests import
 # them on a machine with no display.
 from emu.skin import (  # noqa: E402
-    BALL_COL, BALL_GAP, BEZEL, BODY_CX, BODY_H, BODY_W, BODY_X0, BODY_X1,
-    BODY_Y0, BODY_Y1, CANVAS_H, CANVAS_W, DESK, FOOT, GAP, HEAD, KB_INSET,
-    KEY_NAMES, KEY_ROWS, KEYPAD_H, KEYSYMS, LETTER_KEYS, RADIUS, SCREEN_H,
-    SCREEN_W, SCREEN_X, SCREEN_Y, SIDE, InputWriter, panel_point,
+    DEFAULT, KEY_NAMES, KEYSYMS, LETTER_KEYS, SKINS, InputWriter, Skin,
 )
 
 # Lit from the top left throughout: highlights go on top and left edges,
@@ -99,10 +98,11 @@ class DeckWindow:
     """The window: a drawn shell, plus whatever the panel last wrote."""
 
     def __init__(self, root: tk.Tk, path: Path, scale: int,
-                 events: "InputWriter | None" = None):
+                 events: "InputWriter | None" = None, skin: Skin = DEFAULT):
         self.root = root
         self.path = path
         self.scale = scale
+        self.skin = skin
         self.events = events
         self.key_hits: list[tuple[float, float, float, float, str]] = []
         self.pressed: int | None = None
@@ -115,7 +115,8 @@ class DeckWindow:
         self.ui = _family(root, "Segoe UI", "DejaVu Sans", "Helvetica")
         self.mono = _family(root, "Consolas", "DejaVu Sans Mono", "Courier")
 
-        self.canvas = tk.Canvas(root, width=CANVAS_W * scale, height=CANVAS_H * scale,
+        self.canvas = tk.Canvas(root, width=self.skin.canvas_w * scale,
+                                height=self.skin.canvas_h * scale,
                                 background=C_DESK, highlightthickness=0)
         self.canvas.pack()
         # width=1 so the path in the status text cannot widen the window past
@@ -147,7 +148,7 @@ class DeckWindow:
         self.root.bind("<KeyRelease>", self._on_keyrelease)
 
     def _panel_point(self, x: float, y: float) -> tuple[int, int] | None:
-        return panel_point(x, y, self.scale)
+        return self.skin.panel_point(x, y, self.scale)
 
     def _key_at(self, x: float, y: float) -> str | None:
         ux, uy = x / self.scale, y / self.scale
@@ -267,81 +268,81 @@ class DeckWindow:
         # Stipple is the only translucency Tk offers; two coarse passes at
         # increasing offset read as a soft contact shadow.
         for offset, pattern in ((3, "gray50"), (7, "gray25")):
-            self._rr(BODY_X0 + offset, BODY_Y0 + offset, BODY_X1 + offset,
-                     BODY_Y1 + offset, RADIUS, fill="#000000", outline="",
+            self._rr(self.skin.body_x0 + offset, self.skin.body_y0 + offset, self.skin.body_x1 + offset,
+                     self.skin.body_y1 + offset, self.skin.radius, fill="#000000", outline="",
                      stipple=pattern)
 
     def _draw_side_buttons(self) -> None:
         # Drawn before the shell so the body overlaps their inner half and they
         # look moulded in rather than stuck on.
-        for y0, y1 in ((HEAD + 70, HEAD + 96), (HEAD + 110, HEAD + 156)):
-            self._rr(BODY_X1 - 4, DESK + y0, BODY_X1 + 5, DESK + y1, 4,
+        for y0, y1 in ((self.skin.head + 70, self.skin.head + 96), (self.skin.head + 110, self.skin.head + 156)):
+            self._rr(self.skin.body_x1 - 4, self.skin.desk + y0, self.skin.body_x1 + 5, self.skin.desk + y1, 4,
                      fill="#1a1e21", outline=C_EDGE)
-            self._rr(BODY_X1 - 4, DESK + y0, BODY_X1 + 5, DESK + y0 + 3, 2,
+            self._rr(self.skin.body_x1 - 4, self.skin.desk + y0, self.skin.body_x1 + 5, self.skin.desk + y0 + 3, 2,
                      fill="#2f363c", outline="")
-        self._rr(BODY_X0 - 5, DESK + HEAD + 84, BODY_X0 + 4, DESK + HEAD + 110, 4,
+        self._rr(self.skin.body_x0 - 5, self.skin.desk + self.skin.head + 84, self.skin.body_x0 + 4, self.skin.desk + self.skin.head + 110, 4,
                  fill="#1a1e21", outline=C_EDGE)
 
         # SMA stub for the LoRa radio, top right: the one feature that makes the
         # silhouette read as this board and not a generic slab.
-        self._rr(BODY_X1 - 52, BODY_Y0 - 5, BODY_X1 - 36, BODY_Y0 + 6, 3,
+        self._rr(self.skin.body_x1 - 52, self.skin.body_y0 - 5, self.skin.body_x1 - 36, self.skin.body_y0 + 6, 3,
                  fill="#20262b", outline=C_EDGE)
-        self._oval(BODY_X1 - 44, BODY_Y0 - 7, 4.5, fill="#3a4248", outline=C_EDGE)
-        self._oval(BODY_X1 - 44, BODY_Y0 - 7, 1.6, fill="#c8b273", outline="")
+        self._oval(self.skin.body_x1 - 44, self.skin.body_y0 - 7, 4.5, fill="#3a4248", outline=C_EDGE)
+        self._oval(self.skin.body_x1 - 44, self.skin.body_y0 - 7, 1.6, fill="#c8b273", outline="")
 
     def _draw_body(self) -> None:
-        self._rr(BODY_X0, BODY_Y0, BODY_X1, BODY_Y1, RADIUS, fill=C_EDGE, outline="")
-        self._rr(BODY_X0 + 1.5, BODY_Y0 + 1.5, BODY_X1 - 1.5, BODY_Y1 - 1.5,
-                 RADIUS - 1, fill=C_SHELL_LIT, outline="")
-        self._rr(BODY_X0 + 3, BODY_Y0 + 3.5, BODY_X1 - 3, BODY_Y1 - 2.5,
-                 RADIUS - 2, fill=C_SHELL_DIM, outline="")
-        self._rr(BODY_X0 + 3, BODY_Y0 + 3, BODY_X1 - 3, BODY_Y1 - 4,
-                 RADIUS - 3, fill=C_SHELL, outline="")
+        self._rr(self.skin.body_x0, self.skin.body_y0, self.skin.body_x1, self.skin.body_y1, self.skin.radius, fill=C_EDGE, outline="")
+        self._rr(self.skin.body_x0 + 1.5, self.skin.body_y0 + 1.5, self.skin.body_x1 - 1.5, self.skin.body_y1 - 1.5,
+                 self.skin.radius - 1, fill=C_SHELL_LIT, outline="")
+        self._rr(self.skin.body_x0 + 3, self.skin.body_y0 + 3.5, self.skin.body_x1 - 3, self.skin.body_y1 - 2.5,
+                 self.skin.radius - 2, fill=C_SHELL_DIM, outline="")
+        self._rr(self.skin.body_x0 + 3, self.skin.body_y0 + 3, self.skin.body_x1 - 3, self.skin.body_y1 - 4,
+                 self.skin.radius - 3, fill=C_SHELL, outline="")
 
         # A seam where the two shell halves meet, just inside the edge.
-        self._rr(BODY_X0 + 6, BODY_Y0 + 6, BODY_X1 - 6, BODY_Y1 - 7, RADIUS - 6,
+        self._rr(self.skin.body_x0 + 6, self.skin.body_y0 + 6, self.skin.body_x1 - 6, self.skin.body_y1 - 7, self.skin.radius - 6,
                  fill="", outline="#2b3136")
 
     def _draw_head(self) -> None:
-        band = DESK + 8
-        self._oval(BODY_X0 + 22, band, 2.6, fill="#141719", outline="")
-        self._oval(BODY_X0 + 22, band, 1.6, fill=C_LED, outline="")
+        band = self.skin.desk + 8
+        self._oval(self.skin.body_x0 + 22, band, 2.6, fill="#141719", outline="")
+        self._oval(self.skin.body_x0 + 22, band, 1.6, fill=C_LED, outline="")
 
         # Grille holes rather than slots: at 2x a slot is three pixels tall and
         # turns into a smear.
         for col in range(10):
             for row in (-3.0, 3.0):
-                self._oval(BODY_X0 + 34 + col * 6, band + row, 1.4,
+                self._oval(self.skin.body_x0 + 34 + col * 6, band + row, 1.4,
                            fill="#0e1113", outline="")
 
-        self._text(BODY_CX, band, "LILYGO", 9, C_BRAND, bold=True)
-        self._text(BODY_X1 - 18, band, "T-DECK MAX", 6, C_LEGEND_DIM, anchor="e")
+        self._text(self.skin.body_cx, band, "LILYGO", 9, C_BRAND, bold=True)
+        self._text(self.skin.body_x1 - 18, band, "T-DECK MAX", 6, C_LEGEND_DIM, anchor="e")
 
     def _draw_bezel(self) -> None:
-        x0, y0 = SCREEN_X, SCREEN_Y
-        x1, y1 = SCREEN_X + SCREEN_W, SCREEN_Y + SCREEN_H
+        x0, y0 = self.skin.screen_x, self.skin.screen_y
+        x1, y1 = self.skin.screen_x + self.skin.screen_w, self.skin.screen_y + self.skin.screen_h
 
-        self._rr(x0 - BEZEL - 4, y0 - BEZEL - 4, x1 + BEZEL + 4, y1 + BEZEL + 4, 10,
+        self._rr(x0 - self.skin.bezel - 4, y0 - self.skin.bezel - 4, x1 + self.skin.bezel + 4, y1 + self.skin.bezel + 4, 10,
                  fill=C_PLATE, outline="#2c3238")
         # The well: dark all round, with the lit edge at the bottom right, which
         # is what tells the eye this is a hole and not a raised block.
-        self._rr(x0 - BEZEL, y0 - BEZEL, x1 + BEZEL, y1 + BEZEL, 6,
+        self._rr(x0 - self.skin.bezel, y0 - self.skin.bezel, x1 + self.skin.bezel, y1 + self.skin.bezel, 6,
                  fill=C_WELL, outline=C_EDGE)
-        self.canvas.create_line(*self.s(x0 - BEZEL + 2, y1 + BEZEL - 1,
-                                        x1 + BEZEL - 2, y1 + BEZEL - 1),
+        self.canvas.create_line(*self.s(x0 - self.skin.bezel + 2, y1 + self.skin.bezel - 1,
+                                        x1 + self.skin.bezel - 2, y1 + self.skin.bezel - 1),
                                 fill="#31383e")
         # White FPC margin around the active area, as on the bare module.
         self.canvas.create_rectangle(*self.s(x0 - 3, y0 - 3, x1 + 3, y1 + 3),
-                                     fill=C_PAPER_RIM, outline="#8f9289")
+                                     fill=self.skin.idle_rim, outline="#8f9289")
 
     def _draw_keypad(self) -> None:
-        kx0, ky0 = BODY_X0 + KB_INSET, DESK + HEAD + SCREEN_H + GAP
-        kx1 = BODY_X1 - KB_INSET
-        ball_cx = kx1 - BALL_COL / 2
-        col = ((kx1 - kx0) - BALL_COL - BALL_GAP) / 10
-        pitch = KEYPAD_H / 4
+        kx0, ky0 = self.skin.body_x0 + self.skin.kb_inset, self.skin.desk + self.skin.head + self.skin.screen_h + self.skin.gap
+        kx1 = self.skin.body_x1 - self.skin.kb_inset
+        ball_cx = kx1 - self.skin.ball_col / 2
+        col = ((kx1 - kx0) - self.skin.ball_col - self.skin.ball_gap) / 10
+        pitch = self.skin.keypad_h / 4
 
-        for r, row in enumerate(KEY_ROWS):
+        for r, row in enumerate(self.skin.key_rows):
             y = ky0 + r * pitch + 1.5
             x = kx0
             for label, span in row:
@@ -349,7 +350,7 @@ class DeckWindow:
                 self._key(x + 1.5, y, x + w - 1.5, y + pitch - 4.5, label)
                 x += w
 
-        cy = ky0 + KEYPAD_H / 2
+        cy = ky0 + self.skin.keypad_h / 2
         self._trackball(ball_cx, cy)
         for dy in (-34, 34):
             self._oval(ball_cx, cy + dy, 6.5, fill="#272c31", outline=C_KEY_DIM)
@@ -372,10 +373,10 @@ class DeckWindow:
         self._oval(cx - 3.5, cy - 4, 5, fill="#69737c", outline="", stipple="gray50")
 
     def _draw_foot(self) -> None:
-        y = BODY_Y1 - 9
-        self._rr(BODY_CX - 15, y, BODY_CX + 15, y + 7, 3.5,
+        y = self.skin.body_y1 - 9
+        self._rr(self.skin.body_cx - 15, y, self.skin.body_cx + 15, y + 7, 3.5,
                  fill="#0b0e10", outline="#2c3237")
-        self._text(BODY_X0 + 16, y + 3, "ESP32-S3  SX1262  240x320",
+        self._text(self.skin.body_x0 + 16, y + 3, "ESP32-S3  SX1262  240x320",
                    5.5, "#474e54", anchor="w")
 
     # -- the screen ------------------------------------------------------
@@ -384,9 +385,9 @@ class DeckWindow:
         """A powered panel with nothing written to it still shows something --
         the last image, faintly. A blank window would read as a broken app."""
         self.canvas.delete("screen")
-        x0, y0 = SCREEN_X, SCREEN_Y
-        x1, y1 = SCREEN_X + SCREEN_W, SCREEN_Y + SCREEN_H
-        self.canvas.create_rectangle(*self.s(x0, y0, x1, y1), fill=C_PAPER,
+        x0, y0 = self.skin.screen_x, self.skin.screen_y
+        x1, y1 = self.skin.screen_x + self.skin.screen_w, self.skin.screen_y + self.skin.screen_h
+        self.canvas.create_rectangle(*self.s(x0, y0, x1, y1), fill=self.skin.idle,
                                      outline="", tags="screen")
         # Ghosting bands, kept clear of the middle so they do not read as a
         # strikethrough across the text.
@@ -394,7 +395,7 @@ class DeckWindow:
             self.canvas.create_line(*self.s(x0 + 20, gy, x1 - 20, gy),
                                     fill=C_GHOST, tags="screen")
         self.canvas.create_rectangle(*self.s(x0 + 12, y0 + 12, x1 - 12, y1 - 12),
-                                     outline=C_PAPER_RIM, dash=(4, 4), tags="screen")
+                                     outline=self.skin.idle_rim, dash=(4, 4), tags="screen")
         self._text((x0 + x1) / 2, y0 + 140, "NO SIGNAL", 18, C_IDLE_INK,
                    bold=True, tags="screen")
         self._text((x0 + x1) / 2, y0 + 168, "panel has not refreshed yet", 8.5,
@@ -402,7 +403,7 @@ class DeckWindow:
         # Whatever --frames was given can be arbitrarily long; unelided it
         # runs straight off the glass and over the bezel.
         self._text((x0 + x1) / 2, y0 + 190,
-                   self._elide(self._short_path(), (SCREEN_W - 20) * self.scale,
+                   self._elide(self._short_path(), (self.skin.screen_w - 20) * self.scale,
                                self.screen_metrics),
                    7.5, "#9ba095", mono=True, tags="screen")
 
@@ -434,10 +435,10 @@ class DeckWindow:
         # Composite onto a fixed-size buffer so that a PNG which is not the
         # panel's own 240x320 -- say --frames pointed at some other capture --
         # is letterboxed or cropped instead of spilling over the bezel.
-        box_w, box_h = SCREEN_W * self.scale, SCREEN_H * self.scale
+        box_w, box_h = self.skin.screen_w * self.scale, self.skin.screen_h * self.scale
         take_w, take_h = min(src.width(), box_w), min(src.height(), box_h)
         shown = tk.PhotoImage(master=self.canvas, width=box_w, height=box_h)
-        shown.put(C_PAPER, to=(0, 0, box_w, box_h))
+        shown.put(self.skin.idle, to=(0, 0, box_w, box_h))
         shown.tk.call(shown, "copy", src, "-from", 0, 0, take_w, take_h,
                       "-to", (box_w - take_w) // 2, (box_h - take_h) // 2)
 
@@ -445,7 +446,7 @@ class DeckWindow:
         # Tk frees a photo when its last Python reference drops, so the new one
         # has to be held before the old is released or the screen flashes.
         self.photo = shown
-        self.canvas.create_image(*self.s(SCREEN_X, SCREEN_Y), image=shown,
+        self.canvas.create_image(*self.s(self.skin.screen_x, self.skin.screen_y), image=shown,
                                  anchor="nw", tags="screen")
         self.frames += 1
         self.note = time.strftime("%H:%M:%S")
@@ -481,7 +482,7 @@ class DeckWindow:
 
     def _refresh_status(self) -> None:
         head = f"frames {self.frames:<3d} last {self.note:<13s} "
-        budget = CANVAS_W * self.scale - 12 * self.scale - self.metrics.measure(head)
+        budget = self.skin.canvas_w * self.scale - 12 * self.scale - self.metrics.measure(head)
         self.status.config(
             text=head + self._elide(str(self.path), budget, self.metrics))
 
@@ -500,8 +501,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--scale", type=int, default=2, choices=(1, 2, 3, 4),
                     help="integer pixel zoom; a 1-bit panel must not be "
                          "interpolated (default: 2)")
+    ap.add_argument("--board", default=DEFAULT.name, choices=sorted(SKINS),
+                    help=f"which device to draw (default: {DEFAULT.name})")
     args = ap.parse_args(argv)
 
+    skin = SKINS[args.board]
     frames = args.frames
     path = frames / "latest.png" if (frames.is_dir() or not frames.suffix) else frames
     events = None
@@ -525,12 +529,12 @@ def main(argv: list[str] | None = None) -> int:
         print(f"no display: {exc}", file=sys.stderr)
         return 2
 
-    root.title("BoardEmul - LilyGO T-Deck Max")
+    root.title(f"BoardEmul - LilyGO {TITLES[skin.name]}")
     root.configure(background=C_DESK)
     root.resizable(False, False)
     root.bind("<Escape>", lambda _e: root.destroy())
 
-    app = DeckWindow(root, path, args.scale, events)
+    app = DeckWindow(root, path, args.scale, events, skin=skin)
 
     root.update_idletasks()
     w, h = root.winfo_reqwidth(), root.winfo_reqheight()
@@ -538,8 +542,9 @@ def main(argv: list[str] | None = None) -> int:
     y = max(0, (root.winfo_screenheight() - h) // 3)
     root.geometry(f"{w}x{h}+{x}+{y}")
 
+    print(f"board   : {skin.name}")
     print(f"panel   : {app.path}")
-    print(f"scale   : {args.scale}x ({SCREEN_W * args.scale}x{SCREEN_H * args.scale})")
+    print(f"scale   : {args.scale}x ({skin.screen_w * args.scale}x{skin.screen_h * args.scale})")
     print(f"poll    : {POLL_MS} ms")
     # A portrait panel gets tall fast; say so rather than let the window run off
     # the bottom of the display with no explanation.
