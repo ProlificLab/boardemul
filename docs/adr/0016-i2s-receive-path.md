@@ -113,10 +113,38 @@ Completing it was tried and is not kept. Two things were learned:
   delivery from 5 ms to 50 ms, which is closer to the real time 2048 bytes of
   audio takes, does not change it, so it is not a simple race.
 
-So I2S0 is left as an unmodelled window. The firmware stalls there, visibly and
-harmlessly, and a stall is better than a crash. What the handler expects that it
-has not got is the next thing to find out, and it wants instrumenting rather
-than guessing.
+**What the handler was missing, established by instrumenting it**
+
+It is the address of the descriptor that finished, and this is a bug in the
+fork rather than in anything here.
+
+Disassembling the faulting code shows the handler loading a descriptor pointer
+out of a structure, getting zero, and dereferencing it to read bits 0..11 --
+which is a descriptor's `size` field:
+
+    0x40375aed:  l32i.n  a3, a3, 0      ; a3 = *a3   -> zero
+    0x40375af4:  l32i.n  a2, a3, 0      ; faults
+    0x40375af6:  extui   a2, a2, 0, 12  ; the `size` field
+
+Logging the register it comes from confirms it: the guest reads the transmit
+channel's EOF-descriptor register exactly once and is told nothing.
+
+    GDMAEOFREAD dir=1 chan=0 value=0x00000000
+
+The cause is an asymmetry between the two directions in `hw/dma/esp_gdma.c`.
+The receive path records `state->suc_eof_desc_addr = in_addr` when it reaches
+the end marker. The transmit path never sets it at all, and the register is not
+writable through `esp_gdma_write_chan_register` either, so no device outside
+that file can supply it.
+
+Supplying it is one line, and it was tried: the crash goes away completely, the
+display still draws, and the firmware advances past audio -- the stall moves
+from I2S0's TX_CONF to SPI0. So the diagnosis is right and the fix is small.
+
+It is not applied, because it is a change to a file we do not own and ADR 0001's
+boundary has held so far. That is a decision to take deliberately rather than
+by drifting into it: carry a patch, upstream it to Espressif, or leave I2S0
+unmodelled and the firmware stalled where it is.
 
 **Costs, accepted**
 

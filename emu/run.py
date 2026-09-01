@@ -100,6 +100,9 @@ def build_argv(qemu: Path, flash: Path, efuse: Path, uart: Path,
     extra = os.environ.get("BOARDEMUL_QEMU_DFLAGS")
     if extra:
         debug += [f.strip() for f in extra.split(",") if f.strip()]
+    # Sibling hatch for arguments the debug list cannot express, -dfilter above
+    # all: an unfiltered in_asm trace of a boot is hundreds of megabytes.
+    passthrough = os.environ.get("BOARDEMUL_QEMU_ARGS", "").split()
     if traced:
         debug += [f"trace:{e}" for e in TRACE_EVENTS]
     return [
@@ -119,7 +122,7 @@ def build_argv(qemu: Path, flash: Path, efuse: Path, uart: Path,
         "-seed", str(RNG_SEED),
         "-d", ",".join(debug),
         "-D", str(qemu_log),
-    ]
+    ] + passthrough
 
 
 def run_qemu(argv: list[str], uart: Path, timeout: float, stall: float,
