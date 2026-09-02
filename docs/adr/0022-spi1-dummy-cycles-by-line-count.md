@@ -55,8 +55,9 @@ while the firmware itself ran. Upstream's `esp-develop` carries the same code
 
 2. **Carried as `qemu-patch/spi1-dummy-lanes.patch`**, applied by the build the
    way ADR 0017's patch is, in the same loop, failing loudly if the code moves.
-   It is the second and last change to the fork's own logic; both are
-   reported upstream and both go when upstream lands them.
+   It was meant to be the second and last change to the fork's own logic;
+   ADR 0023 carries a third and says why. All are reported upstream and each
+   goes when upstream lands it.
 
 3. **ADR 0021's open defect is closed.** A blank partition now mounts-fails,
    formats, and serves files on the same boot, as a real first boot does. The

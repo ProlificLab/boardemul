@@ -64,10 +64,11 @@ fi
 # adding to it. Each is reported upstream and recorded in an ADR; when one
 # lands, delete the patch and supersede its ADR rather than carrying it on.
 #   gdma-out-eof-desc.patch  ADR 0017  https://github.com/espressif/qemu/issues/168
-#   spi1-dummy-lanes.patch   ADR 0022  (upstream report pending)
+#   spi1-dummy-lanes.patch   ADR 0022  (upstream report: see the ADR)
+#   system-bt-lpck-regs.patch ADR 0023 (upstream report: see the ADR)
 # Applied from patch files rather than by hand so that they are declared,
 # reviewed like anything else, and fail loudly if a tag bump moves the code.
-for name in gdma-out-eof-desc.patch spi1-dummy-lanes.patch; do
+for name in gdma-out-eof-desc.patch spi1-dummy-lanes.patch system-bt-lpck-regs.patch; do
     PATCH="${REPO_ROOT}/qemu-patch/${name}"
     if git -C "${SRC}" apply --reverse --check "${PATCH}" 2>/dev/null; then
         echo "==> ${name} already applied"

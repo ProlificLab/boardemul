@@ -68,8 +68,8 @@ python emu/app.py --board tdeck --scale 2
 Meshtastic also boots on this board (`--psram-octal`): with its filesystem
 image in place (`--overlay 0xc90000=firmware/littlefs-t-deck-tft-2.7.10.94d4bdf.bin`,
 ADR 0021) it mounts storage and reads its preferences, and about 40 seconds in
-it stops at Bluetooth bring-up, which nothing here models yet (ADR 0022, open
-items). The vendor firmware is the one to drive.
+it stops at Bluetooth bring-up: the controller's exchange memory, which nothing
+here models yet (ADR 0023, open items). The vendor firmware is the one to drive.
 
 Because neither firmware exercises much of the panel, the window arithmetic,
 orientation and segment handling are checked against synthetic wire traffic
@@ -107,13 +107,15 @@ is what took the first board from 232,320 round trips per frame to about 44.
 
 Our C is six files we own plus a header, copied into the QEMU tree by
 `tools/build_qemu.sh` rather than committed to it. Their tree's own modification
-is six build lines across two `meson.build` files, plus two patches to their
+is six build lines across two `meson.build` files, plus three patches to their
 own logic: a GDMA transmit path that never reported which descriptor finished,
-which crashed the firmware's interrupt handler (ADR 0017, sent upstream), and
-an SPI1 dummy-cycle conversion that shifted every runtime flash read by two
-bytes, which no filesystem survived (ADR 0022, report pending). Each is applied
-from a declared patch file and the build stops if either ever fails to apply.
-See ADR 0001, ADR 0011, ADR 0017 and ADR 0022.
+which crashed the firmware's interrupt handler (ADR 0017); an SPI1 dummy-cycle
+conversion that shifted every runtime flash read by two bytes, which no
+filesystem survived (ADR 0022); and two Bluetooth clock registers the SYSTEM
+model forgot, which the controller checks before it will start (ADR 0023).
+Each is applied from a declared patch file, each is reported upstream, and the
+build stops if any ever fails to apply. See ADR 0001, ADR 0011, ADR 0017,
+ADR 0022 and ADR 0023.
 
 ## Dependencies
 
