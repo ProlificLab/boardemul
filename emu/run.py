@@ -49,6 +49,7 @@ class RunResult:
     uart_bytes: int
     uart_path: str
     qemu_log_path: str
+    stderr_log_path: str
     traced: bool
     seed: int = RNG_SEED
     rtc_base: str = RTC_BASE
@@ -84,8 +85,11 @@ def qemu_version(qemu: Path) -> str:
     return out.stdout.splitlines()[0].strip() if out.stdout else "unknown"
 
 
-def build_images(firmware: Path, outdir: Path, mac: str) -> tuple[Path, Path]:
-    rc = mkflash.main([str(firmware), "-o", str(outdir), "--mac", mac])
+def build_images(firmware: Path, outdir: Path, mac: str, overlays: list[str] = ()) -> tuple[Path, Path]:
+    argv = [str(firmware), "-o", str(outdir), "--mac", mac]
+    for spec in overlays:
+        argv += ["--overlay", spec]
+    rc = mkflash.main(argv)
     if rc != 0:
         raise SystemExit("mkflash refused the image; not launching QEMU")
     return outdir / "flash.bin", outdir / "efuse.bin"
@@ -125,8 +129,8 @@ def build_argv(qemu: Path, flash: Path, efuse: Path, uart: Path,
     ] + passthrough
 
 
-def run_qemu(argv: list[str], uart: Path, timeout: float, stall: float,
-             server: "BusServer | None" = None) -> tuple[str, float]:
+def run_qemu(argv: list[str], uart: Path, stderr_log: Path, timeout: float,
+             stall: float, server: "BusServer | None" = None) -> tuple[str, float]:
     """Returns (exit_reason, wall_seconds).
 
     The guest will not exit on its own once it starts polling a register that
@@ -138,7 +142,12 @@ def run_qemu(argv: list[str], uart: Path, timeout: float, stall: float,
     """
     uart.write_bytes(b"")
     started = time.monotonic()
-    proc = subprocess.Popen(argv, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+    # QEMU's own reports (error_report, a debug build's info_report) go to
+    # stderr. A pipe nobody drains fills at 64 KB and then blocks QEMU on the
+    # next write, which is indistinguishable from a guest stall; a file never
+    # blocks and keeps the text, which is the point of having it.
+    errfile = open(stderr_log, "wb")
+    proc = subprocess.Popen(argv, stdout=subprocess.DEVNULL, stderr=errfile)
 
     last_size, last_bus = 0, 0
     last_change = time.monotonic()
@@ -163,6 +172,7 @@ def run_qemu(argv: list[str], uart: Path, timeout: float, stall: float,
                 proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 proc.kill()
+        errfile.close()
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -183,6 +193,8 @@ def main(argv: list[str] | None = None) -> int:
                     help="present PSRAM in octal line mode (matches the real "
                          "board, but detection fails under this QEMU fork)")
     ap.add_argument("--mac", default=mkflash.DEFAULT_MAC)
+    ap.add_argument("--overlay", action="append", default=[], metavar="OFFSET=FILE",
+                    help="splice a vendor filesystem image into the flash (ADR 0021)")
     ap.add_argument("--board", default="tdeck-max", choices=("tdeck-max", "tdeck"),
                     help="which board to wire up (default: tdeck-max)")
     ap.add_argument("--qemu", default=None)
@@ -200,10 +212,11 @@ def main(argv: list[str] | None = None) -> int:
     args.outdir.mkdir(parents=True, exist_ok=True)
 
     qemu = find_qemu(args.qemu)
-    flash, efuse = build_images(args.firmware, args.builddir / args.firmware.stem, args.mac)
+    flash, efuse = build_images(args.firmware, args.builddir / args.firmware.stem, args.mac, args.overlay)
 
     uart = args.outdir / f"{tag}.uart.log"
     qlog = args.outdir / f"{tag}.qemu.log"
+    elog = args.outdir / f"{tag}.stderr.log"
     cmd = build_argv(qemu, flash, efuse, uart, qlog, args.trace, args.psram,
                      psram_octal=args.psram_octal)
 
@@ -238,7 +251,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"soc     : {', '.join(hw_module.SOC_DEVICES)}")
     print(f"uart    : {uart}")
     try:
-        reason, wall = run_qemu(cmd, uart, args.timeout, args.stall, server)
+        reason, wall = run_qemu(cmd, uart, elog, args.timeout, args.stall, server)
     finally:
         if server:
             _report_bus(server, tail, irq, hw)
@@ -260,6 +273,7 @@ def main(argv: list[str] | None = None) -> int:
         uart_bytes=uart.stat().st_size if uart.exists() else 0,
         uart_path=str(uart),
         qemu_log_path=str(qlog),
+        stderr_log_path=str(elog),
         traced=args.trace,
     )
     if args.trace:
