@@ -154,7 +154,10 @@ def run_qemu(argv: list[str], uart: Path, stderr_log: Path, timeout: float,
     try:
         while True:
             if proc.poll() is not None:
-                return "guest exited", time.monotonic() - started
+                # The code says who ended it: a guest reset under -no-reboot
+                # exits 0, an abort inside QEMU is nonzero, and a negative
+                # code is a signal from outside, which no guest can cause.
+                return f"guest exited (code {proc.returncode})", time.monotonic() - started
             now = time.monotonic()
             if now - started > timeout:
                 return "hard timeout", now - started

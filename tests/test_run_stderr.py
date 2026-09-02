@@ -21,6 +21,6 @@ def test_a_chatty_stderr_is_kept_and_does_not_stall(tmp_path: Path) -> None:
             "import sys; sys.stderr.write('x' * (1 << 20)); sys.stderr.flush()"]
     uart, err = tmp_path / "uart.log", tmp_path / "stderr.log"
     reason, wall = run_qemu(fake, uart, err, timeout=60, stall=60)
-    assert reason == "guest exited"
+    assert reason == "guest exited (code 0)"
     assert err.stat().st_size == 1 << 20
     assert wall < 30
