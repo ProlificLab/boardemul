@@ -29,3 +29,4 @@ superseded ADR is marked superseded and points forward.
 | [0021](0021-vendor-filesystem-image.md) | Assemble the flash with the vendor's filesystem image where the vendor's installer puts it | Accepted |
 | [0022](0022-spi1-dummy-cycles-by-line-count.md) | Convert SPI1 dummy cycles with the read mode's line count | Accepted |
 | [0023](0023-bluetooth-clock-registers.md) | Keep the two Bluetooth clock registers the controller checks | Accepted |
+| [0024](0024-bluetooth-bring-up.md) | Bluetooth bring-up: what the controller checked, and what answered it | Accepted |
