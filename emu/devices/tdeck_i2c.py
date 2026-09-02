@@ -45,11 +45,19 @@ class GT911(I2CDevice):
         self.height = height
         self.regs = bytearray(GT911_SIZE)
         self.regs[GT911_PRODUCT_ID - GT911_BASE:GT911_PRODUCT_ID - GT911_BASE + 4] = b"911\x00"
-        # Firmware version, then the resolution the driver may read back.
+        # Firmware version, and the resolution in both places a driver looks
+        # for it. The config block at 0x8048 is the one the datasheet leads
+        # with, but the vendor's driver reads the product-information block and
+        # printed "Resolution : X = 0 Y = 0" until this was filled in too.
         self.regs[0x8144 - GT911_BASE] = 0x60
         self.regs[0x8145 - GT911_BASE] = 0x10
+        self._set16(0x8146, width)
+        self._set16(0x8148, height)
         self._set16(0x8048, width)
         self._set16(0x804A, height)
+        # How many points can be reported. One, because that is what this model
+        # tracks; the real part defaults to five.
+        self.regs[0x804C - GT911_BASE] = 1
 
         self.point: tuple[int, int] | None = None
         self.ptr = GT911_PRODUCT_ID

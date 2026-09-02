@@ -54,6 +54,24 @@ def test_it_identifies_itself_as_a_911() -> None:
     assert read(touch, 4) == b"911\x00"
 
 
+def test_it_reports_its_resolution_where_the_driver_looks() -> None:
+    """The vendor driver reads the product-information block, not the config
+    block, and printed "Resolution : X = 0 Y = 0" until both were filled in."""
+    touch = GT911(width=320, height=240)
+    for reg in (0x8146, 0x8048):
+        select(touch, reg)
+        data = read(touch, 4)
+        assert (data[0] | (data[1] << 8)) == 320, hex(reg)
+        assert (data[2] | (data[3] << 8)) == 240, hex(reg)
+
+
+def test_it_reports_how_many_points_it_can_track() -> None:
+    """Zero would tell a driver not to bother reading any."""
+    touch = GT911()
+    select(touch, 0x804C)
+    assert read(touch, 1)[0] & 0x0F == 1
+
+
 def test_an_untouched_panel_reports_ready_with_no_points() -> None:
     touch = GT911()
     select(touch, GT911_STATUS)

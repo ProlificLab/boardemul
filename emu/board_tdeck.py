@@ -72,6 +72,12 @@ UNMODELLED = {
     # this is where the vendor firmware stops: with these invisible, the last
     # bus access looked like PSRAM timing calibration on SPI0, which sent a
     # whole investigation the wrong way.
+    # Where the vendor firmware actually stops. It writes a little config here
+    # and then polls +0x050 about a thousand times a second, forever, inside
+    # esp_wifi_start(). Undocumented in both the fork's register map and IDF's,
+    # and claimed only so the stall is visible rather than swallowed by the
+    # machine's catch-all.
+    "radio_unknown": 0x6000E000,
     "fe": 0x60006000,
     "nrx": 0x6001C000,
     "bb": 0x6001D000,

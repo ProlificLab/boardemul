@@ -23,3 +23,4 @@ superseded ADR is marked superseded and points forward.
 | [0015](0015-i2s-left-unmodelled.md) | Leave I2S unmodelled, and record why the obvious route fails | Superseded by 0016 |
 | [0016](0016-i2s-receive-path.md) | Model the I2S receive path, from the reference manual | Accepted |
 | [0017](0017-carry-one-qemu-patch.md) | Carry one patch to QEMU's own logic, and send it upstream | Accepted |
+| [0018](0018-radio-left-unmodelled.md) | Leave the radio unmodelled, and record how far the trail goes | Accepted |
