@@ -1,6 +1,6 @@
 # ADR 0019 — Answer the radio's four bring-up waits, each read off its own loop
 
-**Status:** Accepted — 2026-09-02. Supersedes ADR 0018.
+**Status:** Accepted — 2026-09-02. Supersedes ADR 0018; open items resolved by ADR 0020.
 
 ## Context
 
@@ -86,7 +86,7 @@ converges on a meaningless trim, and nothing downstream cares.
   what they are, only what the firmware wanted from them. That is recorded
   rather than hidden.
 
-**Open, as of this record**
+**Open, as of this record -- resolved the same day, see ADR 0020**
 
 - The interface draws but does not yet consume input. Once it is up, the
   keyboard and touch controller stop being read -- 134 keyboard polls in a run,

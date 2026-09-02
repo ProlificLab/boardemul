@@ -76,8 +76,8 @@ command is ADR 0014.
 ## Tests
 
 ```
-python3 -m pytest tests/            # 158 device, image and board tests, ~7s
-python3 -m pytest tests/ -m slow    # boots both boards under QEMU, ~6 min
+python3 -m pytest tests/            # 170 device, image and board tests, ~5s
+python3 -m pytest tests/ -m slow    # boots both boards under QEMU, ~10 min
 ```
 
 The slow tests skip cleanly without a built QEMU or the vendor firmware. See
