@@ -68,11 +68,12 @@ python emu/app.py --board tdeck --scale 2
 Meshtastic also boots on this board (`--psram-octal`): with its filesystem
 image in place (`--overlay 0xc90000=firmware/littlefs-t-deck-tft-2.7.10.94d4bdf.bin`,
 ADR 0021) it mounts storage and reads its preferences, and about 40 seconds in
-its Bluetooth controller initialises, syncs with the NimBLE host and starts
-advertising, at which point it waits for the BLE core's timer interrupt, which
-nothing here models yet (ADR 0024). The firmware reboots itself once after its
-first boot; run the second boot from the first one's written partitions as
-ADR 0024 describes. The vendor firmware is the one to drive.
+a fresh first boot mounts storage, reads its preferences and reaches the
+device-ui's setup dialog (ADR 0026). Run it with `--icount` (ADR 0027): the
+Bluetooth link layer, which the device-ui switches on when its boot logo is
+held, needs the instruction-counted clock to keep its events on time; its
+core's clock, timers and interrupt FIFO are a C device read off the ROM
+(ADR 0025). Nothing transmits.
 
 Because neither firmware exercises much of the panel, the window arithmetic,
 orientation and segment handling are checked against synthetic wire traffic
