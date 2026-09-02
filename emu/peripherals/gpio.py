@@ -73,6 +73,12 @@ class GpioClient:
             except OSError:
                 self._conn = None
 
+    @property
+    def levels(self) -> dict[int, int]:
+        """What the host has driven, by pin; the record a test reads."""
+        with self._lock:
+            return dict(self._levels)
+
     def drive(self, pin: int, level: int) -> None:
         level = 1 if level else 0
         with self._lock:

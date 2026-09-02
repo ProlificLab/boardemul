@@ -15,7 +15,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from emu.board_tdeck import (  # noqa: E402
-    BLE_CORE_BASE, EXTRA_REGIONS, IRQ_RWBLE, UNMODELLED, build,
+    BLE_CORE_BASE, EXTRA_REGIONS, IRQ_RWBLE, TRACKBALL_PINS, UNMODELLED, build,
 )
 
 
@@ -34,3 +34,13 @@ def test_the_core_page_is_a_device_and_not_a_window(tmp_path) -> None:
     assert all(b != BLE_CORE_BASE for b in UNMODELLED.values())
     board = build(tmp_path)
     assert any(d.startswith("esp-ble-core,base=0x60031000,irq=8") for d in board.devices)
+
+
+def test_the_trackball_rests_released(tmp_path) -> None:
+    """Active-low contacts with pull-ups read high when nobody presses them.
+    Reported low, the device-ui saw its boot logo held and rebooted into
+    programming mode with Bluetooth on (ADR 0026)."""
+    board = build(tmp_path)
+    for pin in TRACKBALL_PINS.values():
+        assert board.gpio.levels.get(pin) == 1
+

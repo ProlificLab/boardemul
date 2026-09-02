@@ -48,6 +48,13 @@ TFT_CS_PIN = 12
 TFT_DC_PIN = 11
 TFT_BACKLIGHT = 42
 TOUCH_INT_PIN = 16
+# The trackball: five active-low push contacts on plain GPIOs, pulled up on
+# the board, so an idle one reads high. Our GPIO block reports an input the
+# host never drove as low, which is a button held down from power-on; the
+# device-ui firmware took that as the boot logo being held, switched on
+# Bluetooth and rebooted into its programming mode (ADR 0026). The pull-up
+# lives in IO_MUX, which the fork leaves unimplemented, so the board says it.
+TRACKBALL_PINS = {"press": 0, "left": 1, "right": 2, "up": 3, "down": 15}
 KEYBOARD_INT_PIN = 46
 
 # The touch controller reports on an interrupt rather than being polled.
@@ -186,6 +193,8 @@ def build(outdir: Path) -> Board:
     outdir = Path(outdir)
     panel = St7789Panel(outdir / "frames")
     gpio = GpioClient(outdir / "gpio.sock")
+    for pin in TRACKBALL_PINS.values():
+        gpio.drive(pin, 1)          # nobody is pressing the trackball
     spi = SpiServer(outdir / "spi2.sock", panel)
     # Discovered by watching the firmware probe: it looks for 0x14 and 0x5d
     # (touch), 0x55 (the keyboard) and 0x40 (an audio ADC we do not model).
