@@ -217,11 +217,17 @@ def attach_input(server, board: Board, outdir: Path) -> InputTail:
                     # to be told a key is waiting.
                     board.gpio.pulse_low(KEYBOARD_INT_PIN)
             elif kind == "touch" and isinstance(touch, GT911):
-                if bool(event.get("down", True)):
+                down = bool(event.get("down", True))
+                if down:
                     touch.touch(int(event.get("x", 0)), int(event.get("y", 0)))
                 else:
                     touch.release()
-                board.gpio.pulse_low(TOUCH_INT_PIN)
+                # A level, not a pulse, and high while pressed. The vendor's
+                # driver decides isPressed() by digitalRead(INT) == the trigger
+                # level, and it configured this controller for RISING -- so
+                # pressed means HIGH. The Max's CST328 next door is the other
+                # way round, which is where the old pulse_low came from.
+                board.gpio.drive(TOUCH_INT_PIN, 1 if down else 0)
             else:
                 log.warning("unknown input event %r", event)
 
@@ -230,7 +236,7 @@ def attach_input(server, board: Board, outdir: Path) -> InputTail:
         while not tail._stop.is_set():
             pump()
             if isinstance(touch, GT911) and touch.point is not None:
-                board.gpio.pulse_low(TOUCH_INT_PIN)
+                board.gpio.drive(TOUCH_INT_PIN, 1)     # keep asserting while held
             time.sleep(period)
 
     threading.Thread(target=ticker, name="input", daemon=True).start()
