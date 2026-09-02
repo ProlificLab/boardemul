@@ -23,6 +23,10 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 FIRMWARE = REPO_ROOT / "firmware" / "T-Deck-MAX_V3.1_20260313.bin"
 FIRMWARE_TDECK = REPO_ROOT / "firmware" / "T-Deck_UnitTest_251113.bin"
+# Every vendor build of the T-Deck test firmware on disk. The bring-up walls
+# (ADR 0013, 0016, 0019, 0020) were read off the 250620 build; the slow test
+# runs each build present so that a gate specific to one of them would show.
+FIRMWARE_TDECK_BUILDS = sorted((REPO_ROOT / "firmware").glob("T-Deck_UnitTest_2*.bin"))
 
 
 PNG_MAGIC = bytes([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])

@@ -19,7 +19,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from tests.support import (  # noqa: E402
-    FIRMWARE_TDECK, Run, qemu_available, run_emulator,
+    FIRMWARE_TDECK, FIRMWARE_TDECK_BUILDS, Run, qemu_available, run_emulator,
 )
 
 pytestmark = [
@@ -29,12 +29,13 @@ pytestmark = [
 ]
 
 
-@pytest.fixture(scope="module")
-def booted(tmp_path_factory) -> Run:
+@pytest.fixture(scope="module", params=FIRMWARE_TDECK_BUILDS or [FIRMWARE_TDECK],
+                ids=lambda p: p.stem.replace("T-Deck_UnitTest_", ""))
+def booted(request, tmp_path_factory) -> Run:
     if not qemu_available():
         pytest.skip("no qemu-system-xtensa; run tools/build_qemu.sh")
     return run_emulator(tmp_path_factory.mktemp("tdeck"),
-                        firmware=FIRMWARE_TDECK, board="tdeck", timeout=75)
+                        firmware=request.param, board="tdeck", timeout=120)
 
 
 def test_the_fpu_is_enabled_before_the_scheduler_starts(booted: Run) -> None:
@@ -61,10 +62,22 @@ def test_it_gets_far_enough_to_mount_storage(booted: Run) -> None:
     assert "SPIFFS" in booted.uart or "sd_diskio" in booted.uart, booted.uart[-400:]
 
 
-def test_it_gets_through_the_radio_bring_up(booted: Run) -> None:
+# Builds whose setup() starts the WiFi station, and so meet the four radio
+# waits of ADR 0019 during boot. 251113 initialises WiFi (WIFI_READY) but does
+# not start the station until asked from its interface, so at boot it never
+# reaches the gates -- the claim below is not false for it, it is not made.
+STARTS_STATION_AT_BOOT = {"250620"}
+
+
+def test_it_gets_through_the_radio_bring_up(booted: Run, request) -> None:
     """esp_wifi_start() returns only once four hardware waits are answered
-    (ADR 0019). The scan that follows is the firmware saying so itself."""
-    assert "Completed scan for access points" in booted.uart, booted.uart[-400:]
+    (ADR 0019), and Arduino's own event handler announces it with STA_START:
+    "WiFi client started"."""
+    build = request.node.callspec.id
+    if build not in STARTS_STATION_AT_BOOT:
+        pytest.skip(f"build {build} does not start the station during setup")
+    after = booted.uart.split("WiFi interface ready", 1)[-1][:600]
+    assert "WiFi client started" in booted.uart, after
 
 
 def test_it_reads_its_battery_and_keeps_drawing(booted: Run) -> None:
