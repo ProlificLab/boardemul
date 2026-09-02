@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""End-to-end tests for the T-Deck, which has no panel model yet.
+"""End-to-end tests for the T-Deck: the vendor firmware reaches its interface.
 
-So these assert on the UART rather than on pixels. That is a weaker claim than
-the T-Deck Max's golden frames, and deliberately so: the point of this board at
-this stage is that the vendor's own firmware gets far enough to be worth
-modelling for, not that it draws anything.
+There are no golden frames here, and deliberately: LVGL animates the launcher
+and the status bar carries a clock, so no single frame is stable. What is
+stable is the sequence of walls the firmware used to stop at, and each test
+below is one of them no longer stopping it (ADR 0013, 0016, 0019, 0020).
 
     python3 -m pytest tests/ -m slow
 """
@@ -34,7 +34,7 @@ def booted(tmp_path_factory) -> Run:
     if not qemu_available():
         pytest.skip("no qemu-system-xtensa; run tools/build_qemu.sh")
     return run_emulator(tmp_path_factory.mktemp("tdeck"),
-                        firmware=FIRMWARE_TDECK, board="tdeck", timeout=60)
+                        firmware=FIRMWARE_TDECK, board="tdeck", timeout=75)
 
 
 def test_the_fpu_is_enabled_before_the_scheduler_starts(booted: Run) -> None:
@@ -59,3 +59,17 @@ def test_it_gets_far_enough_to_mount_storage(booted: Run) -> None:
     """It fails, because the image carries no filesystem data and we model no
     card -- but reaching the attempt means the app's own setup() is running."""
     assert "SPIFFS" in booted.uart or "sd_diskio" in booted.uart, booted.uart[-400:]
+
+
+def test_it_gets_through_the_radio_bring_up(booted: Run) -> None:
+    """esp_wifi_start() returns only once four hardware waits are answered
+    (ADR 0019). The scan that follows is the firmware saying so itself."""
+    assert "Completed scan for access points" in booted.uart, booted.uart[-400:]
+
+
+def test_it_reads_its_battery_and_keeps_drawing(booted: Run) -> None:
+    """The ADC conversion completing is what lets LVGL keep its turn (ADR
+    0020). A stalled interface stops at a couple of dozen frames; a live one
+    draws about ten a second for as long as it runs."""
+    assert "ADC_CALI" in booted.uart
+    assert len(booted.frames) > 100, len(booted.frames)
