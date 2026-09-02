@@ -27,6 +27,8 @@ FIRMWARE_TDECK = REPO_ROOT / "firmware" / "T-Deck_UnitTest_251113.bin"
 # (ADR 0013, 0016, 0019, 0020) were read off the 250620 build; the slow test
 # runs each build present so that a gate specific to one of them would show.
 FIRMWARE_TDECK_BUILDS = sorted((REPO_ROOT / "firmware").glob("T-Deck_UnitTest_2*.bin"))
+FIRMWARE_MESHTASTIC = REPO_ROOT / "firmware" / "firmware-t-deck-tft-2.7.10.94d4bdf.bin"
+MESHTASTIC_LITTLEFS = REPO_ROOT / "firmware" / "littlefs-t-deck-tft-2.7.10.94d4bdf.bin"
 
 
 PNG_MAGIC = bytes([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])
@@ -158,7 +160,7 @@ def _frames(outdir: Path) -> list[Path]:
 def run_emulator(outdir: Path, *, firmware: Path = FIRMWARE,
                  board: str = "tdeck-max", tap: tuple[int, int] | None = None,
                  wait_frames: int = 0, timeout: int = 150,
-                 settle: int = 25) -> Run:
+                 settle: int = 25, overlays: tuple[str, ...] = ()) -> Run:
     """Boot a firmware, optionally tapping the panel once it has drawn.
 
     A board with no panel model draws nothing, so waiting on frames is opt-in:
@@ -167,7 +169,8 @@ def run_emulator(outdir: Path, *, firmware: Path = FIRMWARE,
     proc = subprocess.Popen(
         [sys.executable, "emu/run.py", str(firmware), "--bus", "--board", board,
          "--tag", "t", "--outdir", str(outdir), "--timeout", str(timeout),
-         "--stall", str(timeout)],
+         "--stall", str(timeout)]
+        + [arg for spec in overlays for arg in ("--overlay", spec)],
         cwd=REPO_ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
     try:
         deadline = time.monotonic() + timeout

@@ -1,6 +1,6 @@
 # ADR 0021 — Assemble the flash with the vendor's filesystem image where the vendor's installer puts it
 
-**Status:** Accepted — 2026-09-02
+**Status:** Accepted — 2026-09-02. The format defect below is explained and fixed by ADR 0022.
 
 ## Context
 
@@ -48,6 +48,8 @@ A fresh device formats on first boot; this one cannot, and that remains open.
 4. **The format defect stays open** in this record until it is understood. The
    overlay makes Meshtastic runnable; it does not make first-boot formatting
    work, and a firmware without a shipped image would still hit it.
+   *(Closed the same day: ADR 0022. Every SPI1 read arrived two bytes late;
+   the superblock was written correctly and read back shifted.)*
 
 ## Consequences
 

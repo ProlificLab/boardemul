@@ -60,22 +60,26 @@ if ! grep -qF "esp_coproc_enable.c" "${XTENSA_MESON}"; then
     mv "${XTENSA_MESON}.tmp" "${XTENSA_MESON}"
 fi
 
-# ADR 0017: the one place we change QEMU's own logic rather than adding to it.
-# Reported upstream as https://github.com/espressif/qemu/issues/168; when that
-# lands, delete the patch and supersede the ADR rather than carrying it on.
-# Applied from a patch file rather than by hand so that it is declared, reviewed
-# like anything else, and fails loudly if a tag bump moves the code under it.
-PATCH="${REPO_ROOT}/qemu-patch/gdma-out-eof-desc.patch"
-if git -C "${SRC}" apply --reverse --check "${PATCH}" 2>/dev/null; then
-    echo "==> gdma-out-eof-desc.patch already applied"
-elif git -C "${SRC}" apply --check "${PATCH}" 2>/dev/null; then
-    git -C "${SRC}" apply "${PATCH}"
-    echo "==> applied gdma-out-eof-desc.patch"
-else
-    echo "ERROR: gdma-out-eof-desc.patch no longer applies to ${QEMU_TAG}." >&2
-    echo "       Re-check it against the new source before going further." >&2
-    exit 1
-fi
+# The carried patches: the only places we change QEMU's own logic rather than
+# adding to it. Each is reported upstream and recorded in an ADR; when one
+# lands, delete the patch and supersede its ADR rather than carrying it on.
+#   gdma-out-eof-desc.patch  ADR 0017  https://github.com/espressif/qemu/issues/168
+#   spi1-dummy-lanes.patch   ADR 0022  (upstream report pending)
+# Applied from patch files rather than by hand so that they are declared,
+# reviewed like anything else, and fail loudly if a tag bump moves the code.
+for name in gdma-out-eof-desc.patch spi1-dummy-lanes.patch; do
+    PATCH="${REPO_ROOT}/qemu-patch/${name}"
+    if git -C "${SRC}" apply --reverse --check "${PATCH}" 2>/dev/null; then
+        echo "==> ${name} already applied"
+    elif git -C "${SRC}" apply --check "${PATCH}" 2>/dev/null; then
+        git -C "${SRC}" apply "${PATCH}"
+        echo "==> applied ${name}"
+    else
+        echo "ERROR: ${name} no longer applies to ${QEMU_TAG}." >&2
+        echo "       Re-check it against the new source before going further." >&2
+        exit 1
+    fi
+done
 
 if [[ ! -f "${BUILD}/build.ninja" ]]; then
     echo "==> configuring"
