@@ -20,6 +20,8 @@
 #include "qapi/error.h"
 #include "qom/object.h"
 #include "qemu/main-loop.h"
+#include "qemu/log.h"
+#include "hw/core/cpu.h"
 
 #include <sys/socket.h>
 #include <sys/un.h>
@@ -188,6 +190,40 @@ static bool bridge_post(EspBusBridge *s, const BridgeRequest *req)
     return true;
 }
 
+static bool bridge_pc_watched(uint32_t addr)
+{
+    static bool parsed;
+    static uint32_t lo[16], hi[16];
+    static int count;
+
+    if (!parsed) {
+        parsed = true;
+        const char *env = getenv("BOARDEMUL_PC_WATCH");
+        if (env) {
+            char *dup = g_strdup(env);
+            for (char *tok = strtok(dup, ","); tok && count < 16;
+                 tok = strtok(NULL, ",")) {
+                char *dash = strchr(tok, '-');
+                if (dash) {
+                    *dash = 0;
+                    lo[count] = (uint32_t)strtoul(tok, NULL, 0);
+                    hi[count] = (uint32_t)strtoul(dash + 1, NULL, 0);
+                } else {
+                    lo[count] = hi[count] = (uint32_t)strtoul(tok, NULL, 0);
+                }
+                count++;
+            }
+            g_free(dup);
+        }
+    }
+    for (int i = 0; i < count; i++) {
+        if (lo[i] <= addr && addr <= hi[i]) {
+            return true;
+        }
+    }
+    return false;
+}
+
 static uint64_t bridge_mmio_read(void *opaque, hwaddr offset, unsigned size)
 {
     EspBusBridge *s = opaque;
@@ -199,6 +235,18 @@ static uint64_t bridge_mmio_read(void *opaque, hwaddr offset, unsigned size)
         .value = 0,
     };
     BridgeResponse rsp = { 0 };
+
+    /* Investigation hatch, off unless BOARDEMUL_PC_WATCH names addresses or
+     * lo-hi ranges: log the guest PC on every read of them. Knowing which code
+     * polls a register is what turns "the firmware is stuck" into a loop that
+     * can be disassembled and answered -- it is how each radio bring-up gate
+     * was found (ADR 0019). No register is named here; the addresses come from
+     * the environment, as the debug flags do in run.py. */
+    if (current_cpu && bridge_pc_watched(req.addr)) {
+        CPUClass *cc = CPU_GET_CLASS(current_cpu);
+        qemu_log_mask(LOG_UNIMP, "PCWATCH addr=0x%08x pc=0x%08" PRIx64 " cpu=%d\n",
+                      req.addr, cc->get_pc(current_cpu), current_cpu->cpu_index);
+    }
 
     return bridge_transact(s, &req, &rsp) ? rsp.value : 0;
 }

@@ -15,6 +15,7 @@ Pins are the vendor's own, from examples/UnitTest/utilities.h.
 from __future__ import annotations
 
 import logging
+import os
 import threading
 import time
 from pathlib import Path
@@ -77,7 +78,17 @@ UNMODELLED = {
     # esp_wifi_start(). Undocumented in both the fork's register map and IDF's,
     # and claimed only so the stall is visible rather than swallowed by the
     # machine's catch-all.
-    "radio_unknown": 0x6000E000,
+    # The MAC stage of esp_wifi_start(), once the PHY is up. IDF's own base list
+    # names nothing at 0x60033000..0x60037FFF, but WDEV_RND_REG at 0x6003507C
+    # places the MAC/WDEV block there. 0x60035000 itself is deliberately NOT
+    # claimed: the fork's catch-all serves the hardware RNG at 0x6003507C, and
+    # shadowing it with a trace window starves the bootloader of entropy and
+    # stops the boot at "entry" (ADR 0008, amended).
+    "wifi_mac0": 0x60033000,
+    "wifi_mac1": 0x60034000,
+    "wifi_mac3": 0x60036000,
+    "wifi_mac4": 0x60037000,
+    "bt": 0x60011000,
     "fe": 0x60006000,
     "nrx": 0x6001C000,
     "bb": 0x6001D000,
@@ -88,6 +99,54 @@ UNMODELLED = {
     "spi0": 0x60003000,
     "spi3": 0x60025000,
 }
+
+
+class PhyGates(TraceRegion):
+    """A radio register page whose completion flags can be answered.
+
+    On by default: every wait in GATES is answered, and that is what lets the
+    vendor firmware get through esp_wifi_start() and build its interface
+    (ADR 0019). BOARDEMUL_PHY_GATES=0 turns it back into a plain trace window,
+    which is how each gate was found -- the firmware then stalls at the first
+    unanswered wait, and the PC-watch hatch in the bridge says which.
+
+    Every entry was read off a disassembled polling loop, never guessed, and
+    each is one register and the exact bits it waits to see. The loops come
+    in two shapes -- `bnei extui==N` waits for a state field, `bnone reg,mask`
+    waits for a done bit -- and both are satisfied by forcing those bits high
+    on read. The rule is one address at a time: these registers are shared
+    with values early boot reads back, and forcing bits across a whole page
+    hangs the guest at reset.
+
+    None of this calibrates anything. There is no RF, so the numbers real
+    calibration derives from analog readbacks are meaningless here; the app's
+    successive-approximation loop still terminates because it steps a fixed
+    number of times and only steers on the readback.
+    """
+
+    # absolute address -> bits forced high on read
+    GATES = {
+        0x6000e050: 0x07000000,   # ROM  : bnei extui(bits 26..24) == 7, state done
+        0x6000e04c: 0x01000000,   # app  : bnone bit 24, SAR step complete
+        0x60006174: 0x00010000,   # ROM  : bnone bit 16, FE calibration done
+        0x60033d14: 0x00000001,   # app  : bbci bit 0, MAC reset acknowledged
+    }
+
+    @classmethod
+    def covers(cls, base: int, size: int = 0x1000) -> bool:
+        """Whether any gate lives in this page, so a page is wired through
+        this class by content rather than by name."""
+        return any(base <= a < base + size for a in cls.GATES)
+
+    def __init__(self, name: str, base: int, size: int = 0x1000):
+        super().__init__(name, base, size)
+        self._gated = os.environ.get("BOARDEMUL_PHY_GATES", "1") != "0"
+
+    def read(self, offset: int, size: int) -> int:
+        v = super().read(offset, size)
+        if self._gated:
+            v |= self.GATES.get(self.base + offset, 0)
+        return v
 
 
 def build(outdir: Path) -> Board:
@@ -102,7 +161,9 @@ def build(outdir: Path) -> Board:
     i2c0 = I2CServer(outdir / "i2c0.sock", [touch, keypad], name="i2c0")
     i2c1 = I2CServer(outdir / "i2c1.sock", [], name="i2c1")
 
-    regions: list[Region] = [TraceRegion(n, b) for n, b in UNMODELLED.items()]
+    regions: list[Region] = [PhyGates(n, b) if PhyGates.covers(b) else TraceRegion(n, b)
+                             for n, b in UNMODELLED.items()]
+    regions.append(PhyGates("radio_unknown", 0x6000E000))
 
     devices = [
         f"esp-gpio-block,base=0x{GPIO_BASE:x},irq={IRQ_GPIO},"

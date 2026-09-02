@@ -1,6 +1,6 @@
 # ADR 0018 — Leave the radio unmodelled, and record how far the trail goes
 
-**Status:** Accepted — 2026-09-02
+**Status:** Superseded by ADR 0019 — 2026-09-02
 
 ## Context
 
