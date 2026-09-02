@@ -280,6 +280,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("-o", "--outdir", type=Path, default=Path("build"))
     ap.add_argument("--mac", default=DEFAULT_MAC,
                     help=f"factory MAC to burn into eFuse BLOCK1 (default {DEFAULT_MAC})")
+    ap.add_argument("--overlay", action="append", default=[], metavar="OFFSET=FILE",
+                    help="splice FILE into the image at OFFSET, which must lie inside "
+                         "one data partition -- what a vendor installer does with a "
+                         "filesystem image (ADR 0021)")
     args = ap.parse_args(argv)
 
     data = args.firmware.read_bytes()
@@ -360,7 +364,28 @@ def main(argv: list[str] | None = None) -> int:
 
     # 0xFF is erased-flash state; padding with zeros would make empty regions
     # look like written data to anything that inspects the image later.
-    flash_path.write_bytes(data + b"\xff" * (flash_size - len(data)))
+    image = bytearray(data + b"\xff" * (flash_size - len(data)))
+    for spec in args.overlay:
+        offset_text, _, path_text = spec.partition("=")
+        try:
+            offset = int(offset_text, 0)
+            blob = Path(path_text).read_bytes()
+        except (ValueError, OSError) as e:
+            print(f"\nFAIL: overlay {spec!r}: {e}", file=sys.stderr)
+            return 1
+        # Checked against the parsed table, not trusted: an overlay in the wrong
+        # place would corrupt a run silently, and this tool exists to parse
+        # rather than assume (ADR 0003).
+        home = [q for q in parts if q.ptype == 1 and q.offset <= offset
+                and offset + len(blob) <= q.offset + q.size]
+        if not home:
+            print(f"\nFAIL: overlay {path_text} at 0x{offset:X} ({len(blob)} bytes) "
+                  f"does not fit inside any data partition", file=sys.stderr)
+            return 1
+        image[offset:offset + len(blob)] = blob
+        print(f"overlay {path_text}  0x{offset:X}  {len(blob)} bytes  "
+              f"-> partition '{home[0].label}'")
+    flash_path.write_bytes(bytes(image))
     mac = parse_mac(args.mac)
     efuse_path.write_bytes(build_efuse(mac))
 

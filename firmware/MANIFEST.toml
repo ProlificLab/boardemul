@@ -76,3 +76,13 @@ path    = "firmware-t-deck-tft-2.7.10.94d4bdf.bin"
 url     = "https://raw.githubusercontent.com/Xinyuan-LilyGO/T-Deck/master/firmware/firmware-t-deck-tft-2.7.10.94d4bdf.bin"
 size    = 3563024
 sha256  = "39249b3db92f4b4c59fe8615fa1391cb05b358601f23be8fe19869e4e813336d"
+
+[[image]]
+name    = "meshtastic-littlefs"
+role    = "Meshtastic's filesystem image for the T-Deck TFT build. Not a flash image: a data partition's contents, which the vendor's own device-install.sh writes at 0xc90000 on a 16MB part (ADR 0021)."
+path    = "littlefs-t-deck-tft-2.7.10.94d4bdf.bin"
+archive = "https://github.com/meshtastic/firmware/releases/download/v2.7.10.94d4bdf/firmware-esp32s3-2.7.10.94d4bdf.zip"
+member  = "littlefs-t-deck-tft-2.7.10.94d4bdf.bin"
+offset  = 0xc90000
+size    = 3538944
+sha256  = "176c2a5f917aaac8a7d66d4fc116ca00b719f5f7d84e9e0fbe6989b6f169ac0a"
