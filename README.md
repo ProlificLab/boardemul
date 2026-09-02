@@ -65,8 +65,11 @@ python3 emu/run.py firmware/T-Deck_UnitTest_250620.bin --board tdeck --bus --tim
 python emu/app.py --board tdeck --scale 2
 ```
 
-Meshtastic also boots on this board (`--psram-octal`) and draws, but gives up
-on storage after about a minute; the vendor firmware is the one to drive.
+Meshtastic also boots on this board (`--psram-octal`): with its filesystem
+image in place (`--overlay 0xc90000=firmware/littlefs-t-deck-tft-2.7.10.94d4bdf.bin`,
+ADR 0021) it mounts storage and reads its preferences, and about 40 seconds in
+it stops at Bluetooth bring-up, which nothing here models yet (ADR 0022, open
+items). The vendor firmware is the one to drive.
 
 Because neither firmware exercises much of the panel, the window arithmetic,
 orientation and segment handling are checked against synthetic wire traffic
@@ -104,11 +107,13 @@ is what took the first board from 232,320 round trips per frame to about 44.
 
 Our C is six files we own plus a header, copied into the QEMU tree by
 `tools/build_qemu.sh` rather than committed to it. Their tree's own modification
-is six build lines across two `meson.build` files, plus exactly one patch to
-their own logic -- a GDMA transmit path that never reported which descriptor
-finished, which crashed the firmware's interrupt handler. It is applied from a
-declared patch file, the build stops if it ever fails to apply, and it has been
-sent upstream. See ADR 0001, ADR 0011 and ADR 0017.
+is six build lines across two `meson.build` files, plus two patches to their
+own logic: a GDMA transmit path that never reported which descriptor finished,
+which crashed the firmware's interrupt handler (ADR 0017, sent upstream), and
+an SPI1 dummy-cycle conversion that shifted every runtime flash read by two
+bytes, which no filesystem survived (ADR 0022, report pending). Each is applied
+from a declared patch file and the build stops if either ever fails to apply.
+See ADR 0001, ADR 0011, ADR 0017 and ADR 0022.
 
 ## Dependencies
 
