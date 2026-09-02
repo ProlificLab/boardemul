@@ -160,7 +160,8 @@ def _frames(outdir: Path) -> list[Path]:
 def run_emulator(outdir: Path, *, firmware: Path = FIRMWARE,
                  board: str = "tdeck-max", tap: tuple[int, int] | None = None,
                  wait_frames: int = 0, timeout: int = 150,
-                 settle: int = 25, overlays: tuple[str, ...] = ()) -> Run:
+                 settle: int = 25, overlays: tuple[str, ...] = (),
+                 icount: bool = False) -> Run:
     """Boot a firmware, optionally tapping the panel once it has drawn.
 
     A board with no panel model draws nothing, so waiting on frames is opt-in:
@@ -170,7 +171,8 @@ def run_emulator(outdir: Path, *, firmware: Path = FIRMWARE,
         [sys.executable, "emu/run.py", str(firmware), "--bus", "--board", board,
          "--tag", "t", "--outdir", str(outdir), "--timeout", str(timeout),
          "--stall", str(timeout)]
-        + [arg for spec in overlays for arg in ("--overlay", spec)],
+        + [arg for spec in overlays for arg in ("--overlay", spec)]
+        + (["--icount"] if icount else []),
         cwd=REPO_ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
     try:
         deadline = time.monotonic() + timeout

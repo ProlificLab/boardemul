@@ -205,6 +205,10 @@ def main(argv: list[str] | None = None) -> int:
                     help="log every bus transaction at DEBUG")
     ap.add_argument("--bus", action="store_true",
                     help="intercept unmodelled peripherals with Python models")
+    ap.add_argument("--icount", action="store_true",
+                    help="drive the guest clock from executed instructions (ADR 0027): "
+                         "exact timer delivery and deterministic runs; the Bluetooth "
+                         "link layer needs it")
     ap.add_argument("--tag", default=None,
                     help="name for this run's logs (default: firmware stem)")
     args = ap.parse_args(argv)
@@ -228,6 +232,10 @@ def main(argv: list[str] | None = None) -> int:
     # the board is built around, not the peripherals we model in Python.
     for spec in hw_module.SOC_DEVICES:
         cmd += ["-device", spec]
+    if args.icount:
+        # 2^2 ns per instruction, 250 MIPS nominal, a single TCG thread as
+        # instruction counting requires; the vCPU sleeps when the guest idles.
+        cmd += ["-icount", "shift=2,sleep=on", "-accel", "tcg,thread=single"]
 
     server: BusServer | None = None
     tail = None
