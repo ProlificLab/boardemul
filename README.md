@@ -42,39 +42,31 @@ QEMU tag bump.
 
 ### The T-Deck, second board
 
-The second board is live and interactive: ST7789 display, GT911 touch, the
-keyboard and both I2S blocks are modelled, and the drawn device in `emu/app.py`
-knows how to be a T-Deck as well as a T-Deck Max.
+The second board runs LilyGO's own `UnitTest` firmware, unmodified, all the way
+into its LVGL interface -- and the interface answers keys and taps. In one
+110-second run: 740 frames at a steady ten a second, every injected keystroke
+delivered and echoed by the firmware itself (`Key pressed : 0x69`), 66 touch
+reports read. The status bar shows a modelled battery voltage; the WiFi scan
+finds no networks, correctly; the panel says "Radio is offline", which is the
+LoRa radio honestly reporting absent.
 
-LilyGO's own `UnitTest` firmware boots, initialises the display, reports
-`Init GT911 Sensor success!` and `Keyboard registered!!` against our models,
-draws its splash, and completes its audio test. Getting that far took three
-deliberate pieces of work, each argued in its own record: the FPU is left
-enabled out of reset because this firmware runs a float in a global constructor
-(ADR 0013), the I2S receive and transmit paths are modelled (ADR 0016), and one
-patch is carried against QEMU's own GDMA (ADR 0017).
-
-It then stops in `setupWiFi()`, where `WiFi.begin()` waits inside
-`esp_wifi_start()` for a radio nothing models. The last bus traffic is the RF
-front end at `0x60006000`, after which the CPU keeps ticking and issues no MMIO
-at all. `setupUI()` is the second-to-last line of the vendor's `setup()`, so its
-interface is never built -- which is why only the splash is ever drawn.
-
-So for something that keeps responding, drive the Meshtastic build:
+Getting there is five records long, and each one is a wall the firmware stopped
+at and how it was read rather than guessed: the FPU enabled out of reset
+(ADR 0013), both I2S directions with one patch carried to QEMU's GDMA
+(ADR 0016, 0017), four radio bring-up waits answered from disassembled loops
+(ADR 0019), and the SAR ADC that `analogRead()` spins on plus the touch
+interrupt's real polarity (ADR 0020).
 
 ```
-python3 emu/run.py firmware/firmware-t-deck-tft-2.7.10.94d4bdf.bin --board tdeck --bus --psram-octal --timeout 600
+python3 emu/run.py firmware/T-Deck_UnitTest_250620.bin --board tdeck --bus --timeout 3600
 ```
 
 ```
 python emu/app.py --board tdeck --scale 2
 ```
 
-Typing and tapping in that window reach the firmware: it polls the keyboard
-hundreds of times a run, reads touch reports, and redraws in response, during
-the first minute or so before it gives up on storage. Note the `--psram-octal`:
-which line mode an image needs turns out to depend on the firmware, not the
-board (ADR 0007, amended).
+Meshtastic also boots on this board (`--psram-octal`) and draws, but gives up
+on storage after about a minute; the vendor firmware is the one to drive.
 
 Because neither firmware exercises much of the panel, the window arithmetic,
 orientation and segment handling are checked against synthetic wire traffic

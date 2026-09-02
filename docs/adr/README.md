@@ -25,3 +25,4 @@ superseded ADR is marked superseded and points forward.
 | [0017](0017-carry-one-qemu-patch.md) | Carry one patch to QEMU's own logic, and send it upstream | Accepted |
 | [0018](0018-radio-left-unmodelled.md) | Leave the radio unmodelled, and record how far the trail goes | Superseded by 0019 |
 | [0019](0019-radio-bring-up-gates.md) | Answer the radio's four bring-up waits, each read off its own loop | Accepted |
+| [0020](0020-interactive-vendor-firmware.md) | The vendor interface takes input; the last two walls were an ADC and a pin level | Accepted |

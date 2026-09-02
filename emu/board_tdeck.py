@@ -25,6 +25,7 @@ from emu.bus import Region
 from emu.i2c_link import I2CServer
 from emu.devices.lcd import St7789Panel
 from emu.devices.tdeck_i2c import GT911, TDeckKeyboard
+from emu.peripherals.adc import SarAdc
 from emu.peripherals.gpio import GpioClient
 from emu.inputs import InputTail
 from emu.spi_link import SpiServer
@@ -67,6 +68,14 @@ SOC_DEVICES = ["esp-coproc-enable,mask=0x1"]
 # either unmodelled stops it dead.
 I2S0_BASE, GDMA_PERIPH_I2S0 = 0x6000F000, 3
 I2S1_BASE, GDMA_PERIPH_I2S1 = 0x6002D000, 4
+
+# Claimed with a model behind them, sized exactly. SENS is 0x400: the first cut
+# took 0x1000 and ran into IO_MUX at 0x60009000, which the fork models -- the
+# third bite from ADR 0008's amendment, this time by size rather than by base.
+EXTRA_REGIONS = {
+    "radio_unknown": (0x6000E000, 0x1000),   # ADR 0019: the radio state page
+    "sens": (0x60008800, 0x400),             # ADR 0020: the SAR ADC, battery read
+}
 
 UNMODELLED = {
     # The radio front end. Claimed not because anything models it, but because
@@ -163,7 +172,9 @@ def build(outdir: Path) -> Board:
 
     regions: list[Region] = [PhyGates(n, b) if PhyGates.covers(b) else TraceRegion(n, b)
                              for n, b in UNMODELLED.items()]
-    regions.append(PhyGates("radio_unknown", 0x6000E000))
+    for name, (base, size) in EXTRA_REGIONS.items():
+        cls = PhyGates if name == "radio_unknown" else SarAdc
+        regions.append(cls(name, base, size))
 
     devices = [
         f"esp-gpio-block,base=0x{GPIO_BASE:x},irq={IRQ_GPIO},"

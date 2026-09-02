@@ -14,7 +14,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from emu.board_tdeck import UNMODELLED, PhyGates  # noqa: E402
+from emu.board_tdeck import EXTRA_REGIONS, UNMODELLED, PhyGates  # noqa: E402
 
 # (address, bits) -> (where it was read, the instruction that waits on it)
 DOCUMENTED = {
@@ -47,12 +47,44 @@ def test_gates_are_on_by_default_and_zero_turns_them_off(monkeypatch) -> None:
     assert PhyGates("m", 0x60033000).read(0xD14, 4) == 0
 
 
-def test_the_rng_page_is_never_claimed() -> None:
-    """The fork's catch-all serves WDEV_RND_REG at 0x6003507C. A trace window
-    over that page starved the bootloader of entropy and stopped the boot at
-    'entry' (ADR 0008, amended). This is the regression test for that lesson."""
-    for base in UNMODELLED.values():
-        assert not (base <= 0x6003507C < base + 0x1000), hex(base)
+# Pages the fork models at the pinned tag (hw/xtensa/esp32s3.c), plus the one
+# the catch-all serves specially. A claim overlapping any of these replaces a
+# real device with a store-and-return stub, which has broken the boot (RNG),
+# misattributed a fix (GDMA) and swallowed IO_MUX writes (SENS sized 0x1000).
+FORK_MODELLED = {
+    "uart0": (0x60000000, 0x1000), "spi1": (0x60002000, 0x1000),
+    "gpio": (0x60004000, 0x1000), "efuse": (0x60007000, 0x1000),
+    "rtc_cntl": (0x60008000, 0x200), "io_mux": (0x60009000, 0x2000),
+    "uart1": (0x60010000, 0x1000), "rmt": (0x60016000, 0x1000),
+    "timg0": (0x6001F000, 0x1000), "timg1": (0x60020000, 0x1000),
+    "systimer": (0x60023000, 0x1000), "apb_ctrl": (0x60026000, 0x1000),
+    "sdmmc": (0x60028000, 0x1000), "twai": (0x6002B000, 0x1000),
+    "uart2": (0x6002E000, 0x1000), "rng_wdev": (0x60035000, 0x1000),
+    "usb_serial_jtag": (0x60038000, 0x1000), "aes": (0x6003A000, 0x1000),
+    "sha": (0x6003B000, 0x1000), "rsa": (0x6003C000, 0x1000),
+    "ds": (0x6003D000, 0x1000), "hmac": (0x6003E000, 0x1000),
+    "gdma": (0x6003F000, 0x1000), "system": (0x600C0000, 0x1000),
+    "sensitive": (0x600C1000, 0x1000), "interrupt": (0x600C2000, 0x1000),
+    "extmem": (0x600C4000, 0x1000),
+}
+
+
+def claimed() -> dict[str, tuple[int, int]]:
+    out = {n: (b, 0x1000) for n, b in UNMODELLED.items()}
+    out.update(EXTRA_REGIONS)
+    return out
+
+
+def test_no_claim_overlaps_a_page_the_fork_models() -> None:
+    for name, (base, size) in claimed().items():
+        for fork, (fb, fs) in FORK_MODELLED.items():
+            assert base + size <= fb or fb + fs <= base, (
+                f"{name} 0x{base:08x}+0x{size:x} overlaps the fork's {fork}")
+
+
+def test_sens_is_exactly_the_sens_page() -> None:
+    """0x400, because IO_MUX starts 0x800 later and the fork models it."""
+    assert EXTRA_REGIONS["sens"] == (0x60008800, 0x400)
 
 
 def test_pages_are_gated_by_content_not_by_name() -> None:

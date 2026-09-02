@@ -35,6 +35,7 @@
 #include "exec/address-spaces.h"
 #include "exec/memory.h"
 #include "qom/object.h"
+#include "hw/core/cpu.h"
 #include "hw/dma/esp_gdma.h"
 #include "hw/dma/esp32s3_gdma.h"
 
@@ -309,9 +310,35 @@ static void i2s_transmit(EspI2sMaster *s)
     s->bytes += total;
 }
 
+/* Investigation hatch, off unless BOARDEMUL_PC_SAMPLE is set: on every tick,
+ * log each core's PC with the virtual clock. A sampling profiler that costs
+ * the guest nothing, unlike -d int, which slows it enough that a firmware can
+ * take minutes of wall time to reach the state being studied. */
+static void i2s_sample_pcs(void)
+{
+    static int enabled = -1;
+    CPUState *cs;
+
+    if (enabled < 0) {
+        enabled = getenv("BOARDEMUL_PC_SAMPLE") != NULL;
+    }
+    if (!enabled) {
+        return;
+    }
+    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    CPU_FOREACH(cs) {
+        CPUClass *cc = CPU_GET_CLASS(cs);
+        qemu_log_mask(LOG_UNIMP, "PCSAMPLE t=%lld cpu=%d halted=%d pc=0x%08llx\n",
+                      (long long)now, cs->cpu_index, (int)cs->halted,
+                      (unsigned long long)cc->get_pc(cs));
+    }
+}
+
 static void i2s_tick(void *opaque)
 {
     EspI2sMaster *s = opaque;
+
+    i2s_sample_pcs();
 
     if (!s->gdma) {
         return;
