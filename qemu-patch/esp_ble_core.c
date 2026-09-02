@@ -35,6 +35,21 @@
  *   +0x0EC target, half-slots, with the fine part at +0x0F0 as 624 - hus,
  *          status bit 11 (r_rwip_timer_hus_set; the bit its setter
  *          acknowledges and enables, watched live)
+ *   +0x100 the kick (r_sch_prog_ble_push, ROM 0x4002d674, its last store):
+ *          bit 31 with the index of an exchange-table entry the link layer
+ *          has just filled. The table is exchange-memory offset 0, so it lives
+ *          in RAM where base register 0 (+0x204) points: the register's low
+ *          eighteen bits, shifted left by two, under 0x3FC00000
+ *          (r_emi_get_mem_addr_by_offset, ROM 0x4000a360). An entry is 16
+ *          bytes: bits 5..3 of the first halfword are the status the core
+ *          writes back, the start time is at +2 (low sixteen bits of the
+ *          half-slot count) and +4 (the high twelve), the fine count at +6
+ *          (r_sch_prog_push, ROM 0x4002d80c). At the end of the event the
+ *          core sets the status to 3 and raises status bit 5, which the
+ *          dispatcher hands to the end handler; r_sch_prog_end_isr (ROM
+ *          0x4002d58c) runs the event's callback only for a status of 3..5.
+ *          An entry whose time has passed is skipped: status 4, bit 6.
+ *          Nothing here transmits; the event is its own end.
  *   +0x2D8 the dispatcher's FIFO (blob 0x4037ce70..9b): bits 9..5 count the
  *          entries, bits 31..10 carry the head entry's status word, a write
  *          of bit 0 pops it; the configuration bits the blob wrote at init
@@ -52,6 +67,7 @@
 #include "qemu/error-report.h"
 #include "qemu/timer.h"
 #include "qemu/main-loop.h"
+#include "qemu/log.h"
 #include "hw/qdev-properties.h"
 #include "hw/qdev-core.h"
 #include "hw/irq.h"
@@ -75,6 +91,8 @@ OBJECT_DECLARE_SIMPLE_TYPE(EspBleCore, ESP_BLE_CORE)
 #define R_TGT_HS        0x0E8
 #define R_TGT_HUS_HS    0x0EC
 #define R_TGT_HUS_FINE  0x0F0
+#define R_ET_KICK       0x100
+#define R_EM_BASE0      0x204
 #define R_INTFIFO       0x2D8
 
 #define CNTL_RESET      (1u << 31)
@@ -88,6 +106,16 @@ OBJECT_DECLARE_SIMPLE_TYPE(EspBleCore, ESP_BLE_CORE)
 #define BIT_SWINT       (1u << 12)
 #define FIFO_CONFIG     0x8000001Eu
 #define FIFO_DEPTH      16
+#define BIT_END         (1u << 5)
+#define BIT_SKIP        (1u << 6)
+
+#define ET_ENTRY_SIZE   16
+#define ET_STATUS_SHIFT 3
+#define ET_STATUS_MASK  (7u << ET_STATUS_SHIFT)
+#define ET_ENDED        3
+#define ET_SKIPPED      4
+#define ET_MAX_PENDING  16
+#define EVENT_HUS       4000       /* 2 ms: three advertising PDUs and their windows */
 
 #define HUS_PER_HS      625        /* half-microseconds in a half-slot */
 #define NS_PER_HUS      500        /* a half-microsecond */
@@ -107,6 +135,11 @@ struct EspBleCore {
     uint32_t slot, fine;        /* the last clock sample */
     uint32_t fifo[FIFO_DEPTH];
     unsigned fifo_len;
+
+    /* Exchange-table entries kicked and not yet ended, by start time. */
+    struct { unsigned idx; int64_t start_hus; } events[ET_MAX_PENDING];
+    unsigned n_events;
+    QEMUTimer *event_timer;
 
     QEMUTimer *timer;
     qemu_irq irq_line;
@@ -216,6 +249,82 @@ static void ble_expire(void *opaque)
     ble_rearm(opaque);
 }
 
+/* -- the exchange table ----------------------------------------------------- */
+
+static hwaddr ble_et_entry(EspBleCore *s, unsigned idx)
+{
+    hwaddr base = 0x3FC00000u | ((s->regs[R_EM_BASE0 / 4] & 0x3FFFFu) << 2);
+    return base + (hwaddr)idx * ET_ENTRY_SIZE;
+}
+
+static void ble_arm_event_timer(EspBleCore *s)
+{
+    if (!s->n_events) {
+        timer_del(s->event_timer);
+        return;
+    }
+    int64_t end = s->events[0].start_hus + EVENT_HUS;
+    int64_t now = ble_now_hus();
+    timer_mod_ns(s->event_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL)
+                                 + (end > now ? (end - now) : 0) * NS_PER_HUS);
+}
+
+/* The head event is over: write its status into the entry, tell the link
+ * layer, and move on to the next. */
+static void ble_event_done(void *opaque)
+{
+    EspBleCore *s = opaque;
+    if (!s->n_events) {
+        return;
+    }
+    unsigned idx = s->events[0].idx;
+    bool late = s->events[0].start_hus + EVENT_HUS < ble_now_hus() - EVENT_HUS;
+    hwaddr entry = ble_et_entry(s, idx);
+    uint16_t word0 = 0;
+
+    address_space_read(&address_space_memory, entry, MEMTXATTRS_UNSPECIFIED, &word0, 2);
+    word0 = (word0 & ~ET_STATUS_MASK) | ((late ? ET_SKIPPED : ET_ENDED) << ET_STATUS_SHIFT);
+    address_space_write(&address_space_memory, entry, MEMTXATTRS_UNSPECIFIED, &word0, 2);
+    qemu_log_mask(LOG_UNIMP, "esp-ble-core: entry %u %s at %lld hus%c", idx,
+                  late ? "skipped" : "ended", (long long)ble_now_hus(), 10);
+
+    memmove(&s->events[0], &s->events[1], (s->n_events - 1) * sizeof(s->events[0]));
+    s->n_events--;
+    s->raw |= late ? BIT_SKIP : BIT_END;
+    ble_fifo_push(s, late ? BIT_SKIP : BIT_END);
+    ble_update_irq(s);
+    ble_arm_event_timer(s);
+}
+
+static void ble_kick(EspBleCore *s, uint32_t value)
+{
+    unsigned idx = value & 0xF;
+    uint8_t e[ET_ENTRY_SIZE];
+    hwaddr entry = ble_et_entry(s, idx);
+
+    if (s->n_events >= ET_MAX_PENDING) {
+        error_report("esp-ble-core: exchange table full, entry %u dropped", idx);
+        return;
+    }
+    address_space_read(&address_space_memory, entry, MEMTXATTRS_UNSPECIFIED, e, sizeof(e));
+    uint32_t ts_hs = (uint32_t)(e[2] | (e[3] << 8)) | ((uint32_t)((e[4] | (e[5] << 8)) & 0xFFF) << 16);
+    uint32_t hus = (e[6] | (e[7] << 8)) & 0xFFFF;
+    int64_t start = (int64_t)ts_hs * HUS_PER_HS + hus;
+    qemu_log_mask(LOG_UNIMP, "esp-ble-core: kick entry %u at 0x%08llx: start %lld hus, now %lld hus, word0 0x%04x%c",
+                  idx, (unsigned long long)entry, (long long)start, (long long)ble_now_hus(),
+                  e[0] | (e[1] << 8), 10);
+
+    unsigned i = s->n_events;
+    while (i > 0 && s->events[i - 1].start_hus > start) {
+        s->events[i] = s->events[i - 1];
+        i--;
+    }
+    s->events[i].idx = idx;
+    s->events[i].start_hus = start;
+    s->n_events++;
+    ble_arm_event_timer(s);
+}
+
 /* -- registers ----------------------------------------------------------- */
 
 static uint32_t ble_read_word(EspBleCore *s, hwaddr offset)
@@ -276,6 +385,12 @@ static void ble_write_word(EspBleCore *s, hwaddr offset, uint32_t value)
             return;
         }
         s->regs[offset / 4] = value;
+        return;
+    case R_ET_KICK:
+        s->regs[offset / 4] = value;
+        if (value & 0x80000000u) {
+            ble_kick(s, value);
+        }
         return;
     case R_INTCNTL:
     case R_TGT_10MS:
@@ -341,6 +456,7 @@ static void ble_realize(DeviceState *dev, Error **errp)
         s->irq_bh = qemu_bh_new(ble_irq_bh, s);
     }
     s->timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, ble_expire, s);
+    s->event_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, ble_event_done, s);
 
     memory_region_init_io(&s->iomem, OBJECT(s), &ble_ops, s, TYPE_ESP_BLE_CORE, PAGE_SIZE);
     memory_region_add_subregion_overlap(get_system_memory(), s->base, &s->iomem, s->priority);

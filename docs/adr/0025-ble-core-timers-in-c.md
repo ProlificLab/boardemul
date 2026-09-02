@@ -70,9 +70,28 @@ and lands in the same half-slot.
   Meshtastic boot. A device that talks to nothing but the guest cannot be
   poked from outside QEMU without a debugger the container lacks.
 
+*Amended the same night:* **the core executes the events it is kicked for.**
+`r_sch_prog_ble_push` ends with a write to `+0x100`, bit 31 and the index of
+an exchange-table entry; the table is exchange-memory offset 0, in RAM where
+base register 0 points (`r_emi_get_mem_addr_by_offset`: the register's low
+eighteen bits, shifted by two, under `0x3FC00000`); the entry's start time
+sits at +2 and +4 with the fine count at +6 (`r_sch_prog_push`), and the end
+handler (`r_sch_prog_end_isr`) runs the event's callback only if bits 5..3
+of the entry read 3..5, and the dispatcher maps status bit 5 to it and bit
+6 to the skip handler. The device reads the entry from guest RAM on the
+kick, and two milliseconds after its start writes status 3 back and raises
+bit 5; an entry already past is skipped with status 4 and bit 6. Nothing
+transmits. With that, forty-six of forty-seven advertising events in a run
+end on schedule, the main loop polls the keyboard again and the panel
+redraws. The one skip, and eight milliseconds of lateness under the
+translation log, are the guest running slower than QEMU's wall-clock-driven
+virtual time; with `-icount shift=2` every one of three hundred and twenty
+events ends on time and the run is deterministic. Making that the way the
+T-Deck runs is a decision for its own record.
+
 **Open, as of this record**
 
-- **The core executing the event.** The exchange table lives in RAM behind
+- **The core executing the event.** *(closed above)* The exchange table lives in RAM behind
   the base-register mapping. What the link layer writes there, what status it
   reads back, and which end-of-event bit it waits for are the next things to
   read (`r_sch_prog_push`, `r_sch_prog_end_isr`, `r_emi_get_mem_addr_by_offset`).
