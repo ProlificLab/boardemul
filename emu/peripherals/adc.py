@@ -20,6 +20,7 @@ firmware's calibration and the board's divider have had their way with it.
 from __future__ import annotations
 
 import logging
+import time
 
 from emu.bus import Region
 
@@ -29,6 +30,16 @@ R_MEAS1_CTRL2 = 0x0C
 START_SAR = 1 << 17
 DONE_SAR = 1 << 16
 DATA_MASK = 0xFFFF
+
+# The temperature sensor shares the page (SENS_SAR_TSENS_CTRL). The driver sets
+# DUMP_OUT and spins on READY, then takes the eight-bit reading.
+R_TSENS_CTRL = 0x50
+TSENS_DUMP_OUT = 1 << 24
+TSENS_READY = 1 << 8
+TSENS_OUT_MASK = 0xFF
+# A modelling choice, like the battery below: there is no die to be warm.
+# 128 converts to about 28 C by the chip's default range.
+DEFAULT_TSENS_OUT = 128
 
 # Twelve-bit, at the 11 dB attenuation Arduino selects for a battery pin:
 # roughly 1.9 V at the pin, about 3.9 V after the divider on this board.
@@ -46,7 +57,23 @@ class SarAdc(Region):
         self.conversions = 0
 
     def read(self, offset: int, size: int) -> int:
-        return self.regs.get(offset, 0)
+        # Progress meter for a firmware that samples in a loop: every
+        # conversion reads this register at least twice, so its read count
+        # over wall time says whether a calibration sweep is advancing,
+        # slowing, or has stopped -- with a constant sample it cannot converge
+        # on anything, only run out of steps or not.
+        if offset == R_MEAS1_CTRL2:
+            self._reads = getattr(self, "_reads", 0) + 1
+            if self._reads == 1:
+                self._t0 = time.monotonic()
+            if self._reads % 1000 == 0:
+                log.info("adc: %d result reads at +%.1fs", self._reads, time.monotonic() - self._t0)
+        value = self.regs.get(offset, 0)
+        if offset == R_TSENS_CTRL and value & TSENS_DUMP_OUT:
+            # A reading is ready as soon as one was asked for. Reported, not
+            # stored, for the same reason as DONE above.
+            value = (value & ~TSENS_OUT_MASK) | TSENS_READY | DEFAULT_TSENS_OUT
+        return value
 
     def write(self, offset: int, value: int, size: int) -> None:
         if offset == R_MEAS1_CTRL2:

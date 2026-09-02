@@ -42,6 +42,11 @@ as pressed.
    the same register's low half. Everything else on the page is stored. The
    sample is a modelling choice and says so -- there is no battery -- and its
    default reads as a healthy pack after calibration and the board's divider.
+   *Amended 2026-09-02:* the page's temperature sensor answers the same way.
+   Meshtastic, after RF calibration for Bluetooth, sets `TSENS_DUMP_OUT` and
+   spins on `TSENS_READY` (app `0x4212a1aa`: `bbci a2, 8`, read off the
+   loop); a reading is ready as soon as one is asked for, reported and not
+   stored, and its value is as much a choice as the battery's.
 
 2. **The region is exactly `0x400`.** The first cut claimed `0x1000` and ran
    into IO_MUX at `0x60009000`, which the fork models. That is the third time

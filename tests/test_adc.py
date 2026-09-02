@@ -9,7 +9,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from emu.peripherals.adc import (  # noqa: E402
-    DATA_MASK, DONE_SAR, R_MEAS1_CTRL2, START_SAR, SarAdc,
+    DATA_MASK, DEFAULT_TSENS_OUT, DONE_SAR, R_MEAS1_CTRL2, R_TSENS_CTRL,
+    START_SAR, TSENS_DUMP_OUT, TSENS_OUT_MASK, TSENS_READY, SarAdc,
 )
 
 SENS = 0x60008800
@@ -53,3 +54,18 @@ def test_every_other_register_is_a_plain_store() -> None:
     assert adc.read(0x10, 4) == 0x12345678
     assert adc.read(0x14, 4) == 0x0000000F
     assert adc.read(0x4, 4) == 0
+
+
+def test_a_temperature_dump_is_ready_at_once_and_only_while_asked() -> None:
+    """The loop Meshtastic spins on after RF calibration: set DUMP_OUT, wait
+    for READY, take the low byte. Nothing is stored back, so the driver's own
+    read-modify-writes keep seeing what they wrote."""
+    adc = SarAdc("sens", SENS)
+    adc.write(R_TSENS_CTRL, (1 << 22) | (1 << 23), 4)          # powered, not asked
+    assert not adc.read(R_TSENS_CTRL, 4) & TSENS_READY
+    adc.write(R_TSENS_CTRL, (1 << 22) | (1 << 23) | TSENS_DUMP_OUT, 4)
+    v = adc.read(R_TSENS_CTRL, 4)
+    assert v & TSENS_READY and v & TSENS_OUT_MASK == DEFAULT_TSENS_OUT
+    assert v & TSENS_DUMP_OUT
+    adc.write(R_TSENS_CTRL, (1 << 22) | (1 << 23), 4)          # dump cleared
+    assert not adc.read(R_TSENS_CTRL, 4) & TSENS_READY
