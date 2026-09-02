@@ -14,7 +14,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from emu.board_tdeck import EXTRA_CLASSES, EXTRA_REGIONS, BleCore  # noqa: E402
+from emu.board_tdeck import (  # noqa: E402
+    BLE_CORE_BASE, EXTRA_REGIONS, IRQ_RWBLE, UNMODELLED, build,
+)
 
 
 def test_the_exchange_memory_reaches_up_to_internal_sram() -> None:
@@ -24,33 +26,11 @@ def test_the_exchange_memory_reaches_up_to_internal_sram() -> None:
     assert base == 0x3FC00000 and base + size == 0x3FC80000
 
 
-def test_the_core_page_is_served_by_the_core_class() -> None:
-    assert EXTRA_REGIONS["ble_core"] == (0x60031000, 0x1000)
-    assert EXTRA_CLASSES["ble_core"] == "BleCore"
-
-
-def test_the_reset_bit_is_consumed_by_the_write() -> None:
-    """ROM 0x4002bd73 spins while the register reads negative after writing
-    bit 31; everything else it wrote must still be there."""
-    core = BleCore("ble_core", 0x60031000)
-    core.write(0x1C, 0x80000123, 4)
-    assert core.read(0x1C, 4) == 0x00000123
-    core.write(0x1C, 0x40000000, 4)          # not a bit read off any loop
-    assert core.read(0x1C, 4) == 0x40000000
-    core.write(0x00, 0x8010070f, 4)          # blob 0x42145bac: extui 31,1; bnez
-    assert core.read(0x00, 4) == 0x0010070f
-
-
-def test_the_core_reports_the_version_the_link_layer_was_built_for() -> None:
-    """lld.c:318 prints what it wanted next to what it got: 0x09001b00."""
-    core = BleCore("ble_core", 0x60031000)
-    core.write(0x04, 0, 4)
-    assert core.read(0x04, 4) == 0x09001B00
-
-
-def test_the_exchange_memory_base_registers_read_back() -> None:
-    """emi.c:164 compares each base register's top fourteen bits, times four,
-    with the page offset it expects; a store-and-return register passes."""
-    core = BleCore("ble_core", 0x60031000)
-    core.write(0x210, 0x1000 << 16, 4)
-    assert core.read(0x210, 4) == 0x1000 << 16
+def test_the_core_page_is_a_device_and_not_a_window(tmp_path) -> None:
+    """The core's clock and timers run in C on QEMU's clock (ADR 0025); the
+    bridge must not also claim the page, or two answers race."""
+    assert BLE_CORE_BASE == 0x60031000 and IRQ_RWBLE == 8
+    assert all(b != BLE_CORE_BASE for b, _ in EXTRA_REGIONS.values())
+    assert all(b != BLE_CORE_BASE for b in UNMODELLED.values())
+    board = build(tmp_path)
+    assert any(d.startswith("esp-ble-core,base=0x60031000,irq=8") for d in board.devices)

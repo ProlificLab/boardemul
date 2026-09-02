@@ -72,6 +72,9 @@ I2S1_BASE, GDMA_PERIPH_I2S1 = 0x6002D000, 4
 # Claimed with a model behind them, sized exactly. SENS is 0x400: the first cut
 # took 0x1000 and ran into IO_MUX at 0x60009000, which the fork models -- the
 # third bite from ADR 0008's amendment, this time by size rather than by base.
+BLE_CORE_BASE = 0x60031000
+IRQ_RWBLE = 8          # ETS_RWBLE_INTR_SOURCE: the dispatcher's line (ADR 0024)
+
 EXTRA_REGIONS = {
     "radio_unknown": (0x6000E000, 0x1000),   # ADR 0019: the radio state page
     "sens": (0x60008800, 0x400),             # ADR 0020: the SAR ADC, battery read
@@ -82,6 +85,7 @@ EXTRA_REGIONS = {
     # there. Claimed up to where SRAM starts, as memory that keeps what is
     # written, until what the controller expects of it is understood.
     "bt_em": (0x3FC00000, 0x80000),
+    # 0x60031000, the link-layer core's page, is a C device now (ADR 0025).
     # The page after LCD_CAM, named by nothing in the fork or IDF, that the
     # controller code touches next to the exchange memory (literals 0x60042000,
     # +4, +8 in the function after btdm_lpclk_set_div).
@@ -92,12 +96,11 @@ EXTRA_REGIONS = {
     # writes them at init and later asserts (emi.c:164) unless each reads
     # back with the page offset in its top fourteen bits. Nothing claimed the
     # page, so the readback was the machine default, zero.
-    "ble_core": (0x60031000, 0x1000),
 }
 
 # The class a region in EXTRA_REGIONS is served by; a plain trace window unless
 # something here knows better.
-EXTRA_CLASSES = {"radio_unknown": "PhyGates", "sens": "SarAdc", "ble_core": "BleCore"}
+EXTRA_CLASSES = {"radio_unknown": "PhyGates", "sens": "SarAdc"}
 
 UNMODELLED = {
     # The radio front end. Claimed not because anything models it, but because
@@ -179,43 +182,6 @@ class PhyGates(TraceRegion):
             v |= self.GATES.get(self.base + offset, 0)
         return v
 
-
-class BleCore(TraceRegion):
-    """The Bluetooth link-layer core's register page (0x60031000).
-
-    Two things live here that the ROM link layer needs answered, both read off
-    its own code rather than any document, since none names this page:
-
-    - The exchange-memory base registers at +0x204 and up: written at init,
-      later checked (emi.c:164) to read back with the page offset in their top
-      fourteen bits. Storing what was written is the whole of that.
-    - A control register at +0x1C whose top bit is a reset the core clears by
-      itself. The ROM writes it set and spins while the value is negative
-      (ROM 0x4002bd73: `l32i; bltz`). The write consumes the bit here, so the
-      first read after it sees the reset done. Only this bit, read off this
-      loop; another loop, another bit. The second, at +0x00, came from the
-      same shape of loop in the controller blob once the first was answered
-      (0x42145bac: `l32i; extui 31,1; bnez`).
-    """
-
-    # register offset -> bits a write sets that the hardware clears itself
-    SELF_CLEARING = {0x1C: 1 << 31, 0x00: 1 << 31}
-
-    # register offset -> what a read returns regardless of writes. +0x04 is the
-    # version of the core the ROM link layer was built against: lld.c:318
-    # asserts on it, printing the value it wanted (0x09001b00) next to the zero
-    # it got. The ROM routine names carry the same generation, rw_v9.
-    FIXED = {0x04: 0x09001B00}
-
-    def read(self, offset: int, size: int) -> int:
-        if offset in self.FIXED:
-            return self.FIXED[offset]
-        return super().read(offset, size)
-
-    def write(self, offset: int, value: int, size: int) -> None:
-        super().write(offset, value & ~self.SELF_CLEARING.get(offset, 0), size)
-
-
 def build(outdir: Path) -> Board:
     outdir = Path(outdir)
     panel = St7789Panel(outdir / "frames")
@@ -231,8 +197,7 @@ def build(outdir: Path) -> Board:
     regions: list[Region] = [PhyGates(n, b) if PhyGates.covers(b) else TraceRegion(n, b)
                              for n, b in UNMODELLED.items()]
     for name, (base, size) in EXTRA_REGIONS.items():
-        cls = {"PhyGates": PhyGates, "SarAdc": SarAdc, "BleCore": BleCore}.get(
-            EXTRA_CLASSES.get(name, ""), TraceRegion)
+        cls = {"PhyGates": PhyGates, "SarAdc": SarAdc}.get(EXTRA_CLASSES.get(name, ""), TraceRegion)
         regions.append(cls(name, base, size))
 
     devices = [
@@ -251,6 +216,9 @@ def build(outdir: Path) -> Board:
         f"periph={GDMA_PERIPH_I2S0}",
         f"esp-i2s-master,name=i2s1,base=0x{I2S1_BASE:x},"
         f"periph={GDMA_PERIPH_I2S1}",
+        # The Bluetooth link-layer core's page, on QEMU's own clock: its timers
+        # must interrupt within the half-slot they were set for (ADR 0025).
+        f"esp-ble-core,base=0x{BLE_CORE_BASE:x},irq={IRQ_RWBLE}",
     ]
     board = Board(regions=regions, gpio=gpio, spi=spi, i2c0=i2c0, i2c1=i2c1,
                   panel=panel, devices=devices)

@@ -30,3 +30,4 @@ superseded ADR is marked superseded and points forward.
 | [0022](0022-spi1-dummy-cycles-by-line-count.md) | Convert SPI1 dummy cycles with the read mode's line count | Accepted |
 | [0023](0023-bluetooth-clock-registers.md) | Keep the two Bluetooth clock registers the controller checks | Accepted |
 | [0024](0024-bluetooth-bring-up.md) | Bluetooth bring-up: what the controller checked, and what answered it | Accepted |
+| [0025](0025-ble-core-timers-in-c.md) | The link-layer core's clock and timers run in C, on QEMU's clock | Accepted |

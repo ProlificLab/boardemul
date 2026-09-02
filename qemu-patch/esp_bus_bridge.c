@@ -262,6 +262,15 @@ static void bridge_mmio_write(void *opaque, hwaddr offset,
         .addr = (uint32_t)(s->base + offset),
         .value = (uint32_t)value,
     };
+
+    /* The same hatch for writes, with the value: a timer being armed or a
+     * mask being set is a write, and which code did it matters as much as
+     * which code polls the result. */
+    if (current_cpu && bridge_pc_watched(req.addr)) {
+        CPUClass *cc = CPU_GET_CLASS(current_cpu);
+        qemu_log_mask(LOG_UNIMP, "PCWATCH wr addr=0x%08x value=0x%08x pc=0x%08" PRIx64 " cpu=%d\n",
+                      req.addr, req.value, cc->get_pc(current_cpu), current_cpu->cpu_index);
+    }
     bridge_post(s, &req);
 }
 
