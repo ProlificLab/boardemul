@@ -53,7 +53,8 @@ while the firmware itself ran. Upstream's `esp-develop` carries the same code
    the same transaction (a 32-bit address phase carrying the mode bits, then 4
    dummy cycles), which comes to the same 6 bytes.
 
-2. **Carried as `qemu-patch/spi1-dummy-lanes.patch`**, applied by the build the
+2. **Carried as `qemu-patch/spi1-dummy-lanes.patch`** (reported upstream as
+   <https://github.com/espressif/qemu/issues/169>), applied by the build the
    way ADR 0017's patch is, in the same loop, failing loudly if the code moves.
    It was meant to be the second and last change to the fork's own logic;
    ADR 0023 carries a third and says why. All are reported upstream and each
@@ -65,7 +66,7 @@ while the firmware itself ran. Upstream's `esp-develop` carries the same code
    the files the firmware expects to find.
 
 4. **A second fork defect, seen and not hit, is recorded here** so it is not
-   lost: the cache model fills a physical flash page's copy with `0xdeadbeef`
+   lost (reported upstream as <https://github.com/espressif/qemu/issues/170>): the cache model fills a physical flash page's copy with `0xdeadbeef`
    when one MMU entry unmaps it, without checking whether another entry still
    maps the same page. At reset, entry 0 unmaps page 0 while entry 63 still
    maps it. Nothing read through entry 63 afterwards in the runs seen; the

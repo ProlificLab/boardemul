@@ -40,7 +40,7 @@ stopping at storage) and to report every defect found to the fork.
    and that is `LPCLK_SEL_XTAL` in that layout.
 
 2. **Carried as `qemu-patch/system-bt-lpck-regs.patch`**, applied in the same
-   loop as the other two, and reported upstream. Three files: the S3 register
+   loop as the other two, and reported upstream as <https://github.com/espressif/qemu/issues/171>. Three files: the S3 register
    definitions, the state struct, and the model's read, write and reset.
 
 3. **ADR 0022's "second and last" is amended**, not quietly contradicted. The
