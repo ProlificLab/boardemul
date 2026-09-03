@@ -269,6 +269,10 @@ def attach_input(server, board: Board, outdir: Path) -> InputTail:
                     touch.touch(int(event.get("x", 0)), int(event.get("y", 0)))
                 else:
                     touch.release()
+                # Recorded so a verbose bus log shows where the host's finger
+                # sat among the controller's polls, which is what decides
+                # whether the firmware could have seen it.
+                log.debug("touch %s at %s", "down" if down else "up", touch.point)
                 # A level, not a pulse, and high while pressed. The vendor's
                 # driver decides isPressed() by digitalRead(INT) == the trigger
                 # level, and it configured this controller for RISING -- so

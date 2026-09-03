@@ -124,6 +124,8 @@ class I2CServer:
             data = device.read(rlen)
         else:
             device.stop()
+        # The verbose bus log promises every transaction; this is the I2C half.
+        log.debug("%s 0x%02x wrote %s read %s", self.name, addr, written.hex(), data.hex())
         return acked, data.ljust(rlen, b"\xff")[:rlen]
 
     @staticmethod
