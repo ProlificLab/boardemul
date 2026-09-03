@@ -11,13 +11,16 @@ refresh command. It shows whatever is in controller RAM, continuously, so there
 is no moment at which the hardware itself declares a frame. This model
 snapshots instead: at once when a full-screen rectangle finishes, and otherwise
 no more often than `interval` seconds, which stops a driver that flushes in
-narrow strips from producing a hundred PNGs per screen.
+narrow strips from producing a hundred PNGs per screen; and once the pixels
+stop arriving, after that same interval, so a screen a driver drew in strips
+and then left alone is not missed until something else is drawn over it.
 """
 
 from __future__ import annotations
 
 import logging
 import struct
+import threading
 import time
 from pathlib import Path
 
@@ -99,10 +102,25 @@ class St7789Panel(SpiDevice):
         # Not zero: the first pixel byte would otherwise look overdue and
         # snapshot a blank framebuffer.
         self.last_render = time.monotonic()
+        self.last_pixels = time.monotonic()
         self.latest: Path | None = None
         self._new_window = False
         self._odd: int | None = None
         self._lut_cache: list[bytes] | None = None
+        # Two things write frames: the SPI thread as pixels arrive, and the
+        # settle thread once they stop. One at a time.
+        self._render_lock = threading.Lock()
+        threading.Thread(target=self._settle, name="lcd-settle", daemon=True).start()
+
+    def _settle(self) -> None:
+        """Render what is pending once the driver has gone quiet for an
+        interval. A driver that flushes a screen in strips and then waits for
+        the user would otherwise leave that screen unseen until its next
+        update, which for a dialog can be never."""
+        while True:
+            time.sleep(self.interval)
+            if self.dirty and time.monotonic() - self.last_pixels >= self.interval:
+                self.render()
 
     @property
     def size(self) -> tuple[int, int]:
@@ -222,6 +240,7 @@ class St7789Panel(SpiDevice):
         self.x, self.y = x, y
 
         self.dirty = True
+        self.last_pixels = time.monotonic()
         self.window_left -= len(data) // 2
         # A full-screen rectangle is a frame, and it is worth waiting for: a
         # snapshot taken part-way through one shows a half-drawn screen that
@@ -267,6 +286,10 @@ class St7789Panel(SpiDevice):
         addressed space rather than transforming what is in it. All of them are
         reported in the summary so nothing is hidden.
         """
+        with self._render_lock:
+            return self._render()
+
+    def _render(self) -> Path:
         w, h = self.size
         table = self._lut()
         fb = self.fb

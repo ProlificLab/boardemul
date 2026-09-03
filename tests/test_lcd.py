@@ -11,6 +11,7 @@ a firmware exists that exercises it.
 from __future__ import annotations
 
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -235,6 +236,26 @@ def test_a_partial_update_waits(tmp_path: Path) -> None:
     fill(p, RED, 100)
     assert p.frames == 1
     assert p.dirty
+
+
+def test_a_partial_update_is_rendered_once_the_driver_goes_quiet(tmp_path: Path) -> None:
+    """A screen drawn in strips and then left alone must not stay unseen until
+    something else is drawn over it (ADR 0028). The panel here has a short
+    interval; the wait is bounded and generous, since the settle thread sleeps
+    one interval between looks."""
+    p = St7789Panel(tmp_path / "frames", interval=0.05)
+    command(p, CMD_COLMOD, 0x55)
+    command(p, CMD_MADCTL, LANDSCAPE)
+    fill_screen(p, BLACK)
+    window(p, 0, 9, 0, 9)
+    fill(p, RED, 100)
+    deadline = time.monotonic() + 2.0
+    while p.frames < 2 and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert p.frames == 2
+    assert not p.dirty
+    time.sleep(0.2)
+    assert p.frames == 2, "nothing more pending, so nothing more written"
 
 
 def test_flush_emits_what_is_pending(tmp_path: Path) -> None:

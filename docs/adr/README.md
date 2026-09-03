@@ -33,3 +33,4 @@ superseded ADR is marked superseded and points forward.
 | [0025](0025-ble-core-timers-in-c.md) | The link-layer core's clock and timers run in C, on QEMU's clock | Accepted |
 | [0026](0026-trackball-at-rest.md) | The trackball rests released | Accepted |
 | [0027](0027-instruction-counted-clock.md) | An instruction-counted clock, as an option | Accepted |
+| [0028](0028-a-quiet-screen-is-a-frame.md) | A quiet screen is a frame | Accepted |

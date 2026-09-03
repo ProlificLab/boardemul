@@ -67,11 +67,22 @@ python emu/app.py --board tdeck --scale 2
 
 Meshtastic also boots on this board (`--psram-octal`): with its filesystem
 image in place (`--overlay 0xc90000=firmware/littlefs-t-deck-tft-2.7.10.94d4bdf.bin`,
-ADR 0021) it mounts storage and reads its preferences, and about 40 seconds in
-a fresh first boot mounts storage, reads its preferences and reaches the
-device-ui's setup dialog (ADR 0026). Run it with `--icount` (ADR 0027): the
-Bluetooth link layer, which the device-ui switches on when its boot logo is
-held, needs the instruction-counted clock to keep its events on time; its
+ADR 0021) a fresh first boot mounts storage, reads its preferences and, some
+30 seconds of guest time in, reaches the device-ui's setup dialog (ADR 0026).
+The dialog can be filled from the keyboard through the input file: byte 0x09
+moves LVGL's focus from the region to the names and on to OK, letters land in
+the focused field, and 0x0D on OK saves the names and region, after which the
+firmware reboots itself and comes back to its home screen with the LoRa
+frequency set. Two things to know when driving it. The interface blanks its
+panel 30 seconds after LVGL starts unless some input device has reported a
+press, and on this guest that is a few seconds after the dialog appears, so the
+first key has to go in promptly; once blanked, the screen is locked and only
+its own blank-screen button releases it. And touch does not reach Meshtastic
+yet: its LovyanGFX driver reads the touch controller only while the interrupt
+line is low, which is the level the vendor's driver treats as released, and the
+model follows the vendor's wire (ADR 0006). Run it with `--icount` (ADR 0027):
+the Bluetooth link layer, which the device-ui switches on when its boot logo
+is held, needs the instruction-counted clock to keep its events on time; its
 core's clock, timers and interrupt FIFO are a C device read off the ROM
 (ADR 0025). Nothing transmits.
 
