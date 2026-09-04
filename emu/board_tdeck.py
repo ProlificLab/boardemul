@@ -47,6 +47,9 @@ I2C_SDA, I2C_SCL = 18, 8
 TFT_CS_PIN = 12
 TFT_DC_PIN = 11
 TFT_BACKLIGHT = 42
+# The interface's own size; the parts behind it are mounted the other way up.
+DISPLAY_W, DISPLAY_H = 320, 240
+
 TOUCH_INT_PIN = 16
 # The trackball: five active-low push contacts on plain GPIOs, pulled up on
 # the board, so an idle one reads high. Our GPIO block reports an input the
@@ -198,7 +201,7 @@ def build(outdir: Path) -> Board:
     spi = SpiServer(outdir / "spi2.sock", panel)
     # Discovered by watching the firmware probe: it looks for 0x14 and 0x5d
     # (touch), 0x55 (the keyboard) and 0x40 (an audio ADC we do not model).
-    touch = GT911()
+    touch = GT911()          # its own portrait raster; see touch_point()
     keypad = TDeckKeyboard()
     i2c0 = I2CServer(outdir / "i2c0.sock", [touch, keypad], name="i2c0")
     i2c1 = I2CServer(outdir / "i2c1.sock", [], name="i2c1")
@@ -236,6 +239,32 @@ def build(outdir: Path) -> Board:
     return board
 
 
+# What the touch controller reports at the edges of the visible glass, in its
+# own raster. Not the full 240x320: the active area sits inside it, and these
+# are the bounds Meshtastic's driver carries as corner points measured on real
+# hardware ({0,2, 0,314, 223,5, 224,314}). Averaged per edge (ADR 0030).
+TOUCH_X_EDGES = (0.0, 223.5)        # bottom of the screen .. top
+TOUCH_Y_EDGES = (3.5, 314.0)        # left of the screen .. right
+
+
+def touch_point(x: int, y: int) -> tuple[int, int]:
+    """Where a finger at display (x, y) lands in the touch controller's raster.
+
+    The panel is 320x240 to the firmware and 240x320 to both the parts behind
+    it, so the controller's x axis runs down the screen and its y axis across
+    it, counting up the screen rather than down. Those measured corners give the
+    spans: the pair sharing a raw x is a screen row, the pair sharing a raw y is
+    a screen column, at a scale within a few per cent of one to one, which is
+    the raster relation itself. Which way up the x axis runs was settled on the
+    device, not read off the constants (ADR 0030).
+    """
+    x0, x1 = TOUCH_X_EDGES
+    y0, y1 = TOUCH_Y_EDGES
+    raw_x = x0 + (DISPLAY_H - 1 - y) * (x1 - x0) / (DISPLAY_H - 1)
+    raw_y = y0 + x * (y1 - y0) / (DISPLAY_W - 1)
+    return round(raw_x), round(raw_y)
+
+
 def attach_input(server, board: Board, outdir: Path) -> InputTail:
     """Route host input to the touch controller and the keyboard.
 
@@ -266,7 +295,8 @@ def attach_input(server, board: Board, outdir: Path) -> InputTail:
             elif kind == "touch" and isinstance(touch, GT911):
                 down = bool(event.get("down", True))
                 if down:
-                    touch.touch(int(event.get("x", 0)), int(event.get("y", 0)))
+                    touch.touch(*touch_point(int(event.get("x", 0)),
+                                             int(event.get("y", 0))))
                 else:
                     touch.release()
                 # Recorded so a verbose bus log shows where the host's finger

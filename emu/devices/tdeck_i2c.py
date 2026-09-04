@@ -35,12 +35,19 @@ STATUS_READY = 0x80
 
 
 class GT911(I2CDevice):
-    """Capacitive touch, 320x240 landscape on this board."""
+    """Capacitive touch, reporting in its own raster.
+
+    That raster is portrait, 240x320, the same way round as the ST7789 behind
+    it: both parts are mounted turned a quarter turn from the landscape
+    interface the firmware draws. The controller knows nothing of that turn and
+    reports where the finger is on its own glass, so a board that wants a
+    display coordinate touched has to state the mounting (ADR 0030).
+    """
 
     address = 0x5D
     name = "GT911"
 
-    def __init__(self, address: int = 0x5D, width: int = 320, height: int = 240):
+    def __init__(self, address: int = 0x5D, width: int = 240, height: int = 320):
         self.address = address
         self.width = width
         self.height = height

@@ -82,8 +82,13 @@ driver reads the touch controller only while its interrupt line is low, and
 never writes the controller's trigger mode, whereas the vendor firmware writes
 mode 0 and treats that same line as pressed when high. The controller model
 resolves the conflict by following the mode each firmware wrote, resting the
-line low until one is (ADR 0029); Meshtastic now reads the finger where before
-it read nothing. Run it with `--icount` (ADR 0027):
+line low until one is (ADR 0029). The controller also reports in its own
+raster, portrait like the panel behind it, with the board stating the mounting
+(ADR 0030). With both in place the dialog can be filled by touch alone: tapping
+the little keyboard icon beside a field is what binds the keypad to it, typed
+characters land in that field, and OK commits and reboots. Tapping the field
+itself does not bind, which is the interface's own design.
+Run it with `--icount` (ADR 0027):
 the Bluetooth link layer, which the device-ui switches on when its boot logo
 is held, needs the instruction-counted clock to keep its events on time; its
 core's clock, timers and interrupt FIFO are a C device read off the ROM

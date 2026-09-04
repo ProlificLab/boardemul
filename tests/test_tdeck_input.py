@@ -21,6 +21,7 @@ from emu.devices.tdeck_i2c import (  # noqa: E402
     STATUS_READY,
     TDeckKeyboard,
 )
+from emu.board_tdeck import touch_point  # noqa: E402
 from emu.skin import SKINS, TDECK  # noqa: E402
 
 
@@ -143,6 +144,40 @@ def test_a_config_block_write_that_spans_the_mode_register_sets_it() -> None:
     block = [0x5A, 0x40, 0x01, 0xF0, 0x00, 0x05, 0x03]   # 0x8047..0x804D
     select(touch, 0x8047, *block)
     assert touch.int_mode == 3
+
+
+def test_the_controller_reports_in_its_own_portrait_raster() -> None:
+    """Same way round as the ST7789 behind it, and not the landscape frame the
+    firmware draws in (ADR 0030)."""
+    touch = GT911()
+    assert (touch.width, touch.height) == (240, 320)
+
+
+def test_the_controller_is_mounted_a_quarter_turn_from_the_display() -> None:
+    """A display column becomes the controller's y; a display row becomes its
+    x, counted up the screen (ADR 0030)."""
+    left, right = touch_point(0, 120), touch_point(319, 120)
+    assert right[1] > left[1], "y follows the column, left to right"
+    assert left[0] == right[0], "and does not vary along a row"
+
+    top, bottom = touch_point(160, 0), touch_point(160, 239)
+    assert top[0] > bottom[0], "x counts up the screen, not down"
+    assert top[1] == bottom[1], "and does not vary down a column"
+
+
+def test_a_tap_survives_the_firmware_s_own_calibration() -> None:
+    """Meshtastic maps the controller back through corner points measured on
+    real hardware. A tap has to return to where the host aimed it, well inside
+    a button two dozen pixels across (ADR 0030). The rows here are the ones
+    that discriminate: a target astride the middle of the screen is hit even
+    with the axis upside down, which is what hid the direction at first.
+    """
+    def as_the_firmware_sees(raw_x: int, raw_y: int) -> tuple[int, int]:
+        return round((raw_y - 3.5) * 319 / 310.5), round(239 - raw_x * 239 / 223.5)
+
+    for aimed in [(277, 117), (277, 165), (141, 207), (0, 0), (319, 239)]:
+        seen = as_the_firmware_sees(*touch_point(*aimed))
+        assert abs(seen[0] - aimed[0]) <= 2 and abs(seen[1] - aimed[1]) <= 2, (aimed, seen)
 
 
 def test_coordinates_are_clamped_to_the_panel() -> None:
