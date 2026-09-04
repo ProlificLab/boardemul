@@ -249,8 +249,11 @@ def test_a_partial_update_is_rendered_once_the_driver_goes_quiet(tmp_path: Path)
     fill_screen(p, BLACK)
     window(p, 0, 9, 0, 9)
     fill(p, RED, 100)
+    # frames is bumped inside the render and dirty cleared at its end, so wait
+    # on both: catching the instant between them is a test artefact, not a
+    # state a caller sees.
     deadline = time.monotonic() + 2.0
-    while p.frames < 2 and time.monotonic() < deadline:
+    while (p.frames < 2 or p.dirty) and time.monotonic() < deadline:
         time.sleep(0.02)
     assert p.frames == 2
     assert not p.dirty
