@@ -17,7 +17,8 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from emu.devices.tdeck_i2c import (  # noqa: E402
-    GT911, GT911_POINT1, GT911_PRODUCT_ID, GT911_STATUS, STATUS_READY,
+    GT911, GT911_MODULE_SWITCH1, GT911_POINT1, GT911_PRODUCT_ID, GT911_STATUS,
+    STATUS_READY,
     TDeckKeyboard,
 )
 from emu.skin import SKINS, TDECK  # noqa: E402
@@ -99,6 +100,49 @@ def test_a_release_clears_the_point() -> None:
     touch.release()
     select(touch, GT911_STATUS)
     assert read(touch, 1)[0] & 0x0F == 0
+
+
+def test_the_interrupt_line_rests_low_until_a_mode_is_written() -> None:
+    """Meshtastic's driver never writes the trigger mode and reads the status
+    register only while the line is low, so a press must not raise it
+    (ADR 0029)."""
+    touch = GT911()
+    assert touch.int_level == 0
+    touch.touch(10, 10)
+    assert touch.int_level == 0
+    touch.release()
+    assert touch.int_level == 0
+
+
+def test_mode_zero_is_high_while_pressed() -> None:
+    """The vendor's driver writes mode 0 and tests the line against HIGH."""
+    touch = GT911()
+    select(touch, GT911_MODULE_SWITCH1, 0x00)
+    assert touch.int_mode == 0
+    assert touch.int_level == 0
+    touch.touch(10, 10)
+    assert touch.int_level == 1
+    touch.release()
+    assert touch.int_level == 0
+
+
+@pytest.mark.parametrize("mode", [1, 2])
+def test_falling_and_low_level_modes_rest_high(mode: int) -> None:
+    touch = GT911()
+    select(touch, GT911_MODULE_SWITCH1, 0x0C | mode)   # other bits are not the mode
+    assert touch.int_mode == mode
+    assert touch.int_level == 1
+    touch.touch(10, 10)
+    assert touch.int_level == 0
+
+
+def test_a_config_block_write_that_spans_the_mode_register_sets_it() -> None:
+    """Drivers write the whole configuration block from 0x8047 in one go, so
+    the mode has to be picked out of a longer payload."""
+    touch = GT911()
+    block = [0x5A, 0x40, 0x01, 0xF0, 0x00, 0x05, 0x03]   # 0x8047..0x804D
+    select(touch, 0x8047, *block)
+    assert touch.int_mode == 3
 
 
 def test_coordinates_are_clamped_to_the_panel() -> None:

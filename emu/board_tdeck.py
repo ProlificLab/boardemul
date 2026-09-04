@@ -273,12 +273,10 @@ def attach_input(server, board: Board, outdir: Path) -> InputTail:
                 # sat among the controller's polls, which is what decides
                 # whether the firmware could have seen it.
                 log.debug("touch %s at %s", "down" if down else "up", touch.point)
-                # A level, not a pulse, and high while pressed. The vendor's
-                # driver decides isPressed() by digitalRead(INT) == the trigger
-                # level, and it configured this controller for RISING -- so
-                # pressed means HIGH. The Max's CST328 next door is the other
-                # way round, which is where the old pulse_low came from.
-                board.gpio.drive(TOUCH_INT_PIN, 1 if down else 0)
+                # A level, and the model's to state: it follows the trigger
+                # mode the firmware wrote, or rests low until one is written
+                # (ADR 0029). The Max's CST328 next door pulses instead.
+                board.gpio.drive(TOUCH_INT_PIN, touch.int_level)
             else:
                 log.warning("unknown input event %r", event)
 
@@ -286,8 +284,11 @@ def attach_input(server, board: Board, outdir: Path) -> InputTail:
         period = 1.0 / TOUCH_REPORT_HZ
         while not tail._stop.is_set():
             pump()
-            if isinstance(touch, GT911) and touch.point is not None:
-                board.gpio.drive(TOUCH_INT_PIN, 1)     # keep asserting while held
+            if isinstance(touch, GT911):
+                # Idempotent: the client sends nothing for an unchanged level.
+                # This is where a mode write with no finger down moves the
+                # line's rest level (ADR 0029).
+                board.gpio.drive(TOUCH_INT_PIN, touch.int_level)
             time.sleep(period)
 
     threading.Thread(target=ticker, name="input", daemon=True).start()

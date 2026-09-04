@@ -77,10 +77,13 @@ frequency set. Two things to know when driving it. The interface blanks its
 panel 30 seconds after LVGL starts unless some input device has reported a
 press, and on this guest that is a few seconds after the dialog appears, so the
 first key has to go in promptly; once blanked, the screen is locked and only
-its own blank-screen button releases it. And touch does not reach Meshtastic
-yet: its LovyanGFX driver reads the touch controller only while the interrupt
-line is low, which is the level the vendor's driver treats as released, and the
-model follows the vendor's wire (ADR 0006). Run it with `--icount` (ADR 0027):
+its own blank-screen button releases it. And touch: Meshtastic's LovyanGFX
+driver reads the touch controller only while its interrupt line is low, and
+never writes the controller's trigger mode, whereas the vendor firmware writes
+mode 0 and treats that same line as pressed when high. The controller model
+resolves the conflict by following the mode each firmware wrote, resting the
+line low until one is (ADR 0029); Meshtastic now reads the finger where before
+it read nothing. Run it with `--icount` (ADR 0027):
 the Bluetooth link layer, which the device-ui switches on when its boot logo
 is held, needs the instruction-counted clock to keep its events on time; its
 core's clock, timers and interrupt FIFO are a C device read off the ROM

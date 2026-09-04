@@ -27,6 +27,7 @@ GT911_BASE = 0x8000
 GT911_SIZE = 0x0200
 
 GT911_PRODUCT_ID = 0x8140       # "911" as four bytes, how the driver identifies it
+GT911_MODULE_SWITCH1 = 0x804D   # low two bits: how the INT line signals a report
 GT911_STATUS = 0x814E           # bit 7 says a report is ready, low nibble counts points
 GT911_POINT1 = 0x814F           # eight bytes per point
 
@@ -60,6 +61,10 @@ class GT911(I2CDevice):
         self.regs[0x804C - GT911_BASE] = 1
 
         self.point: tuple[int, int] | None = None
+        # The INT trigger mode the firmware wrote, or None until it writes one.
+        # It selects which of two drivers' readings of the line the board
+        # follows (ADR 0029).
+        self.int_mode: int | None = None
         self.ptr = GT911_PRODUCT_ID
         self._pending = bytearray()
         self._out = b""
@@ -79,6 +84,23 @@ class GT911(I2CDevice):
 
     def release(self) -> None:
         self.point = None
+
+    @property
+    def int_level(self) -> int:
+        """The level the INT line carries now (ADR 0029).
+
+        With no mode written the line rests low and stays low: the driver seen
+        that writes none reads the status register only while it is low. Mode
+        0 (rising edge) and 3 (high level) are the vendor's convention, high
+        while a finger is down; modes 1 and 2 are the same driver's table for
+        the falling and low-level settings, and have not been seen on a wire.
+        """
+        if self.int_mode is None:
+            return 0
+        pressed = self.point is not None
+        if self.int_mode in (0, 3):
+            return 1 if pressed else 0
+        return 0 if pressed else 1
 
     # -- the bus ------------------------------------------------------------
 
@@ -100,6 +122,8 @@ class GT911(I2CDevice):
             off = self.ptr - GT911_BASE + i
             if 0 <= off < GT911_SIZE:
                 self.regs[off] = b
+            if self.ptr + i == GT911_MODULE_SWITCH1:
+                self.int_mode = b & 0x03
         if payload and self.ptr == GT911_STATUS and payload[0] == 0:
             # The driver clears the ready flag once it has taken the report.
             self.acks += 1
