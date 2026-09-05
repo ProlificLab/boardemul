@@ -28,6 +28,11 @@ GT911_SIZE = 0x0200
 
 GT911_PRODUCT_ID = 0x8140       # "911" as four bytes, how the driver identifies it
 GT911_MODULE_SWITCH1 = 0x804D   # low two bits: how the INT line signals a report
+# What the part on this board holds there. Neither firmware writes this
+# register -- the vendor's driver reads it and only logs what it says -- so
+# the model has to state it, and an interrupt that asserts low is both the
+# usual arrangement and the one both drivers work with (ADR 0031).
+DEFAULT_INT_MODE = 2            # low level
 GT911_STATUS = 0x814E           # bit 7 says a report is ready, low nibble counts points
 GT911_POINT1 = 0x814F           # eight bytes per point
 
@@ -68,10 +73,15 @@ class GT911(I2CDevice):
         self.regs[0x804C - GT911_BASE] = 1
 
         self.point: tuple[int, int] | None = None
-        # The INT trigger mode the firmware wrote, or None until it writes one.
-        # It selects which of two drivers' readings of the line the board
-        # follows (ADR 0029).
-        self.int_mode: int | None = None
+        # How the INT line signals. The part on this board is configured
+        # active low, and says so in this register; a firmware may write its
+        # own mode and is then followed (ADR 0031).
+        self.int_mode: int = DEFAULT_INT_MODE
+        self.regs[GT911_MODULE_SWITCH1 - GT911_BASE] = DEFAULT_INT_MODE
+        # An interrupt reports a change, so a release has to be delivered too:
+        # the line stays asserted until the host has taken a report with no
+        # finger in it, and only then goes idle.
+        self._release_unread = False
         self.ptr = GT911_PRODUCT_ID
         self._pending = bytearray()
         self._out = b""
@@ -90,24 +100,24 @@ class GT911(I2CDevice):
                       max(0, min(y, self.height - 1)))
 
     def release(self) -> None:
+        if self.point is not None:
+            self._release_unread = True
         self.point = None
 
     @property
     def int_level(self) -> int:
-        """The level the INT line carries now (ADR 0029).
+        """The level the INT line carries now (ADR 0031).
 
-        With no mode written the line rests low and stays low: the driver seen
-        that writes none reads the status register only while it is low. Mode
-        0 (rising edge) and 3 (high level) are the vendor's convention, high
-        while a finger is down; modes 1 and 2 are the same driver's table for
-        the falling and low-level settings, and have not been seen on a wire.
+        Asserted while the controller has something to say -- a finger, or a
+        release the host has not taken yet -- and idle otherwise, so both a
+        press and a lift produce an edge. Modes 1 and 2 assert low, which is
+        this board's arrangement and the usual one for an interrupt with a
+        pull-up on it; modes 0 and 3 assert high.
         """
-        if self.int_mode is None:
-            return 0
-        pressed = self.point is not None
+        asserted = self.point is not None or self._release_unread
         if self.int_mode in (0, 3):
-            return 1 if pressed else 0
-        return 0 if pressed else 1
+            return 1 if asserted else 0
+        return 0 if asserted else 1
 
     # -- the bus ------------------------------------------------------------
 
@@ -148,6 +158,9 @@ class GT911(I2CDevice):
     def _latch(self) -> None:
         """Freeze the answer at the moment the register was chosen."""
         if self.point is None:
+            # The host is taking the empty report, which is the release.
+            if self.ptr == GT911_STATUS:
+                self._release_unread = False
             self.regs[GT911_STATUS - GT911_BASE] = STATUS_READY
         else:
             self.regs[GT911_STATUS - GT911_BASE] = STATUS_READY | 1

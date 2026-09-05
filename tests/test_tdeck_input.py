@@ -103,38 +103,59 @@ def test_a_release_clears_the_point() -> None:
     assert read(touch, 1)[0] & 0x0F == 0
 
 
-def test_the_interrupt_line_rests_low_until_a_mode_is_written() -> None:
-    """Meshtastic's driver never writes the trigger mode and reads the status
-    register only while the line is low, so a press must not raise it
-    (ADR 0029)."""
+def test_the_interrupt_line_idles_high_and_asserts_on_a_finger() -> None:
+    """An interrupt with a pull-up on it: idle high, asserted low while there
+    is something to report. Both drivers seen work with this, and neither
+    writes the mode register, so the model states it (ADR 0031)."""
     touch = GT911()
-    assert touch.int_level == 0
+    assert touch.int_level == 1
     touch.touch(10, 10)
     assert touch.int_level == 0
+
+
+def test_a_release_is_delivered_before_the_line_goes_idle() -> None:
+    """A lift is a report too. Going idle the moment the finger leaves would
+    leave a driver that only reads while asserted holding the press for ever
+    (ADR 0031)."""
+    touch = GT911()
+    touch.touch(10, 10)
     touch.release()
-    assert touch.int_level == 0
+    assert touch.int_level == 0, "still asserted: the release has not been read"
+    select(touch, GT911_STATUS)
+    assert read(touch, 1)[0] & 0x0F == 0
+    assert touch.int_level == 1, "read, so now idle"
 
 
-def test_mode_zero_is_high_while_pressed() -> None:
-    """The vendor's driver writes mode 0 and tests the line against HIGH."""
+def test_a_press_and_a_lift_each_give_an_edge() -> None:
+    """What an interrupt-driven firmware waits for. A line that never changes
+    tells it nothing, which is how the vendor firmware came to read no touch
+    at all (ADR 0031)."""
+    touch = GT911()
+    levels = [touch.int_level]
+    touch.touch(10, 10); levels.append(touch.int_level)
+    touch.release()
+    select(touch, GT911_STATUS); read(touch, 1)
+    levels.append(touch.int_level)
+    assert levels == [1, 0, 1]
+
+
+def test_the_mode_register_tells_a_driver_what_the_line_does() -> None:
+    """The vendor's driver reads this register and logs it; it must not be
+    told rising edge while the line asserts low (ADR 0031)."""
+    touch = GT911()
+    select(touch, GT911_MODULE_SWITCH1)
+    assert read(touch, 1)[0] & 0x03 == 2
+
+
+def test_a_firmware_that_writes_a_mode_is_followed() -> None:
+    """Nothing seen does, but the register is writable and a firmware that
+    sets active-high gets active-high (ADR 0029, kept by ADR 0031)."""
     touch = GT911()
     select(touch, GT911_MODULE_SWITCH1, 0x00)
     assert touch.int_mode == 0
-    assert touch.int_level == 0
+    assert touch.int_level == 0, "active high, and nothing to report"
     touch.touch(10, 10)
     assert touch.int_level == 1
-    touch.release()
-    assert touch.int_level == 0
-
-
-@pytest.mark.parametrize("mode", [1, 2])
-def test_falling_and_low_level_modes_rest_high(mode: int) -> None:
-    touch = GT911()
-    select(touch, GT911_MODULE_SWITCH1, 0x0C | mode)   # other bits are not the mode
-    assert touch.int_mode == mode
-    assert touch.int_level == 1
-    touch.touch(10, 10)
-    assert touch.int_level == 0
 
 
 def test_a_config_block_write_that_spans_the_mode_register_sets_it() -> None:

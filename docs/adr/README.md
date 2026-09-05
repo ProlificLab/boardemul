@@ -36,3 +36,4 @@ superseded ADR is marked superseded and points forward.
 | [0028](0028-a-quiet-screen-is-a-frame.md) | A quiet screen is a frame | Accepted |
 | [0029](0029-touch-interrupt-follows-the-mode-written.md) | The touch interrupt line follows the mode the firmware wrote | Accepted |
 | [0030](0030-the-touch-controller-reports-in-its-own-raster.md) | The touch controller reports in its own raster | Accepted |
+| [0031](0031-the-touch-interrupt-asserts-on-a-report.md) | The touch interrupt asserts on a report and idles between | Accepted |
