@@ -100,6 +100,7 @@ struct EspI2sMaster {
     uint64_t buffers;
     uint64_t bytes;
     bool complained;
+    const char *idle_reason;
 };
 
 /* Find a channel bound to this block in the given direction and running.
@@ -240,12 +241,13 @@ static void i2s_receive(EspI2sMaster *s)
  * queued buffers and off the end of DRAM, clearing owner bits through
  * everything it crossed.
  */
-static bool i2s_tx_total(uint32_t head, uint32_t *total)
+static bool i2s_tx_total(uint32_t head, uint32_t *total, uint32_t *after)
 {
     uint8_t raw[DESC_BYTES];
     uint32_t at = head;
 
     *total = 0;
+    *after = 0;
     for (int i = 0; i < TX_MAX_DESCRIPTORS; i++) {
         if (address_space_read(&address_space_memory, at, MEMTXATTRS_UNSPECIFIED,
                                raw, sizeof(raw)) != MEMTX_OK) {
@@ -263,6 +265,7 @@ static bool i2s_tx_total(uint32_t head, uint32_t *total)
             return false;
         }
         if ((config >> 30) & 1) {
+            *after = next;              /* where the ring carries on */
             return *total != 0;         /* end marker */
         }
         if (next == 0 || next == at) {
@@ -273,22 +276,47 @@ static bool i2s_tx_total(uint32_t head, uint32_t *total)
     return false;
 }
 
+/* Investigation hatch, off unless BOARDEMUL_I2S_TRACE is set: say why the
+ * transmit side is not moving. A firmware whose audio buffers never drain
+ * blocks on i2s_write and starves everything else, and the three ways that
+ * happens here look identical from the guest. Logged on change, not per tick.
+ */
+static void i2s_idle(EspI2sMaster *s, const char *reason)
+{
+    static int enabled = -1;
+
+    if (enabled < 0) {
+        enabled = getenv("BOARDEMUL_I2S_TRACE") != NULL;
+    }
+    if (!enabled || s->idle_reason == reason) {
+        return;
+    }
+    s->idle_reason = reason;
+    warn_report("%s: transmit %s (tx_conf=0x%08x)", s->name ? s->name : "i2s",
+                reason, s->regs[R_TX_CONF / 4]);
+}
+
 static void i2s_transmit(EspI2sMaster *s)
 {
     uint32_t chan = 0;
     uint32_t total = 0;
+    uint32_t after = 0;
 
     if (!(s->regs[R_TX_CONF / 4] & TX_START)) {
         s->tx_armed = false;
+        i2s_idle(s, "stopped: TX_START clear");
         return;
     }
     if (!i2s_find_channel(s, ESP_GDMA_OUT_IDX, &s->tx_armed, &s->tx_head,
                           &chan)) {
+        i2s_idle(s, "waiting: no GDMA channel bound to this block");
         return;
     }
-    if (!i2s_tx_total(s->tx_head, &total)) {
+    if (!i2s_tx_total(s->tx_head, &total, &after)) {
+        i2s_idle(s, "waiting: descriptor list has no end marker we own");
         return;
     }
+    i2s_idle(s, "running");
 
     i2s_aim(s, ESP_GDMA_OUT_IDX, chan, s->tx_head);
 
@@ -304,8 +332,20 @@ static void i2s_transmit(EspI2sMaster *s)
         return;
     }
 
-    /* That list is done; the driver arms the link again for the next one. */
-    s->tx_armed = false;
+    /* Where the next list comes from depends on what kind of transfer this is,
+     * and getting it wrong stalls audio outright. A one-shot list ends with no
+     * next pointer, and the driver arms the link again for the one after it. A
+     * stream is a ring the driver arms once and then only refills: nothing ever
+     * sets START again, so disarming here would leave the buffers full, the
+     * firmware blocked in i2s_write, and every other task starved behind it.
+     * Follow the ring instead and keep going while TX_START is set, which is
+     * what the receive side already does. The owner bits are the handshake: a
+     * buffer the CPU has not refilled is simply not ours yet. */
+    if (after) {
+        s->tx_head = DRAM_TOP_BITS | (after & LINK_ADDR);
+    } else {
+        s->tx_armed = false;
+    }
     s->buffers++;
     s->bytes += total;
 }
