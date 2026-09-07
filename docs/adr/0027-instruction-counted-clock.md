@@ -49,3 +49,21 @@ time or a timing the build depends on is not yet measured.
 
 - The 250620 vendor build's battery marker under the counted clock.
 - Whether the counted clock should be the default once that is understood.
+
+## Resolved — 2026-09-07
+
+Both of the above are settled, and the first was not about this clock at all.
+The 250620 build was losing its battery marker on the wall clock too: its audio
+stream never drained, it blocked writing to I2S and starved every other task.
+That was a defect in the I2S transmit path, fixed separately; the counted clock
+merely made a firmware that was already stuck take longer to look at.
+
+With that fixed, both vendor builds reach the battery read under the counted
+clock, and draw hundreds of frames doing it. The clock is no longer suspected
+of anything.
+
+It stays opt-in even so. In the same wall-clock budget the counted runs get
+through roughly two thirds of the work, which is a real cost on every test that
+does not need it, and only the Bluetooth link layer does. The reason to reach
+for it is determinism: eight chained Meshtastic runs under it produced
+byte-identical output, which is what makes a timing bug reproducible.
