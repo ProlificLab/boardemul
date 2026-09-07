@@ -57,9 +57,17 @@ def test_it_reaches_the_arduino_layer(booted: Run) -> None:
 
 
 def test_it_gets_far_enough_to_mount_storage(booted: Run) -> None:
-    """It fails, because the image carries no filesystem data and we model no
-    card -- but reaching the attempt means the app's own setup() is running."""
-    assert "SPIFFS" in booted.uart or "sd_diskio" in booted.uart, booted.uart[-400:]
+    """Reaching storage at all means the app's own setup() is running.
+
+    What that looks like differs by build and has changed. There is a card in
+    the slot now (ADR 0033), so a build that mounts it says how big it is,
+    where it used to fail; a build whose internal filesystem is empty still
+    says so. Either is evidence of the same thing, which is why this asks for
+    storage to have been reached rather than for it to have failed.
+    """
+    reached = ("SD Card Size" in booted.uart or "SPIFFS" in booted.uart
+               or "sd_diskio" in booted.uart)
+    assert reached, booted.uart[-400:]
 
 
 # Builds whose setup() starts the WiFi station, and so meet the four radio
