@@ -51,10 +51,25 @@ What has been ruled out, by reading the bytes on the wire:
 - The alternative offset was tried, with the data one byte earlier, and the
   firmware refused that too.
 
-So the part answers correctly and is still rejected, which points at something
-outside the register read: the reset line, the busy line, or a step of the
-host's sequence not yet identified. It is left here, recorded, rather than
-guessed at further.
+Then two experiments narrowed it to something specific and strange. Replacing
+the status byte with `0x00`, which a host reads as an absent chip, changes the
+firmware's behaviour enormously: it retries sixteen times as much. So the byte
+at index one plainly reaches the host and is acted on. But replacing the
+version string with a name no host wants changes nothing at all -- the same
+number of reads, the same outcome -- and moving the contents one byte earlier
+or later changes nothing either.
+
+That is the shape of the problem. The status byte arrives and matters; the
+bytes the host copies out as the version do not appear to influence it. RadioLib
+reads those from a fixed offset after the command and the status, and its own
+source confirms both the twenty-byte length we see and that offset. So the
+question is not what this model returns but whether the read phase of that
+transaction reaches the host at all, which is a question about the controller
+and the bus rather than about the radio.
+
+It is left here, recorded with the measurements, rather than guessed at
+further. Note that these counts vary between runs under host load, so the
+figures above are the shape of the difference and not a benchmark.
 
 ## Consequences
 

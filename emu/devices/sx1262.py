@@ -83,6 +83,12 @@ COMMAND_OK = 2
 VERSION_ADDRESS = 0x0320
 VERSION_STRING = b"SX1262"
 
+# Where the contents start in a register read: the opcode, two address bytes
+# and one of padding come first. See "Where this stands" in ADR 0034 -- the
+# host's behaviour does not change when these bytes change, which is the open
+# question, and it is not this constant: 3 and 5 behave identically too.
+DATA_INDEX = 4
+
 
 class Sx1262(SpiDevice):
     """Answers the SX126x command set over one chip select."""
@@ -132,10 +138,10 @@ class Sx1262(SpiDevice):
             return self.status
         opcode = self.frame[0]
 
-        if opcode == READ_REGISTER and index >= 4:
+        if opcode == READ_REGISTER and index >= DATA_INDEX:
             # opcode, two address bytes, one of padding, then the contents
             address = (self.frame[1] << 8) | self.frame[2]
-            return self._register(address + index - 4)
+            return self._register(address + index - DATA_INDEX)
         if opcode == READ_BUFFER and index >= 3:
             return self.buffer[(self.frame[1] + index - 3) % BUFFER_SIZE]
         if opcode == GET_IRQ_STATUS:
