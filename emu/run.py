@@ -208,6 +208,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--air", default=None, metavar="DIR",
                     help="share a directory with other running boards so their "
                          "radios can hear each other (ADR 0036)")
+    ap.add_argument("--at", default=None, metavar="X,Y",
+                    help="where this board stands, in metres, so the radio "
+                         "link to another board can be worked out (ADR 0038)")
     ap.add_argument("--icount", action="store_true",
                     help="drive the guest clock from executed instructions (ADR 0027): "
                          "exact timer delivery and deterministic runs; the Bluetooth "
@@ -248,10 +251,14 @@ def main(argv: list[str] | None = None) -> int:
         logging.basicConfig(filename=args.outdir / f"{tag}.bus.log", filemode="w",
                             level=logging.DEBUG if args.verbose else logging.INFO,
                             format="%(name)s %(message)s")
+        where = (0.0, 0.0)
+        if args.at:
+            east, _, north = args.at.partition(",")
+            where = (float(east), float(north or 0))
         try:
-            hw = hw_module.build(args.outdir, air=args.air)
+            hw = hw_module.build(args.outdir, air=args.air, position=where)
         except TypeError:
-            # Boards that have no radio take no air.
+            # Boards that have no radio take neither air nor a position.
             hw = hw_module.build(args.outdir)
         hw.start()
         server = BusServer(args.outdir / f"{tag}.bus.sock", hw.regions)

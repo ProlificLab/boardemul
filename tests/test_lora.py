@@ -58,16 +58,65 @@ def test_a_longer_packet_takes_longer() -> None:
 
 
 def test_a_frame_carries_what_a_receiver_needs_to_judge_it() -> None:
-    """Where it was sent, when, and for how long: enough to know whether it was
-    on this channel and whether anything else was in the air with it."""
-    frame = lora.encode(906875000, 1234.5, 0.25, b"payload")
-    frequency, sent_at, airtime, payload = lora.decode(frame)
-    assert frequency == 906875000
-    assert sent_at == pytest.approx(1234.5)
-    assert airtime == pytest.approx(0.25)
-    assert payload == b"payload"
+    """Which channel, when, for how long, how hard it was pushed and from
+    where: enough to work out whether this receiver could have decoded it."""
+    frame = lora.encode(906875000, 1234.5, 0.25, b"payload",
+                        power_dbm=17.0, x=100.0, y=-50.0)
+    got = lora.decode(frame)
+    assert got.frequency == 906875000
+    assert got.sent_at == pytest.approx(1234.5)
+    assert got.airtime == pytest.approx(0.25)
+    assert got.power_dbm == pytest.approx(17.0)
+    assert got.origin == pytest.approx((100.0, -50.0))
+    assert got.payload == b"payload"
 
 
 def test_something_else_on_the_air_is_not_mistaken_for_a_packet() -> None:
     assert lora.decode(b"not ours at all") is None
     assert lora.decode(b"") is None
+
+
+# -- the link a packet has to cross -----------------------------------------
+
+@pytest.mark.parametrize("spreading, datasheet_dbm", [
+    (7, -124), (8, -127), (9, -129), (10, -132), (11, -134.5), (12, -137),
+])
+def test_sensitivity_matches_the_datasheet(spreading, datasheet_dbm) -> None:
+    """Derived from the noise floor and what each spreading factor can dig out
+    of it, and it lands on the figures the part's own datasheet quotes. That
+    agreement is the evidence these are not invented numbers (ADR 0038)."""
+    got = lora.sensitivity_dbm(BW_125K, spreading)
+    assert abs(got - datasheet_dbm) <= 1.0, f"{got:.1f} dBm, datasheet {datasheet_dbm}"
+
+
+def test_a_slower_spreading_factor_hears_a_weaker_signal() -> None:
+    assert lora.sensitivity_dbm(BW_125K, 12) < lora.sensitivity_dbm(BW_125K, 7)
+
+
+def test_a_wider_channel_takes_in_more_noise() -> None:
+    assert lora.noise_floor_dbm(BW_500K) > lora.noise_floor_dbm(BW_125K)
+
+
+def test_the_frequency_register_is_not_hertz() -> None:
+    """The part counts in steps of its crystal, and a propagation sum given the
+    raw value would be using the wrong frequency."""
+    raw = round(906_875_000 / lora.FREQUENCY_STEP_HZ)
+    assert lora.register_to_hz(raw) == pytest.approx(906_875_000, abs=1)
+    assert raw != 906_875_000
+
+
+def test_loss_grows_with_distance() -> None:
+    near = lora.path_loss_db(100, 906_875_000)
+    far = lora.path_loss_db(1000, 906_875_000)
+    assert far == pytest.approx(near + 20, abs=0.1), "ten times as far is 20 dB"
+
+
+def test_two_boards_at_the_same_spot_lose_nothing_much() -> None:
+    """Which is where every board stands unless a scenario says otherwise, and
+    is why giving no positions leaves everything audible."""
+    assert lora.received_dbm(22, 0, 906_875_000) > lora.sensitivity_dbm(BW_250K, 11)
+
+
+def test_far_enough_apart_is_out_of_range() -> None:
+    arrived = lora.received_dbm(22, 3_000_000, 906_875_000)
+    assert arrived < lora.sensitivity_dbm(BW_250K, 11)

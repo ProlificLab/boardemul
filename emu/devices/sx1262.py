@@ -20,6 +20,7 @@ and hears no traffic, which is what a real node alone in a room experiences.
 from __future__ import annotations
 
 import logging
+import math
 import time
 
 from emu.devices import lora
@@ -106,7 +107,8 @@ class Sx1262(SpiDevice):
 
     name = "sx1262"
 
-    def __init__(self, air=None, signal=None) -> None:
+    def __init__(self, air=None, signal=None,
+                 position: tuple[float, float] = (0.0, 0.0)) -> None:
         # `air` carries frames to and from other boards; `signal` is how this
         # part nudges the processor, which it does on a line of its own.
         self.air = air
@@ -120,6 +122,16 @@ class Sx1262(SpiDevice):
         self.cad_sweeps = 0
         self.collisions = 0
         self.wrong_frequency = 0
+        self.out_of_range = 0
+        # Where this board stands, in metres. Supplied by whoever is setting up
+        # the scenario; there is no distance between two processes to discover
+        # (ADR 0038).
+        self.position = position
+        # What the host asked the part to transmit at, in dBm.
+        self.transmit_dbm = 22.0
+        # What the last packet arrived at, which the host reads back.
+        self.last_rssi_dbm = -157.0
+        self.last_snr_db = -20.0
         # The modulation the host programs, which is what decides how long a
         # packet of a given length occupies the channel (ADR 0037).
         self.spreading = 7
@@ -178,7 +190,9 @@ class Sx1262(SpiDevice):
             decoded = lora.decode(frame)
             if decoded is None:
                 continue
-            frequency, sent_at, airtime, payload = decoded
+            frequency, sent_at, airtime = (decoded.frequency, decoded.sent_at,
+                                           decoded.airtime)
+            payload = decoded.payload
 
             if frequency != self.frequency:
                 # Tuned elsewhere. Nothing about being on the same air makes
@@ -189,6 +203,18 @@ class Sx1262(SpiDevice):
                 continue        # transmitting, and deaf while it does
             if self.mode != MODE_RX:
                 continue        # not listening
+
+            # Whether it arrives strongly enough to be decoded at all. The
+            # distance is the scenario's, the rest is arithmetic (ADR 0038).
+            distance = math.dist(self.position, decoded.origin)
+            arrived = lora.received_dbm(decoded.power_dbm, distance,
+                                        lora.register_to_hz(frequency))
+            floor = lora.sensitivity_dbm(self.bandwidth_code, self.spreading)
+            if arrived < floor:
+                self.out_of_range += 1
+                log.debug("sx1262: %.1f dBm at %.0f m is under %.1f dBm",
+                          arrived, distance, floor)
+                continue
 
             ends = sent_at + airtime
             if now < self.rx_until:
@@ -203,6 +229,8 @@ class Sx1262(SpiDevice):
             for offset, value in enumerate(payload):
                 self.buffer[(self.rx_base + offset) % BUFFER_SIZE] = value
             self.received_length = len(payload)
+            self.last_rssi_dbm = arrived
+            self.last_snr_db = arrived - lora.noise_floor_dbm(self.bandwidth_code)
             self.heard += 1
             self._raise(IRQ_RX_DONE)
 
@@ -245,9 +273,13 @@ class Sx1262(SpiDevice):
             return (self.status, self.status, self.received_length,
                     self.rx_base)[min(index, 3)]
         if opcode == GET_PACKET_STATUS:
-            # No signal: the strengths a host reads are the floor. They are
-            # reported in negative half-decibels, so a large number is quiet.
-            return (self.status, self.status, 0xFF, 0x80, 0xFF)[min(index, 4)]
+            # Strength in negative half-decibels and signal-to-noise in
+            # quarter-decibels, both as the part reports them, and both worked
+            # out from the link the packet actually crossed (ADR 0038).
+            rssi = max(0, min(255, int(round(-2 * self.last_rssi_dbm))))
+            snr = int(round(self.last_snr_db * 4))
+            snr = max(-128, min(127, snr)) & 0xFF
+            return (self.status, self.status, rssi, snr, rssi)[min(index, 4)]
         if opcode == GET_DEVICE_ERRORS:
             return (self.status, self.status, 0x00, 0x00)[min(index, 3)]
         if opcode == GET_PACKET_TYPE:
@@ -278,7 +310,8 @@ class Sx1262(SpiDevice):
         now = time.time()
         self.tx_until = now + duration
         if self.air is not None:
-            self.air.send(lora.encode(self.frequency, now, duration, payload))
+            self.air.send(lora.encode(self.frequency, now, duration, payload,
+                                      self.transmit_dbm, *self.position))
         self.sent += 1
         log.debug("sx1262: transmitting %d bytes for %.0f ms",
                   len(payload), duration * 1000)
@@ -339,6 +372,9 @@ class Sx1262(SpiDevice):
             # preamble takes two, then the header type, then the length.
             self.preamble = (frame[1] << 8) | frame[2]
             self.payload_length = frame[4]
+        elif opcode == SET_TX_PARAMS and len(frame) >= 2:
+            # Signed: the part goes below a milliwatt as well as above it.
+            self.transmit_dbm = float(frame[1] - 256 if frame[1] > 127 else frame[1])
         elif opcode == SET_MODULATION_PARAMS and len(frame) >= 5:
             self.spreading = frame[1]
             self.bandwidth_code = frame[2]
@@ -348,12 +384,12 @@ class Sx1262(SpiDevice):
                         GET_PACKET_STATUS, GET_DEVICE_ERRORS, GET_PACKET_TYPE,
                         READ_REGISTER, READ_BUFFER):
             pass                                # answered while it was clocked
-        elif opcode in (CALIBRATE, CALIBRATE_IMAGE, SET_PA_CONFIG,
+        elif opcode in (CALIBRATE, CALIBRATE_IMAGE,
                         SET_REGULATOR_MODE, SET_DIO2_AS_RF_SWITCH,
-                        SET_DIO3_AS_TCXO, SET_TX_PARAMS, SET_MODULATION_PARAMS,
-                        SET_PACKET_PARAMS, SET_BUFFER_BASE, SET_RX_TX_FALLBACK,
+                        SET_DIO3_AS_TCXO, SET_RX_TX_FALLBACK,
                         SET_LORA_SYMB_TIMEOUT, STOP_TIMER_ON_PREAMBLE,
-                        SET_RX_DUTY_CYCLE, CLEAR_DEVICE_ERRORS, GET_RSSI_INST):
+                        SET_RX_DUTY_CYCLE, CLEAR_DEVICE_ERRORS, GET_RSSI_INST,
+                        SET_PA_CONFIG):
             pass                                # accepted; nothing to model yet
         elif opcode != 0x00:                    # a lone zero is the host idling
             if opcode not in self.unknown:

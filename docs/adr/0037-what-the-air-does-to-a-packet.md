@@ -50,7 +50,9 @@ invites conclusions it cannot support.
 
 5. **Range is not modelled and not faked.** Everyone within the shared
    directory is in range of everyone else. That is stated here so it is not
-   mistaken for a propagation model that happens to be generous.
+   mistaken for a propagation model that happens to be generous. *Superseded by
+   ADR 0038*: the distance is now supplied by the scenario and the link
+   computed from it.
 
 ## Consequences
 
