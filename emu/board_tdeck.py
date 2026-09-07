@@ -27,6 +27,7 @@ from emu.i2c_link import I2CServer
 from emu.devices.lcd import St7789Panel
 from emu.devices.sdcard import SdCard
 from emu.devices.spi_trace import SpiTrace
+from emu.devices.sx1262 import Sx1262
 from emu.devices.tdeck_i2c import GT911, TDeckKeyboard
 from emu.peripherals.adc import SarAdc
 from emu.peripherals.gpio import GpioClient
@@ -214,7 +215,7 @@ def build(outdir: Path) -> Board:
     # radio and the card both do, so they are on the MISO mask below. Neither
     # is modelled yet: what sits on their selects records what the firmware
     # asks for, which is where a model starts (ADR 0006).
-    radio = SpiTrace("radio")
+    radio = Sx1262()         # answers, but nothing goes on the air (ADR 0034)
     # A card is in the slot, formatted and empty (ADR 0033). Its contents are
     # built here rather than shipped, and go no further than this run.
     sdcard = SdCard(sdimage.build(size_mb=SD_CARD_MB))

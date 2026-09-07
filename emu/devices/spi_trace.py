@@ -33,15 +33,22 @@ class SpiTrace(SpiDevice):
         self.segments = 0
         self.bytes_in = 0
         self.first: list[tuple[int, bytes, bool]] = []
+        self.pending = bytearray()
 
     def on_segment(self, dc: int, data: bytes, duplex: bool) -> bytes | None:
         self.segments += 1
         self.bytes_in += len(data)
-        if len(self.first) < self.limit:
-            self.first.append((dc, data, duplex))
-            log.info("%s %s %s", self.name, "xchg" if duplex else "wr ",
-                     data[:32].hex())
+        self.pending += data
         return bytes([self.reply]) * len(data) if duplex else None
+
+    def on_deselect(self) -> None:
+        """Group the log by command: what was clocked between one selection
+        and the next is one exchange, however many transfers it took."""
+        if self.pending:
+            if len(self.first) < self.limit:
+                self.first.append((0, bytes(self.pending), True))
+                log.info("%s frame %s", self.name, bytes(self.pending).hex())
+            self.pending.clear()
 
     def __repr__(self) -> str:
         return (f"<spi-trace {self.name} segments={self.segments} "

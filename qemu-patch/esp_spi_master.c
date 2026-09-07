@@ -70,6 +70,7 @@ typedef struct QEMU_PACKED {
 
 #define SEGMENT_WRITE  0
 #define SEGMENT_DUPLEX 1
+#define SEGMENT_RELEASE 2   /* chip select went high; no bytes follow */
 
 struct EspSpiMaster {
     DeviceState parent_obj;
@@ -280,10 +281,37 @@ static void spi_start(EspSpiMaster *s)
 static void spi_cs_changed(void *opaque, unsigned pin, int level)
 {
     EspSpiMaster *s = opaque;
+    EspSpiSegment seg;
+    int cs;
 
     /* Chip-select is active low, so a rising edge ends the transaction. */
-    if (level) {
-        spi_flush(s);
+    if (!level) {
+        return;
+    }
+
+    /* Which device just stopped being selected. The level has already changed,
+     * so ask the pin rather than spi_selected(), which would answer -1. */
+    cs = 0;
+    if (s->cs1_gpio >= 0 && (unsigned)s->cs1_gpio == pin) {
+        cs = 1;
+    } else if (s->cs2_gpio >= 0 && (unsigned)s->cs2_gpio == pin) {
+        cs = 2;
+    }
+
+    spi_flush(s);
+
+    /* A device whose commands vary in length needs the end of the window; one
+     * that does not simply ignores this. */
+    if (s->broken || s->fd < 0) {
+        return;
+    }
+    seg.type = SEGMENT_RELEASE;
+    seg.dc = 0;
+    seg.cs = (uint8_t)cs;
+    seg.pad = 0;
+    seg.len = 0;
+    if (!spi_write_all(s, &seg, sizeof(seg))) {
+        spi_fail(s, "send failed");
     }
 }
 

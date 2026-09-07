@@ -28,6 +28,7 @@ log = logging.getLogger("spi")
 SEGMENT = struct.Struct("<BBBBI")
 SEG_WRITE = 0
 SEG_DUPLEX = 1
+SEG_RELEASE = 2         # the chip select went high; the window is over
 
 
 class SpiDevice:
@@ -37,6 +38,14 @@ class SpiDevice:
 
     def on_segment(self, dc: int, data: bytes, duplex: bool) -> bytes | None:
         return None
+
+    def on_deselect(self) -> None:
+        """The chip select went high, so whatever was being clocked is over.
+
+        A device with fixed-length exchanges can ignore this. One whose command
+        length is decided by the host cannot: it is the only thing that says a
+        command has ended.
+        """
 
     def flush(self) -> None:
         """Called once the run is over. A panel with nothing pending does
@@ -109,6 +118,13 @@ class SpiServer:
             self.segments += 1
             self.bytes_in += len(payload)
             device = self.devices.get(cs)
+            if kind == SEG_RELEASE:
+                if device is not None:
+                    try:
+                        device.on_deselect()
+                    except Exception:
+                        log.exception("spi device raised on deselect")
+                continue
             if device is None:
                 # A chip select with nothing on it. Real hardware clocks the
                 # bytes into empty air, so drop them and answer a duplex read
