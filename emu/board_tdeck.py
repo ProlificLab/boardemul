@@ -22,8 +22,11 @@ from pathlib import Path
 
 from emu.board import TraceRegion, Board  # shared with the first board
 from emu.bus import Region
+from emu import sdimage
 from emu.i2c_link import I2CServer
 from emu.devices.lcd import St7789Panel
+from emu.devices.sdcard import SdCard
+from emu.devices.spi_trace import SpiTrace
 from emu.devices.tdeck_i2c import GT911, TDeckKeyboard
 from emu.peripherals.adc import SarAdc
 from emu.peripherals.gpio import GpioClient
@@ -64,6 +67,15 @@ KEYBOARD_INT_PIN = 46
 TOUCH_REPORT_HZ = 500
 SD_CS_PIN = 39
 RADIO_CS_PIN = 9
+
+# Which device each chip select is, in the order the controller is told them
+# (ADR 0032), and which of them drive the shared MISO line. The display does
+# not: the vendor firmware's "Init display id" comes from reading back the
+# transmit FIFO, and answering it properly would take a model of the panel's
+# read commands that nothing has needed yet.
+SPI_DISPLAY, SPI_RADIO, SPI_SDCARD = 0, 1, 2
+SD_CARD_MB = 32
+MISO_MASK = (1 << SPI_RADIO) | (1 << SPI_SDCARD)
 
 # ADR 0013. This board's vendor firmware runs a float in a C++ global
 # constructor, before FreeRTOS exists to own the FPU state, and IDF panics.
@@ -198,7 +210,16 @@ def build(outdir: Path) -> Board:
     gpio = GpioClient(outdir / "gpio.sock")
     for pin in TRACKBALL_PINS.values():
         gpio.drive(pin, 1)          # nobody is pressing the trackball
-    spi = SpiServer(outdir / "spi2.sock", panel)
+    # Three parts share SPI2 (ADR 0032). The display drives nothing back; the
+    # radio and the card both do, so they are on the MISO mask below. Neither
+    # is modelled yet: what sits on their selects records what the firmware
+    # asks for, which is where a model starts (ADR 0006).
+    radio = SpiTrace("radio")
+    # A card is in the slot, formatted and empty (ADR 0033). Its contents are
+    # built here rather than shipped, and go no further than this run.
+    sdcard = SdCard(sdimage.build(size_mb=SD_CARD_MB))
+    spi = SpiServer(outdir / "spi2.sock",
+                    {SPI_DISPLAY: panel, SPI_RADIO: radio, SPI_SDCARD: sdcard})
     # Discovered by watching the firmware probe: it looks for 0x14 and 0x5d
     # (touch), 0x55 (the keyboard) and 0x40 (an audio ADC we do not model).
     touch = GT911()          # its own portrait raster; see touch_point()
@@ -216,7 +237,8 @@ def build(outdir: Path) -> Board:
         f"esp-gpio-block,base=0x{GPIO_BASE:x},irq={IRQ_GPIO},"
         f"socket={gpio.socket_path}",
         f"esp-spi-master,name=spi2,base=0x{SPI2_BASE:x},"
-        f"cs_gpio={TFT_CS_PIN},dc_gpio={TFT_DC_PIN},miso=off,"
+        f"cs_gpio={TFT_CS_PIN},cs1_gpio={RADIO_CS_PIN},cs2_gpio={SD_CS_PIN},"
+        f"dc_gpio={TFT_DC_PIN},miso=off,miso_mask={MISO_MASK},"
         f"socket={spi.socket_path}",
         f"esp-i2c-master,name=i2c0,base=0x{I2C0_BASE:x},irq={IRQ_I2C_EXT0},"
         f"socket={i2c0.socket_path}",

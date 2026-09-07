@@ -37,3 +37,5 @@ superseded ADR is marked superseded and points forward.
 | [0029](0029-touch-interrupt-follows-the-mode-written.md) | The touch interrupt line follows the mode the firmware wrote | Accepted |
 | [0030](0030-the-touch-controller-reports-in-its-own-raster.md) | The touch controller reports in its own raster | Accepted |
 | [0031](0031-the-touch-interrupt-asserts-on-a-report.md) | The touch interrupt asserts on a report and idles between | Accepted |
+| [0032](0032-more-than-one-device-on-the-spi-bus.md) | More than one device on the SPI bus | Accepted |
+| [0033](0033-a-card-in-the-slot.md) | A card in the slot | Accepted |

@@ -57,11 +57,14 @@ OBJECT_DECLARE_SIMPLE_TYPE(EspSpiMaster, ESP_SPI_MASTER)
 
 /* One segment of a chip-select window. `dc` is the level of the data/command
  * pin while these bytes were clocked, which is the only thing that
- * distinguishes a command from payload on a three-wire display. */
+ * distinguishes a command from payload on a three-wire display. `cs` says
+ * which device on the bus was selected while they were clocked (ADR 0032);
+ * it uses a byte the header already reserved, so the format keeps its size. */
 typedef struct QEMU_PACKED {
     uint8_t type;      /* 0 = write only, no reply; 1 = duplex, reply expected */
     uint8_t dc;
-    uint16_t pad;
+    uint8_t cs;        /* index into the chip selects this controller drives */
+    uint8_t pad;
     uint32_t len;
 } EspSpiSegment;
 
@@ -78,8 +81,11 @@ struct EspSpiMaster {
     uint64_t size;
     int32_t priority;
     int32_t cs_gpio;
+    int32_t cs1_gpio;
+    int32_t cs2_gpio;
     int32_t dc_gpio;
     bool miso;
+    uint32_t miso_mask;         /* which devices drive the shared MISO line */
 
     uint32_t regs[SPI_REG_COUNT];
     uint8_t fifo[SPI_FIFO_BYTES];
@@ -88,10 +94,39 @@ struct EspSpiMaster {
     uint8_t *buffer;
     uint32_t buffered;
     int buffered_dc;
+    int buffered_cs;
 
     int fd;
     bool broken;
 };
+
+/* Which device is selected, or -1 for none.
+ *
+ * Chip selects are active low, and exactly one should be asserted at a time.
+ * If a board ever asserts two, the lowest index wins and the bus is
+ * misconfigured anyway; saying so here would be noise on every transfer.
+ */
+static int spi_selected(EspSpiMaster *s)
+{
+    const int32_t pins[3] = { s->cs_gpio, s->cs1_gpio, s->cs2_gpio };
+
+    for (int i = 0; i < 3; i++) {
+        if (pins[i] >= 0 && !esp_gpio_pin_level(NULL, pins[i])) {
+            return i;
+        }
+    }
+    /* A controller told about no chip select at all forwards everything, which
+     * is what a board with a single permanently-selected device wants. */
+    if (s->cs_gpio < 0 && s->cs1_gpio < 0 && s->cs2_gpio < 0) {
+        return 0;
+    }
+    return -1;
+}
+
+static bool spi_drives_miso(EspSpiMaster *s, int cs)
+{
+    return cs >= 0 && (s->miso_mask & (1u << cs)) != 0;
+}
 
 static bool spi_write_all(EspSpiMaster *s, const void *buf, size_t len)
 {
@@ -151,6 +186,7 @@ static void spi_flush(EspSpiMaster *s)
     }
     seg.type = SEGMENT_WRITE;
     seg.dc = (uint8_t)(s->buffered_dc & 1);
+    seg.cs = (uint8_t)(s->buffered_cs < 0 ? 0 : s->buffered_cs);
     seg.pad = 0;
     seg.len = s->buffered;
     if (!spi_write_all(s, &seg, sizeof(seg)) ||
@@ -163,24 +199,26 @@ static void spi_flush(EspSpiMaster *s)
 static void spi_append(EspSpiMaster *s, const uint8_t *data, uint32_t len)
 {
     int dc = s->dc_gpio >= 0 ? esp_gpio_pin_level(NULL, s->dc_gpio) : 0;
+    int cs = spi_selected(s);
 
-    /* SPI2 is a shared bus. A device only sees bytes while its own chip-select
-     * is asserted, so anything clocked out for a different device on the same
-     * pins is not ours to forward. */
-    if (s->cs_gpio >= 0 && esp_gpio_pin_level(NULL, s->cs_gpio)) {
+    /* SPI2 is a shared bus. A device only sees bytes while its own chip select
+     * is asserted, so bytes clocked out with none asserted belong to nobody. */
+    if (cs < 0) {
         return;
     }
 
-    /* A change of data/command mid-window starts a new segment; so does
-     * filling the buffer, which only bounds memory and is otherwise invisible
-     * to the model. */
-    if (s->buffered && dc != s->buffered_dc) {
+    /* A change of data/command mid-window starts a new segment, and so does a
+     * change of device: buffered bytes belong to whoever was selected when
+     * they were clocked. Filling the buffer also flushes, which only bounds
+     * memory and is otherwise invisible to the model. */
+    if (s->buffered && (dc != s->buffered_dc || cs != s->buffered_cs)) {
         spi_flush(s);
     }
     if (s->buffered + len > SPI_BUFFER_MAX) {
         spi_flush(s);
     }
     s->buffered_dc = dc;
+    s->buffered_cs = cs;
     if (len > SPI_BUFFER_MAX) {
         len = SPI_BUFFER_MAX;
     }
@@ -193,14 +231,16 @@ static void spi_append(EspSpiMaster *s, const uint8_t *data, uint32_t len)
 static void spi_duplex(EspSpiMaster *s, uint8_t *data, uint32_t len)
 {
     EspSpiSegment seg;
+    int cs = spi_selected(s);
 
     spi_flush(s);
-    if (s->broken || s->fd < 0) {
+    if (cs < 0 || s->broken || s->fd < 0) {
         memset(data, 0, len);
         return;
     }
     seg.type = SEGMENT_DUPLEX;
     seg.dc = (uint8_t)(s->dc_gpio >= 0 ? esp_gpio_pin_level(NULL, s->dc_gpio) : 0);
+    seg.cs = (uint8_t)cs;
     seg.pad = 0;
     seg.len = len;
     if (!spi_write_all(s, &seg, sizeof(seg)) ||
@@ -225,7 +265,7 @@ static void spi_start(EspSpiMaster *s)
      * blindly means a synchronous round trip per byte and no batching at all.
      * Where the board has no MISO line -- an e-paper panel drives nothing back
      * -- the answer is known to be zero and can be given here. */
-    if ((user & USER_USR_MISO) && s->miso) {
+    if ((user & USER_USR_MISO) && spi_drives_miso(s, spi_selected(s))) {
         spi_duplex(s, s->fifo, bytes);
         return;
     }
@@ -325,8 +365,18 @@ static void spi_realize(DeviceState *dev, Error **errp)
     }
 
     s->buffer = g_malloc(SPI_BUFFER_MAX);
+    /* Legacy spelling: a bus-wide `miso` switch is device 0 driving the line. */
+    if (s->miso) {
+        s->miso_mask |= 1u;
+    }
     if (s->cs_gpio >= 0) {
         esp_gpio_watch(NULL, s->cs_gpio, spi_cs_changed, s);
+    }
+    if (s->cs1_gpio >= 0) {
+        esp_gpio_watch(NULL, s->cs1_gpio, spi_cs_changed, s);
+    }
+    if (s->cs2_gpio >= 0) {
+        esp_gpio_watch(NULL, s->cs2_gpio, spi_cs_changed, s);
     }
 
     memory_region_init_io(&s->iomem, OBJECT(s), &spi_ops, s,
@@ -343,8 +393,12 @@ static Property spi_props[] = {
     DEFINE_PROP_UINT64("size", EspSpiMaster, size, 0x1000),
     DEFINE_PROP_INT32("priority", EspSpiMaster, priority, 100),
     DEFINE_PROP_INT32("cs_gpio", EspSpiMaster, cs_gpio, -1),
+    DEFINE_PROP_INT32("cs1_gpio", EspSpiMaster, cs1_gpio, -1),
+    DEFINE_PROP_INT32("cs2_gpio", EspSpiMaster, cs2_gpio, -1),
     DEFINE_PROP_INT32("dc_gpio", EspSpiMaster, dc_gpio, -1),
     DEFINE_PROP_BOOL("miso", EspSpiMaster, miso, true),
+    /* One bit per chip-select index: whether that part drives MISO. */
+    DEFINE_PROP_UINT32("miso_mask", EspSpiMaster, miso_mask, 0),
     DEFINE_PROP_END_OF_LIST(),
 };
 

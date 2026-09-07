@@ -9,7 +9,8 @@ Segment header, matching esp_spi_master.c:
 
     u8 type   0 = write only, no reply    1 = duplex, reply of `len` expected
     u8 dc     level of the data/command pin while these bytes were clocked
-    u16 pad
+    u8 cs     which device on the bus was selected (ADR 0032)
+    u8 pad
     u32 len
 """
 
@@ -24,7 +25,7 @@ from pathlib import Path
 
 log = logging.getLogger("spi")
 
-SEGMENT = struct.Struct("<BBHI")
+SEGMENT = struct.Struct("<BBBBI")
 SEG_WRITE = 0
 SEG_DUPLEX = 1
 
@@ -45,19 +46,30 @@ class SpiDevice:
 class SpiServer:
     """Listens for the controller and services it on its own thread.
 
-    One connection, one device: the controller already filtered by chip-select,
-    so everything arriving here is addressed to this device.
+    One connection, one bus. The controller says which chip select was
+    asserted for each segment (ADR 0032) and the segment goes to the device on
+    that select. A board with one device passes it alone and it sits on select
+    zero, which is what a controller told about no chip select reports.
     """
 
-    def __init__(self, socket_path: str | Path, device: SpiDevice):
+    def __init__(self, socket_path: str | Path,
+                 device: SpiDevice | dict[int, SpiDevice]):
         self.socket_path = str(socket_path)
-        self.device = device
+        self.devices: dict[int, SpiDevice] = (
+            dict(device) if isinstance(device, dict) else {0: device})
+        self._unmodelled: set[int] = set()
         self._listener: socket.socket | None = None
         self._conn: socket.socket | None = None
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
         self.segments = 0
         self.bytes_in = 0
+
+    @property
+    def device(self) -> SpiDevice | None:
+        """The device on chip select zero, which on a one-device board is the
+        only one there is. Kept because most callers and tests mean that."""
+        return self.devices.get(0)
 
     def start(self) -> None:
         if os.path.exists(self.socket_path):
@@ -90,18 +102,27 @@ class SpiServer:
             header = self._recv(conn, SEGMENT.size)
             if header is None:
                 return
-            kind, dc, _pad, length = SEGMENT.unpack(header)
+            kind, dc, cs, _pad, length = SEGMENT.unpack(header)
             payload = self._recv(conn, length) if length else b""
             if payload is None:
                 return
             self.segments += 1
             self.bytes_in += len(payload)
-            try:
-                reply = self.device.on_segment(dc, payload, kind == SEG_DUPLEX)
-            except Exception:
-                # A model bug must not wedge the guest mid-transaction.
-                log.exception("spi device raised on a %d byte segment", length)
+            device = self.devices.get(cs)
+            if device is None:
+                # A chip select with nothing on it. Real hardware clocks the
+                # bytes into empty air, so drop them and answer a duplex read
+                # with the idle level of an undriven line.
+                if kind == SEG_DUPLEX:
+                    self._unmodelled.add(cs)
                 reply = None
+            else:
+                try:
+                    reply = device.on_segment(dc, payload, kind == SEG_DUPLEX)
+                except Exception:
+                    # A model bug must not wedge the guest mid-transaction.
+                    log.exception("spi device raised on a %d byte segment", length)
+                    reply = None
             if kind == SEG_DUPLEX:
                 out = (reply or b"")[:length].ljust(length, b"\x00")
                 try:
