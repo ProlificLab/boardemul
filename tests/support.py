@@ -136,6 +136,74 @@ def region_digest(path: Path, status_rows: int = 30) -> str:
 SHUTDOWN_GRACE = 30
 
 
+def send_touch(outdir: Path, x: int, y: int, hold: float = 1.2) -> None:
+    """One tap on the glass, in display coordinates. The board turns these into
+    the touch controller's own raster (ADR 0030)."""
+    events = outdir / "input.jsonl"
+    with events.open("a") as fh:
+        fh.write(json.dumps({"type": "touch", "x": x, "y": y, "down": True}) + chr(10))
+    time.sleep(hold)
+    with events.open("a") as fh:
+        fh.write(json.dumps({"type": "touch", "down": False}) + chr(10))
+
+
+def send_key(outdir: Path, key: str) -> None:
+    """One keystroke. The keyboard reports on the way down only."""
+    with (outdir / "input.jsonl").open("a") as fh:
+        fh.write(json.dumps({"type": "key", "key": key, "down": True}) + chr(10))
+
+
+def pixel(path: Path, x: int, y: int) -> tuple[int, int, int]:
+    width, _, pixels = read_png(path)
+    at = 3 * (y * width + x)
+    return pixels[at], pixels[at + 1], pixels[at + 2]
+
+
+def count_pixels(path: Path, box: tuple[int, int, int, int], test) -> int:
+    """How many pixels in a box satisfy a colour test.
+
+    Sampling one pixel to identify a control is a trap: the middle of a button
+    is its label, not its face, so a blue button reads back white. Counting a
+    region says what is there whatever the lettering does.
+    """
+    x0, y0, x1, y1 = box
+    width, _, pixels = read_png(path)
+    count = 0
+    for y in range(y0, y1):
+        row = 3 * y * width
+        for x in range(x0, x1):
+            at = row + 3 * x
+            if test(pixels[at], pixels[at + 1], pixels[at + 2]):
+                count += 1
+    return count
+
+
+def dark_pixels(path: Path, box: tuple[int, int, int, int]) -> int:
+    """How much ink is inside a box. That is how text typed into a white field
+    shows up without needing a golden image of a font."""
+    return count_pixels(path, box, lambda r, g, b: r < 128 and g < 128 and b < 128)
+
+
+def wait_for_panel(outdir: Path, predicate, timeout: float) -> bool:
+    """Wait until the drawn panel satisfies a predicate, or give up.
+
+    An interaction test has to act on what is on screen, not on a stopwatch:
+    the guest's speed varies with the host, and acting early sends taps into a
+    boot screen that swallows them.
+    """
+    latest = outdir / "frames" / "latest.png"
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if latest.exists():
+            try:
+                if predicate(latest):
+                    return True
+            except (OSError, ValueError, struct.error, zlib.error):
+                pass        # caught mid-write; look again next tick
+        time.sleep(1.0)
+    return False
+
+
 def qemu_available() -> bool:
     local = REPO_ROOT / "third_party" / "qemu" / "build" / "qemu-system-xtensa"
     return bool(os.environ.get("BOARDEMUL_QEMU")
@@ -161,7 +229,8 @@ def run_emulator(outdir: Path, *, firmware: Path = FIRMWARE,
                  board: str = "tdeck-max", tap: tuple[int, int] | None = None,
                  wait_frames: int = 0, timeout: int = 150,
                  settle: int = 25, overlays: tuple[str, ...] = (),
-                 icount: bool = False, extra: tuple[str, ...] = ()) -> Run:
+                 icount: bool = False, extra: tuple[str, ...] = (),
+                 script=None) -> Run:
     """Boot a firmware, optionally tapping the panel once it has drawn.
 
     A board with no panel model draws nothing, so waiting on frames is opt-in:
@@ -196,6 +265,12 @@ def run_emulator(outdir: Path, *, firmware: Path = FIRMWARE,
             # A refresh takes a couple of seconds of emulated time; give the
             # firmware room to redraw before looking.
             time.sleep(settle)
+
+        if script is not None:
+            # A whole interaction, not one tap: the caller waits on what is
+            # drawn and sends touches and keys in turn. It runs while the guest
+            # does, and the finally below still tears the run down if it raises.
+            script(outdir)
         proc.wait(timeout=timeout + SHUTDOWN_GRACE)
     finally:
         if proc.poll() is None:
