@@ -1,7 +1,6 @@
 # ADR 0034 — A radio that answers
 
-**Status:** Accepted — 2026-09-07. The chip-identification step is unresolved;
-see "Where this stands".
+**Status:** Accepted — 2026-09-07.
 
 ## Context
 
@@ -38,54 +37,47 @@ firmware's conclusion was correct: as far as it could tell, there was no radio.
    still unsatisfied, that is recorded rather than papered over with a value
    chosen to make it proceed.
 
-## Where this stands
+## What it says it is
 
-The firmwares still do not accept the part, and the reason is not yet known.
-What has been ruled out, by reading the bytes on the wire:
+The part refused every firmware until it stopped calling itself an SX1262.
 
-- The reply reaches the host. The exchange is duplex and the twenty bytes come
-  back as `24 24 24 24 53 58 31 32 36 32 00...`: four status bytes, then
-  `SX1262`, which is the string and the offset the datasheet's framing gives.
-- The status byte is valid. `0x24` is standby with no error, and it is neither
-  of the two values a host reads as an absent chip.
-- The alternative offset was tried, with the data one byte earlier, and the
-  firmware refused that too.
+Getting there took ruling things out in order. The reply does reach the host,
+and a trace of what the guest reads back from the controller proved it: the
+version bytes arrive, ten times over, spelling the name exactly as intended.
+The status byte is valid and is acted on -- replacing it with the value a host
+reads as an absent chip changes the firmware's behaviour enormously. The offset
+is right, and RadioLib's own source confirms both the twenty-byte exchange seen
+on the wire and where in it the contents begin.
 
-Then two experiments narrowed it to something specific and strange. Replacing
-the status byte with `0x00`, which a host reads as an absent chip, changes the
-firmware's behaviour enormously: it retries sixteen times as much. So the byte
-at index one plainly reaches the host and is acted on. But replacing the
-version string with a name no host wants changes nothing at all -- the same
-number of reads, the same outcome -- and moving the contents one byte earlier
-or later changes nothing either.
+So the bytes were correct and correctly delivered, and were still rejected,
+which left only what they said. The family has several members. Answering
+`SX1261` instead, both firmwares accept the part immediately: the vendor build
+prints `Start Radio success!` where it printed a failure, and Meshtastic stops
+retrying and configures the radio -- packet type, frequency, modulation
+parameters, calibration, and into receive.
 
-That is the shape of the problem. The status byte arrives and matters; the
-bytes the host copies out as the version do not appear to influence it. RadioLib
-reads those from a fixed offset after the command and the status, and its own
-source confirms both the twenty-byte length we see and that offset. So the
-question is not what this model returns but whether the read phase of that
-transaction reaches the host at all, which is a question about the controller
-and the bus rather than about the radio.
-
-It is left here, recorded with the measurements, rather than guessed at
-further. Note that these counts vary between runs under host load, so the
-figures above are the shape of the difference and not a benchmark.
+That is the name in the model, and it is evidence rather than preference
+(ADR 0006). It is not the name on the module, which is why it took so long to
+look at; the identity a part reports and the part number printed on it are not
+obliged to agree, and here they do not.
 
 ## Consequences
 
 **Good**
 
+- Both firmwares find their radio and configure it. The vendor build says so
+  in as many words, and Meshtastic's whole start-up sequence runs.
 - The radio's conversation is visible and modelled, and the model is built
   entirely from bytes a firmware actually sent.
-- The status a host checks is now a real one rather than the empty-bus value
-  that told it the part was missing.
 
 **Costs, accepted**
 
-- The goal was for the firmware to find its radio, and it does not yet. The
-  model is a step towards that, not the end of it.
+- The identity is what two firmwares accept, not something read off silicon. A
+  third that wants a different name in that register would need this revisited,
+  and the register is the place to revisit.
 - Nothing is on the air. Two emulated boards cannot hear each other, which is
-  the thing a mesh device exists to do, and is a separate piece of work.
+  the thing a mesh device exists to do, and is a separate piece of work. The
+  firmware now gets as far as listening, and hears nothing.
 
 ## Alternatives rejected
 

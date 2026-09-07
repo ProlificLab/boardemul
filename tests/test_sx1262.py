@@ -44,7 +44,12 @@ def test_every_byte_comes_back_with_a_status(radio: Sx1262) -> None:
 
 def test_the_version_string_is_where_a_host_looks_for_it(radio: Sx1262) -> None:
     """Read sixteen bytes from the version register: opcode, two address bytes
-    and one of padding come back as status, then the string."""
+    and one of padding come back as status, then the string.
+
+    Both the offset and the name matter, and the name is not the one on the
+    module: with any other, both firmwares refuse the part outright (ADR 0034).
+    """
+    assert VERSION_STRING == b"SX1261"
     reply = window(radio, bytes([READ_REGISTER, 0x03, 0x20, 0x00]) + bytes(16))
     assert reply[:4] == bytes([radio.status]) * 4
     assert reply[4:4 + len(VERSION_STRING)] == VERSION_STRING

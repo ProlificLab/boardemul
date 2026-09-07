@@ -81,12 +81,15 @@ COMMAND_OK = 2
 # to. RadioLib compares the first characters against the model it expects, and
 # a mismatch is reported as no chip at all.
 VERSION_ADDRESS = 0x0320
-VERSION_STRING = b"SX1262"
+# What the part answers when a host asks what it is. Not a guess and not the
+# name on the module: both firmwares refuse "SX1262" and accept this, which is
+# the only evidence available and is what ADR 0006 says to follow. With it the
+# vendor build prints "Start Radio success!" and Meshtastic goes on to
+# configure the radio; with "SX1262" both give up.
+VERSION_STRING = b"SX1261"
 
 # Where the contents start in a register read: the opcode, two address bytes
-# and one of padding come first. See "Where this stands" in ADR 0034 -- the
-# host's behaviour does not change when these bytes change, which is the open
-# question, and it is not this constant: 3 and 5 behave identically too.
+# and one of padding come first, which is what RadioLib's own framing gives.
 DATA_INDEX = 4
 
 

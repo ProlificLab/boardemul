@@ -25,6 +25,7 @@
 #include "exec/address-spaces.h"
 #include "exec/memory.h"
 #include "qapi/error.h"
+#include "qemu/log.h"
 #include "qom/object.h"
 #include "hw/misc/esp_board_glue.h"
 
@@ -321,7 +322,13 @@ static uint64_t spi_read(void *opaque, hwaddr offset, unsigned size)
 
     if (offset >= R_W0 && offset <= R_W15 + 3) {
         uint32_t i = offset - R_W0;
-        return ldl_le_p(s->fifo + (i & ~3u));
+        uint32_t word = ldl_le_p(s->fifo + (i & ~3u));
+        /* Investigation hatch: what the guest actually reads back. */
+        if (getenv("BOARDEMUL_SPI_FIFO_TRACE")) {
+            qemu_log_mask(LOG_UNIMP, "FIFOREAD %s +0x%02x size=%u = 0x%08x\n",
+                          s->region_name ? s->region_name : "?", i, size, word);
+        }
+        return word;
     }
     if (offset / 4 >= SPI_REG_COUNT) {
         return 0;
