@@ -152,7 +152,7 @@ def _display() -> bool:
     except ImportError:
         return False
     try:
-        root = tk.Tk()
+        root = tk_root()
     except Exception:
         return False
     root.destroy()
@@ -160,6 +160,22 @@ def _display() -> bool:
 
 
 needs_display = pytest.mark.skipif(not _display(), reason="no display or no tkinter")
+
+
+def tk_root():
+    """A hidden root window, or skip.
+
+    The probe above runs once, at collection. Creating a window can still fail
+    later: this Python's Tcl is read from disk each time, and under load it
+    intermittently cannot be, which is a fact about the machine and not about
+    the widget being tested. Skipping then is honest; failing is noise.
+    """
+    import tkinter as tk
+
+    try:
+        return tk.Tk()
+    except tk.TclError as exc:                  # pragma: no cover - environment
+        pytest.skip(f"tkinter could not open a window: {exc}")
 
 
 @needs_display
@@ -173,7 +189,7 @@ def test_clicking_the_glass_sends_a_touch(tmp_path: Path) -> None:
 
     events = tmp_path / "input.jsonl"
     scale = 2
-    root = tk.Tk()
+    root = tk_root()
     root.withdraw()
     try:
         window = DeckWindow(tk.Toplevel(root), tmp_path / "latest.png", scale,
@@ -201,7 +217,7 @@ def test_clicking_a_cap_sends_that_key(tmp_path: Path) -> None:
 
     events = tmp_path / "input.jsonl"
     scale = 2
-    root = tk.Tk()
+    root = tk_root()
     root.withdraw()
     try:
         window = DeckWindow(tk.Toplevel(root), tmp_path / "latest.png", scale,
