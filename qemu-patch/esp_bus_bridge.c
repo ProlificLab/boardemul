@@ -22,6 +22,7 @@
 #include "qemu/main-loop.h"
 #include "qemu/log.h"
 #include "hw/core/cpu.h"
+#include "sysemu/reset.h"
 
 #include <sys/socket.h>
 #include <sys/un.h>
@@ -31,6 +32,9 @@ OBJECT_DECLARE_SIMPLE_TYPE(EspBusBridge, ESP_BUS_BRIDGE)
 
 #define BRIDGE_OP_READ  0u
 #define BRIDGE_OP_WRITE 1u
+/* The machine reset. Not acknowledged, like a write: it carries no value and
+ * nothing waits on it. */
+#define BRIDGE_OP_RESET 2u
 
 struct EspBusBridge {
     DeviceState parent_obj;
@@ -284,6 +288,31 @@ static const MemoryRegionOps bridge_ops = {
     .impl.max_access_size = 4,
 };
 
+/* A reset resets the peripherals inside the machine, and the ones modelled
+ * outside it have to hear about it too. Otherwise a guest that reboots meets
+ * registers still holding what it left there before, which is a difference
+ * between its first boot and every one after it.
+ *
+ * Registered by hand rather than through the resettable phases: this device
+ * has no parent bus, so it is not in the tree those walk, and the phase hook
+ * is simply never called.
+ */
+static void bridge_reset(void *opaque)
+{
+    EspBusBridge *s = opaque;
+    BridgeRequest req = {
+        .op = BRIDGE_OP_RESET,
+        .size = 0,
+        .pad = 0,
+        .addr = (uint32_t)s->base,
+        .value = 0,
+    };
+
+    if (s->fd >= 0 && !s->broken) {
+        bridge_post(s, &req);
+    }
+}
+
 static void bridge_realize(DeviceState *dev, Error **errp)
 {
     EspBusBridge *s = ESP_BUS_BRIDGE(dev);
@@ -362,6 +391,7 @@ static void bridge_realize(DeviceState *dev, Error **errp)
      * underneath, so anything outside our window is unaffected. */
     memory_region_add_subregion_overlap(get_system_memory(), s->base,
                                         &s->iomem, s->priority);
+    qemu_register_reset(bridge_reset, s);
 }
 
 static Property bridge_props[] = {

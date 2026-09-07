@@ -40,3 +40,4 @@ superseded ADR is marked superseded and points forward.
 | [0032](0032-more-than-one-device-on-the-spi-bus.md) | More than one device on the SPI bus | Accepted |
 | [0033](0033-a-card-in-the-slot.md) | A card in the slot | Accepted |
 | [0034](0034-a-radio-that-answers.md) | A radio that answers | Accepted |
+| [0035](0035-a-reset-reaches-the-models-outside.md) | A reset reaches the models outside | Accepted |

@@ -27,6 +27,7 @@ IRQ_MSG = struct.Struct("<II")    # interrupt source, level
 
 OP_READ = 0
 OP_WRITE = 1
+OP_RESET = 2        # the machine reset; the region returns to its reset state
 
 
 class Region:
@@ -53,6 +54,14 @@ class Region:
 
     def write(self, offset: int, value: int, size: int) -> None:
         pass
+
+    def reset(self) -> None:
+        """Return to the state the guest would find at power-on.
+
+        Called when the machine resets. A peripheral inside the chip is reset
+        with it, so one modelled out here has to be told; a part on the board
+        with its own supply is not, and does not implement this.
+        """
 
     def qemu_device_arg(self, socket_path: str) -> str:
         return (f"esp-bus-bridge,socket={socket_path},name={self.name},"
@@ -164,17 +173,22 @@ class BusServer:
             try:
                 if op == OP_READ:
                     result = region.read(offset, size) & 0xFFFFFFFF
+                elif op == OP_RESET:
+                    region.reset()
+                    log.debug("%s reset with the machine", region.name)
                 else:
                     region.write(offset, value, size)
             except Exception:
                 # A model bug must not become a guest hang. Log it and answer.
                 log.exception("model raised on %s 0x%08x",
-                              "read" if op == OP_READ else "write", addr)
+                              {OP_READ: "read", OP_RESET: "reset"}.get(op, "write"),
+                              addr)
             # Every interrupt goes out of band now, including ones a write
             # raised: a write has no reply to carry it on.
             if region.irq >= 0 and self.irq_channel is not None:
                 self.irq_channel.set(region.irq, region.irq_level())
-        self.recent.append((op, addr, size, result if op == OP_READ else value))
+        if op != OP_RESET:
+            self.recent.append((op, addr, size, result if op == OP_READ else value))
         if _dbg and region is not None:
             log.debug("%s %s +0x%03x = 0x%08x", region.name,
                       "rd" if op == OP_READ else "wr", addr - region.base,

@@ -94,6 +94,11 @@ class TraceRegion(Region):
     def write(self, offset: int, value: int, size: int) -> None:
         self.regs[offset] = value
 
+    def reset(self) -> None:
+        """These are registers inside the chip, so a reset clears them. A
+        second boot then finds the window as the first one did."""
+        self.regs.clear()
+
 
 def i2c_devices() -> list[I2CDevice]:
     """Addresses are the vendor's own, from lib/TDeckMaxBoard/src/TDeckMaxBoard.h.

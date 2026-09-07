@@ -56,6 +56,14 @@ class SarAdc(Region):
         self.raw = raw & 0xFFF
         self.conversions = 0
 
+    def reset(self) -> None:
+        """On-chip, so a reset returns it to what a first boot finds. The
+        sample it answers with is a property of the board, not of the run, and
+        stays."""
+        self.regs.clear()
+        self.conversions = 0
+        self._reads = 0
+
     def read(self, offset: int, size: int) -> int:
         # Progress meter for a firmware that samples in a loop: every
         # conversion reads this register at least twice, so its read count
