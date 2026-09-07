@@ -46,7 +46,7 @@ DEFAULT_BANDWIDTH = 125000
 
 # A frame on the air carries what a receiver needs to decide whether it could
 # have heard it: where it was sent, when, and for how long.
-FRAME = struct.Struct("<4sIddfff")
+FRAME = struct.Struct("<4sIddffff")
 MAGIC = b"LORA"
 
 
@@ -58,6 +58,7 @@ class Frame(NamedTuple):
     airtime: float
     power_dbm: float
     origin: tuple[float, float]
+    gain_dbi: float
     payload: bytes
 
 
@@ -112,35 +113,76 @@ def sensitivity_dbm(bandwidth_code: int, spreading: int) -> float:
     return noise_floor_dbm(bandwidth_code) + limit
 
 
-def path_loss_db(distance_m: float, frequency_hz: int) -> float:
-    """Free space loss between two points, by the standard expression.
+# How fast signal falls away, by the kind of place it is crossing. Two is free
+# space and follows from the geometry; the rest are the representative values
+# quoted for these environments in the standard texts, where each is given as a
+# range. They are named so a scenario can say where it is rather than pick a
+# number, and any number can still be given instead.
+ENVIRONMENTS = {
+    "free-space": 2.0,
+    "open": 2.5,
+    "suburban": 3.0,
+    "urban": 3.5,
+    "indoor": 4.5,
+}
+FREE_SPACE_EXPONENT = 2.0
+REFERENCE_METRES = 1.0
 
-    Free space is the only case that needs no invented terrain. Anything closer
-    than a metre is treated as a metre: the expression has no meaning at zero
-    and boards with no positions given are all at the same point.
-    """
-    metres = max(1.0, distance_m)
+
+def free_space_loss_db(distance_m: float, frequency_hz: int) -> float:
+    """Loss between two points with nothing in the way, by the standard
+    expression. This is the geometry alone and has no parameters to choose."""
+    metres = max(REFERENCE_METRES, distance_m)
     hz = max(1, frequency_hz)
     return (20 * math.log10(metres) + 20 * math.log10(hz)
             - 147.55)          # 20*log10(4*pi/c), the constant of the formula
 
 
-def received_dbm(transmit_dbm: float, distance_m: float, frequency_hz: int) -> float:
-    """What arrives at the far end, with no antenna gain either side."""
-    return transmit_dbm - path_loss_db(distance_m, frequency_hz)
+def path_loss_db(distance_m: float, frequency_hz: int,
+                 exponent: float = FREE_SPACE_EXPONENT,
+                 shadowing_db: float = 0.0) -> float:
+    """Loss over a distance in a given kind of place.
+
+    The log-distance model: free space out to a reference metre, and beyond it
+    the loss grows with the exponent for the environment. At two it reduces
+    exactly to free space, which is why that is the default and why nothing
+    about existing behaviour changes.
+
+    `shadowing_db` is whatever obstruction the scenario wants to state, added
+    as it is. It is deliberately not drawn at random here: a run that cannot be
+    repeated is worth less than one that can (ADR 0004).
+    """
+    metres = max(REFERENCE_METRES, distance_m)
+    reference = free_space_loss_db(REFERENCE_METRES, frequency_hz)
+    return (reference + 10 * exponent * math.log10(metres / REFERENCE_METRES)
+            + shadowing_db)
+
+
+def received_dbm(transmit_dbm: float, distance_m: float, frequency_hz: int,
+                 exponent: float = FREE_SPACE_EXPONENT,
+                 transmit_gain_dbi: float = 0.0,
+                 receive_gain_dbi: float = 0.0,
+                 shadowing_db: float = 0.0) -> float:
+    """What arrives at the far end: what was sent, plus what the antennas at
+    each end contribute, less what the path takes."""
+    return (transmit_dbm + transmit_gain_dbi + receive_gain_dbi
+            - path_loss_db(distance_m, frequency_hz, exponent, shadowing_db))
 
 
 def encode(frequency: int, sent_at: float, airtime: float, payload: bytes,
-           power_dbm: float = 22.0, x: float = 0.0, y: float = 0.0) -> bytes:
-    return (FRAME.pack(MAGIC, frequency, sent_at, airtime, power_dbm, x, y)
-            + payload)
+           power_dbm: float = 22.0, x: float = 0.0, y: float = 0.0,
+           gain_dbi: float = 0.0) -> bytes:
+    return (FRAME.pack(MAGIC, frequency, sent_at, airtime, power_dbm, x, y,
+                       gain_dbi) + payload)
 
 
 def decode(frame: bytes):
     """The header and payload, or None if this is not one of ours."""
     if len(frame) < FRAME.size:
         return None
-    magic, frequency, sent_at, airtime, power, x, y = FRAME.unpack(frame[:FRAME.size])
+    (magic, frequency, sent_at, airtime, power, x, y,
+     gain) = FRAME.unpack(frame[:FRAME.size])
     if magic != MAGIC:
         return None
-    return Frame(frequency, sent_at, airtime, power, (x, y), frame[FRAME.size:])
+    return Frame(frequency, sent_at, airtime, power, (x, y), gain,
+                 frame[FRAME.size:])

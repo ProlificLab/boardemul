@@ -22,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from tools import mkflash  # noqa: E402
 from emu import board  # noqa: E402
 from emu import board_tdeck  # noqa: E402
+from emu.devices import lora  # noqa: E402
 from emu.bus import BusServer, IrqChannel  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -211,6 +212,15 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--at", default=None, metavar="X,Y",
                     help="where this board stands, in metres, so the radio "
                          "link to another board can be worked out (ADR 0038)")
+    ap.add_argument("--antenna", type=float, default=0.0, metavar="DBI",
+                    help="what this board's aerial adds, in dBi (default 0, "
+                         "a plain one)")
+    ap.add_argument("--environment", default="free-space",
+                    help="the kind of place between the boards: "
+                         + ", ".join(lora.ENVIRONMENTS) + ", or an exponent")
+    ap.add_argument("--obstruction", type=float, default=0.0, metavar="DB",
+                    help="anything else in the way, in dB, stated rather than "
+                         "drawn at random so a run repeats (ADR 0039)")
     ap.add_argument("--icount", action="store_true",
                     help="drive the guest clock from executed instructions (ADR 0027): "
                          "exact timer delivery and deterministic runs; the Bluetooth "
@@ -256,9 +266,19 @@ def main(argv: list[str] | None = None) -> int:
             east, _, north = args.at.partition(",")
             where = (float(east), float(north or 0))
         try:
-            hw = hw_module.build(args.outdir, air=args.air, position=where)
+            exponent = lora.ENVIRONMENTS.get(args.environment)
+            if exponent is None:
+                exponent = float(args.environment)
+        except ValueError:
+            raise SystemExit(f"unknown environment {args.environment!r}; "
+                             f"use one of {', '.join(lora.ENVIRONMENTS)} "
+                             f"or an exponent")
+        try:
+            hw = hw_module.build(args.outdir, air=args.air, position=where,
+                                 antenna_dbi=args.antenna, exponent=exponent,
+                                 obstruction_db=args.obstruction)
         except TypeError:
-            # Boards that have no radio take neither air nor a position.
+            # Boards that have no radio take none of this.
             hw = hw_module.build(args.outdir)
         hw.start()
         server = BusServer(args.outdir / f"{tag}.bus.sock", hw.regions)

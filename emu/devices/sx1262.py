@@ -108,7 +108,10 @@ class Sx1262(SpiDevice):
     name = "sx1262"
 
     def __init__(self, air=None, signal=None,
-                 position: tuple[float, float] = (0.0, 0.0)) -> None:
+                 position: tuple[float, float] = (0.0, 0.0),
+                 antenna_dbi: float = 0.0,
+                 exponent: float = lora.FREE_SPACE_EXPONENT,
+                 obstruction_db: float = 0.0) -> None:
         # `air` carries frames to and from other boards; `signal` is how this
         # part nudges the processor, which it does on a line of its own.
         self.air = air
@@ -127,6 +130,13 @@ class Sx1262(SpiDevice):
         # the scenario; there is no distance between two processes to discover
         # (ADR 0038).
         self.position = position
+        # What the aerial on this board adds, and what the place between the
+        # boards costs beyond bare geometry. Both are the scenario's to state
+        # (ADR 0039); the defaults are a plain aerial in free space, which is
+        # what every run had before.
+        self.antenna_dbi = antenna_dbi
+        self.exponent = exponent
+        self.obstruction_db = obstruction_db
         # What the host asked the part to transmit at, in dBm.
         self.transmit_dbm = 22.0
         # What the last packet arrived at, which the host reads back.
@@ -207,8 +217,12 @@ class Sx1262(SpiDevice):
             # Whether it arrives strongly enough to be decoded at all. The
             # distance is the scenario's, the rest is arithmetic (ADR 0038).
             distance = math.dist(self.position, decoded.origin)
-            arrived = lora.received_dbm(decoded.power_dbm, distance,
-                                        lora.register_to_hz(frequency))
+            arrived = lora.received_dbm(
+                decoded.power_dbm, distance, lora.register_to_hz(frequency),
+                exponent=self.exponent,
+                transmit_gain_dbi=decoded.gain_dbi,
+                receive_gain_dbi=self.antenna_dbi,
+                shadowing_db=self.obstruction_db)
             floor = lora.sensitivity_dbm(self.bandwidth_code, self.spreading)
             if arrived < floor:
                 self.out_of_range += 1
@@ -311,7 +325,8 @@ class Sx1262(SpiDevice):
         self.tx_until = now + duration
         if self.air is not None:
             self.air.send(lora.encode(self.frequency, now, duration, payload,
-                                      self.transmit_dbm, *self.position))
+                                      self.transmit_dbm, *self.position,
+                                      gain_dbi=self.antenna_dbi))
         self.sent += 1
         log.debug("sx1262: transmitting %d bytes for %.0f ms",
                   len(payload), duration * 1000)

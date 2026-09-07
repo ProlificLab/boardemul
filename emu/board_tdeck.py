@@ -211,7 +211,9 @@ class PhyGates(TraceRegion):
         return v
 
 def build(outdir: Path, air: str | None = None,
-          position: tuple[float, float] = (0.0, 0.0)) -> Board:
+          position: tuple[float, float] = (0.0, 0.0),
+          antenna_dbi: float = 0.0, exponent: float = 2.0,
+          obstruction_db: float = 0.0) -> Board:
     outdir = Path(outdir)
     panel = St7789Panel(outdir / "frames")
     gpio = GpioClient(outdir / "gpio.sock")
@@ -224,7 +226,8 @@ def build(outdir: Path, air: str | None = None,
     # On the air only when a directory is given to share with other boards
     # (ADR 0036); alone otherwise, which is a node with nobody in range.
     medium = AirMedium(air, outdir.name) if air else None
-    radio = Sx1262(air=medium, position=position,
+    radio = Sx1262(air=medium, position=position, antenna_dbi=antenna_dbi,
+                   exponent=exponent, obstruction_db=obstruction_db,
                    signal=lambda level: gpio.drive(RADIO_DIO1_PIN, level))
     # A card is in the slot, formatted and empty (ADR 0033). Its contents are
     # built here rather than shipped, and go no further than this run.

@@ -47,7 +47,9 @@ budget, because the firmware acts on them.
 
 5. **Free space and nothing else.** No terrain, no obstacles, no antenna
    patterns, no fading. Those need a description of a place, which is a
-   different kind of input from a distance.
+   different kind of input from a distance. *Extended by ADR 0039*: the effect
+   of a place is now given as an environment exponent, and antennas and
+   obstruction are stated per scenario. Fading is still absent, deliberately.
 
 ## Consequences
 

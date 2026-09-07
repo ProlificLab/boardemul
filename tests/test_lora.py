@@ -111,6 +111,54 @@ def test_loss_grows_with_distance() -> None:
     assert far == pytest.approx(near + 20, abs=0.1), "ten times as far is 20 dB"
 
 
+# -- the place between the boards -------------------------------------------
+
+def test_the_default_is_exactly_free_space() -> None:
+    """The log-distance model reduces to free space at an exponent of two, so
+    a scenario that says nothing about its surroundings behaves as before."""
+    for metres in (1, 10, 1000, 100000):
+        assert lora.path_loss_db(metres, 906_875_000) == pytest.approx(
+            lora.free_space_loss_db(metres, 906_875_000), abs=1e-9)
+
+
+def test_a_more_obstructed_place_costs_more() -> None:
+    at_a_km = {name: lora.path_loss_db(1000, 906_875_000, n)
+               for name, n in lora.ENVIRONMENTS.items()}
+    assert (at_a_km["free-space"] < at_a_km["open"] < at_a_km["suburban"]
+            < at_a_km["urban"] < at_a_km["indoor"])
+
+
+def test_the_exponent_is_what_it_says_it_is() -> None:
+    """Ten times the distance costs ten times the exponent in decibels, which
+    is the whole content of the model."""
+    near = lora.path_loss_db(100, 906_875_000, 3.0)
+    far = lora.path_loss_db(1000, 906_875_000, 3.0)
+    assert far - near == pytest.approx(30.0, abs=0.01)
+
+
+def test_an_aerial_helps_at_both_ends() -> None:
+    plain = lora.received_dbm(22, 1000, 906_875_000)
+    better = lora.received_dbm(22, 1000, 906_875_000,
+                               transmit_gain_dbi=3.0, receive_gain_dbi=2.0)
+    assert better - plain == pytest.approx(5.0, abs=0.01)
+
+
+def test_something_in_the_way_is_subtracted() -> None:
+    clear = lora.received_dbm(22, 1000, 906_875_000)
+    blocked = lora.received_dbm(22, 1000, 906_875_000, shadowing_db=12.0)
+    assert clear - blocked == pytest.approx(12.0, abs=0.01)
+
+
+def test_a_town_shortens_the_link() -> None:
+    """The point of all of it: the same two boards that reach each other across
+    open ground do not through a built-up area."""
+    floor = lora.sensitivity_dbm(BW_250K, 11)
+    assert lora.received_dbm(22, 20_000, 906_875_000,
+                             lora.ENVIRONMENTS["free-space"]) > floor
+    assert lora.received_dbm(22, 20_000, 906_875_000,
+                             lora.ENVIRONMENTS["urban"]) < floor
+
+
 def test_two_boards_at_the_same_spot_lose_nothing_much() -> None:
     """Which is where every board stands unless a scenario says otherwise, and
     is why giving no positions leaves everything audible."""
