@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -20,6 +21,7 @@ SET_CAD = 0xC5
 WRITE_BUFFER, READ_BUFFER = 0x0E, 0x1E
 SET_TX, SET_RX = 0x83, 0x82
 SET_BUFFER_BASE, SET_PACKET_PARAMS = 0x8F, 0x8C
+SET_RF_FREQUENCY = 0x86
 GET_RX_BUFFER_STATUS = 0x13
 
 
@@ -110,11 +112,71 @@ def test_the_line_follows_the_flags(pair) -> None:
     assert nudges[-1] is False, "the line stayed up after the flags were cleared"
 
 
-def test_transmitting_reports_that_it_finished_on_the_air(pair) -> None:
+def settle(radio: Sx1262, flag: int, limit: float = 3.0) -> bool:
+    deadline = time.monotonic() + limit
+    while time.monotonic() < deadline:
+        radio.pump()
+        if radio.irq & flag:
+            return True
+        time.sleep(0.01)
+    return False
+
+
+def test_transmitting_takes_as_long_as_the_packet_does(pair) -> None:
+    """A packet holds the channel for a time its modulation decides, and the
+    flag saying it finished waits that long. Told instantly, a host would key
+    the radio again before the first packet had left (ADR 0037)."""
     sender, _, _ = pair
     window(sender, [SET_DIO_IRQ, 0x00, IRQ_TX_DONE, 0, 0, 0, 0, 0, 0])
     transmit(sender, b"out")
-    assert sender.irq & IRQ_TX_DONE
+    assert not sender.irq & IRQ_TX_DONE, "a packet cannot finish instantly"
+    assert sender.airtime(3) > 0.005, "a packet takes a measurable time"
+    assert settle(sender, IRQ_TX_DONE), "the transmission never finished"
+
+
+def test_a_receiver_tuned_elsewhere_hears_nothing(pair) -> None:
+    """Being on the same air is not being on the same channel."""
+    sender, receiver, _ = pair
+    window(sender, [SET_RF_FREQUENCY, 0x36, 0x40, 0x00, 0x00])
+    listen(receiver)
+    transmit(sender, b"on another channel")
+    receiver.pump()
+    assert receiver.heard == 0
+    assert receiver.wrong_frequency == 1
+
+
+def test_two_packets_at_once_are_lost(tmp_path: Path) -> None:
+    """Two transmissions overlapping in the air arrive on top of each other
+    and neither is decoded. That follows from how long each one lasts, which
+    is arithmetic rather than a guess (ADR 0037)."""
+    one = Sx1262(air=AirMedium(tmp_path, "one"))
+    two = Sx1262(air=AirMedium(tmp_path, "two"))
+    listener = Sx1262(air=AirMedium(tmp_path, "listener"))
+    try:
+        listen(listener)
+        # A slow modulation, so both packets are still in the air together.
+        for radio in (one, two):
+            window(radio, [0x8B, 11, 0x05, 1, 0])       # SetModulationParams
+        transmit(one, b"first")
+        transmit(two, b"second")
+        listener.pump()
+        assert listener.collisions == 1, "the second packet did not collide"
+        assert listener.received_length == 0, "a collided packet was kept"
+    finally:
+        for radio in (one, two, listener):
+            radio.air.close()
+
+
+def test_a_transmitting_radio_is_deaf(pair) -> None:
+    """It cannot listen while it is talking, which is why a mesh needs to take
+    turns at all."""
+    sender, receiver, _ = pair
+    listen(receiver)
+    window(receiver, [0x8B, 11, 0x05, 1, 0])
+    transmit(receiver, b"talking")
+    transmit(sender, b"over me")
+    receiver.pump()
+    assert receiver.heard == 0
 
 
 def test_a_board_that_left_is_not_written_to(pair) -> None:

@@ -42,3 +42,4 @@ superseded ADR is marked superseded and points forward.
 | [0034](0034-a-radio-that-answers.md) | A radio that answers | Accepted |
 | [0035](0035-a-reset-reaches-the-models-outside.md) | A reset reaches the models outside | Accepted |
 | [0036](0036-the-air-between-two-boards.md) | The air between two boards | Accepted |
+| [0037](0037-what-the-air-does-to-a-packet.md) | What the air does to a packet | Accepted |

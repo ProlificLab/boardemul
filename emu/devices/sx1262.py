@@ -20,7 +20,9 @@ and hears no traffic, which is what a real node alone in a room experiences.
 from __future__ import annotations
 
 import logging
+import time
 
+from emu.devices import lora
 from emu.spi_link import SpiDevice
 
 log = logging.getLogger("spi")
@@ -116,6 +118,19 @@ class Sx1262(SpiDevice):
         self.sent = 0
         self.heard = 0
         self.cad_sweeps = 0
+        self.collisions = 0
+        self.wrong_frequency = 0
+        # The modulation the host programs, which is what decides how long a
+        # packet of a given length occupies the channel (ADR 0037).
+        self.spreading = 7
+        self.bandwidth_code = 0x04
+        self.coding_rate = 1
+        self.low_data_rate = False
+        self.preamble = 8
+        # While transmitting, this part is deaf; while a packet is arriving,
+        # a second one lands on top of it and neither survives.
+        self.tx_until = 0.0
+        self.rx_until = 0.0
         self.registers = bytearray(REGISTER_SPACE)
         self.registers[VERSION_ADDRESS:VERSION_ADDRESS + len(VERSION_STRING)] = VERSION_STRING
         self.buffer = bytearray(BUFFER_SIZE)
@@ -147,16 +162,44 @@ class Sx1262(SpiDevice):
         self.frame = bytearray()
 
     def pump(self) -> None:
-        """Take anything off the air. Called between the guest's accesses, so
-        a frame lands without a second thread touching this model."""
+        """Run the clock and take anything off the air.
+
+        Called from the board's ticker rather than on bus traffic, because an
+        idle guest makes almost none.
+        """
+        now = time.time()
+        if self.tx_until and now >= self.tx_until:
+            self.tx_until = 0.0
+            self._raise(IRQ_TX_DONE)
         if self.air is None:
             return
+
         for frame in self.air.poll():
-            log.debug("sx1262: %d bytes off the air, mode=%d mask=0x%04x",
-                      len(frame), self.mode, self.irq_mask)
+            decoded = lora.decode(frame)
+            if decoded is None:
+                continue
+            frequency, sent_at, airtime, payload = decoded
+
+            if frequency != self.frequency:
+                # Tuned elsewhere. Nothing about being on the same air makes
+                # two radios on different channels hear each other.
+                self.wrong_frequency += 1
+                continue
+            if self.tx_until:
+                continue        # transmitting, and deaf while it does
             if self.mode != MODE_RX:
-                continue        # not listening; a real part hears nothing
-            payload = frame[:BUFFER_SIZE]
+                continue        # not listening
+
+            ends = sent_at + airtime
+            if now < self.rx_until:
+                # Another packet is still arriving. Two on top of each other
+                # is what a collision is, and neither survives it.
+                self.collisions += 1
+                self.rx_until = max(self.rx_until, ends)
+                self.received_length = 0
+                continue
+            self.rx_until = ends
+            payload = payload[:BUFFER_SIZE]
             for offset, value in enumerate(payload):
                 self.buffer[(self.rx_base + offset) % BUFFER_SIZE] = value
             self.received_length = len(payload)
@@ -211,15 +254,34 @@ class Sx1262(SpiDevice):
             return (self.status, self.status, self.packet_type)[min(index, 2)]
         return self.status
 
+    def airtime(self, payload: int) -> float:
+        """How long a packet of this length holds the channel, from the
+        modulation the host programmed."""
+        return lora.time_on_air(payload, self.spreading, self.bandwidth_code,
+                                self.coding_rate, self.low_data_rate,
+                                self.preamble)
+
     def _transmit(self) -> None:
-        """Put the packet the host wrote into the buffer on the air."""
-        if self.air is None or not self.payload_length:
+        """Put the packet the host wrote into the buffer on the air.
+
+        It goes out at once, but the channel is held for as long as the packet
+        actually takes, and the flag saying the transmission finished waits
+        that long too. A host that is told instantly would key the radio again
+        before the first packet had left.
+        """
+        if not self.payload_length:
+            self._raise(IRQ_TX_DONE)
             return
         payload = bytes(self.buffer[(self.tx_base + offset) % BUFFER_SIZE]
                         for offset in range(self.payload_length))
-        self.air.send(payload)
+        duration = self.airtime(len(payload))
+        now = time.time()
+        self.tx_until = now + duration
+        if self.air is not None:
+            self.air.send(lora.encode(self.frequency, now, duration, payload))
         self.sent += 1
-        log.debug("sx1262: transmitted %d bytes", len(payload))
+        log.debug("sx1262: transmitting %d bytes for %.0f ms",
+                  len(payload), duration * 1000)
 
     def _register(self, address: int) -> int:
         return self.registers[address] if address < REGISTER_SPACE else 0
@@ -248,9 +310,6 @@ class Sx1262(SpiDevice):
         elif opcode == SET_TX:
             self.mode = MODE_TX
             self._transmit()
-            # The host waits for the flag that says the transmission finished,
-            # and blocks for its whole timeout if it never arrives.
-            self._raise(IRQ_TX_DONE)
         elif opcode == SET_RX:
             self.mode = MODE_RX
         elif opcode == SET_CAD:
@@ -278,7 +337,13 @@ class Sx1262(SpiDevice):
         elif opcode == SET_PACKET_PARAMS and len(frame) >= 5:
             # For this modem the fourth parameter is how long the packet is:
             # preamble takes two, then the header type, then the length.
+            self.preamble = (frame[1] << 8) | frame[2]
             self.payload_length = frame[4]
+        elif opcode == SET_MODULATION_PARAMS and len(frame) >= 5:
+            self.spreading = frame[1]
+            self.bandwidth_code = frame[2]
+            self.coding_rate = frame[3]
+            self.low_data_rate = bool(frame[4])
         elif opcode in (GET_STATUS, GET_IRQ_STATUS, GET_RX_BUFFER_STATUS,
                         GET_PACKET_STATUS, GET_DEVICE_ERRORS, GET_PACKET_TYPE,
                         READ_REGISTER, READ_BUFFER):
@@ -299,4 +364,4 @@ class Sx1262(SpiDevice):
     def __repr__(self) -> str:
         return (f"<{self.name} mode={self.mode} commands={self.commands} "
                 f"frequency={self.frequency} sent={self.sent} "
-                f"heard={self.heard}>")
+                f"heard={self.heard} collisions={self.collisions}>")

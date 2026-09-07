@@ -35,7 +35,10 @@ board is allowed to hear.
    went up would give one edge and then nothing.
 
 5. **Nothing about propagation is modelled.** Everyone in the directory hears
-   everything, at once and intact.
+   everything, at once and intact. *Amended by ADR 0037*: what can be derived
+   from the modulation the firmware programs -- how long a packet holds the
+   channel, and the collisions and deafness that follow -- is now modelled.
+   Range still is not.
 
 ## Consequences
 
