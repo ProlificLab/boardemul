@@ -25,6 +25,7 @@ from emu.bus import Region
 from emu import sdimage
 from emu.i2c_link import I2CServer
 from emu.devices.lcd import St7789Panel
+from emu.devices.air import AirMedium
 from emu.devices.es7210 import Es7210
 from emu.devices.sdcard import SdCard
 from emu.devices.spi_trace import SpiTrace
@@ -69,6 +70,9 @@ KEYBOARD_INT_PIN = 46
 TOUCH_REPORT_HZ = 500
 SD_CS_PIN = 39
 RADIO_CS_PIN = 9
+# The radio nudges the processor on this line when something it was told
+# to watch for happens: a packet sent, or one received (ADR 0036).
+RADIO_DIO1_PIN = 45
 
 # Which device each chip select is, in the order the controller is told them
 # (ADR 0032), and which of them drive the shared MISO line. The display does
@@ -206,7 +210,7 @@ class PhyGates(TraceRegion):
             v |= self.GATES.get(self.base + offset, 0)
         return v
 
-def build(outdir: Path) -> Board:
+def build(outdir: Path, air: str | None = None) -> Board:
     outdir = Path(outdir)
     panel = St7789Panel(outdir / "frames")
     gpio = GpioClient(outdir / "gpio.sock")
@@ -216,7 +220,11 @@ def build(outdir: Path) -> Board:
     # radio and the card both do, so they are on the MISO mask below. Neither
     # is modelled yet: what sits on their selects records what the firmware
     # asks for, which is where a model starts (ADR 0006).
-    radio = Sx1262()         # answers, but nothing goes on the air (ADR 0034)
+    # On the air only when a directory is given to share with other boards
+    # (ADR 0036); alone otherwise, which is a node with nobody in range.
+    medium = AirMedium(air, outdir.name) if air else None
+    radio = Sx1262(air=medium,
+                   signal=lambda level: gpio.drive(RADIO_DIO1_PIN, level))
     # A card is in the slot, formatted and empty (ADR 0033). Its contents are
     # built here rather than shipped, and go no further than this run.
     sdcard = SdCard(sdimage.build(size_mb=SD_CARD_MB))
@@ -301,6 +309,12 @@ def attach_input(server, board: Board, outdir: Path) -> InputTail:
     which is why a held finger has to keep producing edges rather than being
     delivered once.
     """
+    radio = board.spi.devices.get(SPI_RADIO)
+    if radio is not None and getattr(radio, "air", None) is not None:
+        # Between the guest's own accesses, so a frame off the air reaches the
+        # model without a second thread touching it (ADR 0010).
+        server.pumps.append(radio.pump)
+
     tail = InputTail(Path(outdir) / "input.jsonl")
     touch = board.i2c0.devices.get(GT911().address)
     keypad = board.i2c0.devices.get(TDeckKeyboard().address)

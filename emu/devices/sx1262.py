@@ -66,6 +66,10 @@ GET_DEVICE_ERRORS = 0x17
 CLEAR_DEVICE_ERRORS = 0x07
 SET_REGULATOR_MODE = 0x96
 
+# Interrupt flags, in the register a host reads after being nudged.
+IRQ_TX_DONE = 0x0001
+IRQ_RX_DONE = 0x0002
+
 # Chip modes, in the top nibble of the status byte.
 MODE_STANDBY_RC = 2
 MODE_STANDBY_XOSC = 3
@@ -98,7 +102,17 @@ class Sx1262(SpiDevice):
 
     name = "sx1262"
 
-    def __init__(self) -> None:
+    def __init__(self, air=None, signal=None) -> None:
+        # `air` carries frames to and from other boards; `signal` is how this
+        # part nudges the processor, which it does on a line of its own.
+        self.air = air
+        self.signal = signal
+        self.tx_base = 0
+        self.rx_base = 0
+        self.payload_length = 0
+        self.received_length = 0
+        self.sent = 0
+        self.heard = 0
         self.registers = bytearray(REGISTER_SPACE)
         self.registers[VERSION_ADDRESS:VERSION_ADDRESS + len(VERSION_STRING)] = VERSION_STRING
         self.buffer = bytearray(BUFFER_SIZE)
@@ -129,6 +143,34 @@ class Sx1262(SpiDevice):
             self._apply(bytes(self.frame))
         self.frame = bytearray()
 
+    def pump(self) -> None:
+        """Take anything off the air. Called between the guest's accesses, so
+        a frame lands without a second thread touching this model."""
+        if self.air is None:
+            return
+        for frame in self.air.poll():
+            if self.mode != MODE_RX:
+                continue        # not listening; a real part hears nothing
+            payload = frame[:BUFFER_SIZE]
+            for offset, value in enumerate(payload):
+                self.buffer[(self.rx_base + offset) % BUFFER_SIZE] = value
+            self.received_length = len(payload)
+            self.heard += 1
+            self._raise(IRQ_RX_DONE)
+
+    def _raise(self, flag: int) -> None:
+        """Set a flag and put the line where the flags say it should be.
+
+        A host that configured an interrupt waits on the line rather than
+        polling, and never looks at the flags until the line moves.
+        """
+        self.irq |= flag
+        self._drive_line()
+
+    def _drive_line(self) -> None:
+        if self.signal is not None:
+            self.signal(bool(self.irq & self.irq_mask))
+
     # -- what the host reads while it clocks --------------------------------
 
     def _reply_at(self, index: int) -> int:
@@ -151,7 +193,9 @@ class Sx1262(SpiDevice):
             return (self.status, self.status, (self.irq >> 8) & 0xFF,
                     self.irq & 0xFF)[min(index, 3)]
         if opcode == GET_RX_BUFFER_STATUS:
-            return (self.status, self.status, 0x00, 0x00)[min(index, 3)]
+            # status, then how many bytes arrived and where they start.
+            return (self.status, self.status, self.received_length,
+                    self.rx_base)[min(index, 3)]
         if opcode == GET_PACKET_STATUS:
             # No signal: the strengths a host reads are the floor. They are
             # reported in negative half-decibels, so a large number is quiet.
@@ -161,6 +205,16 @@ class Sx1262(SpiDevice):
         if opcode == GET_PACKET_TYPE:
             return (self.status, self.status, self.packet_type)[min(index, 2)]
         return self.status
+
+    def _transmit(self) -> None:
+        """Put the packet the host wrote into the buffer on the air."""
+        if self.air is None or not self.payload_length:
+            return
+        payload = bytes(self.buffer[(self.tx_base + offset) % BUFFER_SIZE]
+                        for offset in range(self.payload_length))
+        self.air.send(payload)
+        self.sent += 1
+        log.debug("sx1262: transmitted %d bytes", len(payload))
 
     def _register(self, address: int) -> int:
         return self.registers[address] if address < REGISTER_SPACE else 0
@@ -187,21 +241,31 @@ class Sx1262(SpiDevice):
         elif opcode == SET_FS:
             self.mode = MODE_FS
         elif opcode == SET_TX:
-            # Nothing goes out, but the host waits for the flag that says the
-            # transmission finished, and blocks for its whole timeout if it
-            # never arrives.
             self.mode = MODE_TX
-            self.irq |= 0x0001                  # TxDone
+            self._transmit()
+            # The host waits for the flag that says the transmission finished,
+            # and blocks for its whole timeout if it never arrives.
+            self._raise(IRQ_TX_DONE)
         elif opcode == SET_RX:
             self.mode = MODE_RX
         elif opcode == CLEAR_IRQ_STATUS and len(frame) >= 3:
             self.irq &= ~((frame[1] << 8) | frame[2]) & 0xFFFF
+            # The line follows the flags, so clearing them lowers it and the
+            # next event is an edge rather than nothing.
+            self._drive_line()
         elif opcode == SET_DIO_IRQ_PARAMS and len(frame) >= 3:
             self.irq_mask = (frame[1] << 8) | frame[2]
+            self._drive_line()
         elif opcode == SET_PACKET_TYPE and len(frame) >= 2:
             self.packet_type = frame[1]
         elif opcode == SET_RF_FREQUENCY and len(frame) >= 5:
             self.frequency = int.from_bytes(frame[1:5], "big")
+        elif opcode == SET_BUFFER_BASE and len(frame) >= 3:
+            self.tx_base, self.rx_base = frame[1], frame[2]
+        elif opcode == SET_PACKET_PARAMS and len(frame) >= 5:
+            # For this modem the fourth parameter is how long the packet is:
+            # preamble takes two, then the header type, then the length.
+            self.payload_length = frame[4]
         elif opcode in (GET_STATUS, GET_IRQ_STATUS, GET_RX_BUFFER_STATUS,
                         GET_PACKET_STATUS, GET_DEVICE_ERRORS, GET_PACKET_TYPE,
                         READ_REGISTER, READ_BUFFER):
@@ -221,4 +285,5 @@ class Sx1262(SpiDevice):
 
     def __repr__(self) -> str:
         return (f"<{self.name} mode={self.mode} commands={self.commands} "
-                f"frequency={self.frequency}>")
+                f"frequency={self.frequency} sent={self.sent} "
+                f"heard={self.heard}>")

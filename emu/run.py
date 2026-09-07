@@ -205,6 +205,9 @@ def main(argv: list[str] | None = None) -> int:
                     help="log every bus transaction at DEBUG")
     ap.add_argument("--bus", action="store_true",
                     help="intercept unmodelled peripherals with Python models")
+    ap.add_argument("--air", default=None, metavar="DIR",
+                    help="share a directory with other running boards so their "
+                         "radios can hear each other (ADR 0036)")
     ap.add_argument("--icount", action="store_true",
                     help="drive the guest clock from executed instructions (ADR 0027): "
                          "exact timer delivery and deterministic runs; the Bluetooth "
@@ -245,7 +248,11 @@ def main(argv: list[str] | None = None) -> int:
         logging.basicConfig(filename=args.outdir / f"{tag}.bus.log", filemode="w",
                             level=logging.DEBUG if args.verbose else logging.INFO,
                             format="%(name)s %(message)s")
-        hw = hw_module.build(args.outdir)
+        try:
+            hw = hw_module.build(args.outdir, air=args.air)
+        except TypeError:
+            # Boards that have no radio take no air.
+            hw = hw_module.build(args.outdir)
         hw.start()
         server = BusServer(args.outdir / f"{tag}.bus.sock", hw.regions)
         irq = IrqChannel(args.outdir / f"{tag}.irq.sock")
