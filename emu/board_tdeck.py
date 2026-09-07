@@ -25,6 +25,7 @@ from emu.bus import Region
 from emu import sdimage
 from emu.i2c_link import I2CServer
 from emu.devices.lcd import St7789Panel
+from emu.devices.es7210 import Es7210
 from emu.devices.sdcard import SdCard
 from emu.devices.spi_trace import SpiTrace
 from emu.devices.sx1262 import Sx1262
@@ -222,10 +223,11 @@ def build(outdir: Path) -> Board:
     spi = SpiServer(outdir / "spi2.sock",
                     {SPI_DISPLAY: panel, SPI_RADIO: radio, SPI_SDCARD: sdcard})
     # Discovered by watching the firmware probe: it looks for 0x14 and 0x5d
-    # (touch), 0x55 (the keyboard) and 0x40 (an audio ADC we do not model).
+    # (touch), 0x55 (the keyboard) and 0x40 (the microphone codec).
     touch = GT911()          # its own portrait raster; see touch_point()
     keypad = TDeckKeyboard()
-    i2c0 = I2CServer(outdir / "i2c0.sock", [touch, keypad], name="i2c0")
+    codec = Es7210()         # the microphone codec the firmware probes for
+    i2c0 = I2CServer(outdir / "i2c0.sock", [touch, keypad, codec], name="i2c0")
     i2c1 = I2CServer(outdir / "i2c1.sock", [], name="i2c1")
 
     regions: list[Region] = [PhyGates(n, b) if PhyGates.covers(b) else TraceRegion(n, b)
