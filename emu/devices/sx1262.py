@@ -36,7 +36,7 @@ SET_TX = 0x83
 SET_RX = 0x82
 STOP_TIMER_ON_PREAMBLE = 0x9F
 SET_RX_DUTY_CYCLE = 0x94
-SET_CAD = 0xC5_00           # not a real opcode; CAD is 0xC5 in some revisions
+SET_CAD = 0xC5              # listen before talking: is the channel busy?
 CALIBRATE = 0x89
 CALIBRATE_IMAGE = 0x98
 SET_PA_CONFIG = 0x95
@@ -59,7 +59,7 @@ SET_PACKET_PARAMS = 0x8C
 SET_BUFFER_BASE = 0x8F
 SET_LORA_SYMB_TIMEOUT = 0xA0
 GET_STATUS = 0xC0
-GET_RSSI_INST = 0x15_00     # placeholder, see GET_DEVICE_ERRORS
+GET_RSSI_INST = 0x15
 GET_RX_BUFFER_STATUS = 0x13
 GET_PACKET_STATUS = 0x14
 GET_DEVICE_ERRORS = 0x17
@@ -69,6 +69,8 @@ SET_REGULATOR_MODE = 0x96
 # Interrupt flags, in the register a host reads after being nudged.
 IRQ_TX_DONE = 0x0001
 IRQ_RX_DONE = 0x0002
+IRQ_CAD_DONE = 0x0080
+IRQ_CAD_DETECTED = 0x0040
 
 # Chip modes, in the top nibble of the status byte.
 MODE_STANDBY_RC = 2
@@ -113,6 +115,7 @@ class Sx1262(SpiDevice):
         self.received_length = 0
         self.sent = 0
         self.heard = 0
+        self.cad_sweeps = 0
         self.registers = bytearray(REGISTER_SPACE)
         self.registers[VERSION_ADDRESS:VERSION_ADDRESS + len(VERSION_STRING)] = VERSION_STRING
         self.buffer = bytearray(BUFFER_SIZE)
@@ -149,6 +152,8 @@ class Sx1262(SpiDevice):
         if self.air is None:
             return
         for frame in self.air.poll():
+            log.debug("sx1262: %d bytes off the air, mode=%d mask=0x%04x",
+                      len(frame), self.mode, self.irq_mask)
             if self.mode != MODE_RX:
                 continue        # not listening; a real part hears nothing
             payload = frame[:BUFFER_SIZE]
@@ -248,6 +253,14 @@ class Sx1262(SpiDevice):
             self._raise(IRQ_TX_DONE)
         elif opcode == SET_RX:
             self.mode = MODE_RX
+        elif opcode == SET_CAD:
+            # Listening before talking. Answering that the sweep finished and
+            # found nothing is what lets a host go on to transmit; saying
+            # nothing at all leaves it waiting here for ever, which is exactly
+            # where both firmwares stopped.
+            self.mode = MODE_RX
+            self.cad_sweeps += 1
+            self._raise(IRQ_CAD_DONE)
         elif opcode == CLEAR_IRQ_STATUS and len(frame) >= 3:
             self.irq &= ~((frame[1] << 8) | frame[2]) & 0xFFFF
             # The line follows the flags, so clearing them lowers it and the
@@ -275,7 +288,7 @@ class Sx1262(SpiDevice):
                         SET_DIO3_AS_TCXO, SET_TX_PARAMS, SET_MODULATION_PARAMS,
                         SET_PACKET_PARAMS, SET_BUFFER_BASE, SET_RX_TX_FALLBACK,
                         SET_LORA_SYMB_TIMEOUT, STOP_TIMER_ON_PREAMBLE,
-                        SET_RX_DUTY_CYCLE, CLEAR_DEVICE_ERRORS):
+                        SET_RX_DUTY_CYCLE, CLEAR_DEVICE_ERRORS, GET_RSSI_INST):
             pass                                # accepted; nothing to model yet
         elif opcode != 0x00:                    # a lone zero is the host idling
             if opcode not in self.unknown:

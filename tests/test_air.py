@@ -12,10 +12,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from emu.devices.air import AirMedium  # noqa: E402
 from emu.devices.sx1262 import (  # noqa: E402
-    IRQ_RX_DONE, IRQ_TX_DONE, MODE_RX, Sx1262,
+    IRQ_CAD_DETECTED, IRQ_CAD_DONE, IRQ_RX_DONE, IRQ_TX_DONE, MODE_RX, Sx1262,
 )
 
 CLEAR_IRQ, SET_DIO_IRQ = 0x02, 0x08
+SET_CAD = 0xC5
 WRITE_BUFFER, READ_BUFFER = 0x0E, 0x1E
 SET_TX, SET_RX = 0x83, 0x82
 SET_BUFFER_BASE, SET_PACKET_PARAMS = 0x8F, 0x8C
@@ -133,3 +134,19 @@ def test_the_receiver_only_takes_what_it_is_in_range_of(pair) -> None:
     transmit(sender, b"a")
     receiver.pump()
     assert receiver.heard == 1
+
+
+def test_listening_before_talking_is_answered(pair) -> None:
+    """A host sweeps the channel before transmitting and waits for the result.
+
+    Saying nothing leaves it waiting there for ever, which is exactly where
+    both firmwares stopped: they were not failing to transmit, they were still
+    listening. Answering that the sweep finished and found nothing is what let
+    Meshtastic key its radio (ADR 0036).
+    """
+    sender, _, _ = pair
+    window(sender, [SET_DIO_IRQ, 0x00, IRQ_CAD_DONE, 0, 0, 0, 0, 0, 0])
+    window(sender, [SET_CAD])
+    assert sender.cad_sweeps == 1
+    assert sender.irq & IRQ_CAD_DONE, "the sweep never reported finishing"
+    assert not sender.irq & IRQ_CAD_DETECTED, "the channel should read clear"

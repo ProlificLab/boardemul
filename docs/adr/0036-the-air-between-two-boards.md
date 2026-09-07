@@ -56,15 +56,25 @@ board is allowed to hear.
 - A board that stops without tidying up leaves its file behind, and frames are
   sent to a port nobody is reading. That is harmless and self-correcting.
 
-## Where this stands
+## What it took to carry a packet
 
-The medium is proven between two radios: a packet crosses, arrives with the
-right length, reads back byte for byte, and raises the line. What has not yet
-been seen is two *firmwares* talking. Meshtastic transmits nothing until its
-region is configured, and once configured its first broadcast is further out
-than the runs so far have reached; both nodes were observed configuring the
-radio and going into receive. Getting two firmwares to exchange a packet is the
-next step and needs longer runs, not more model.
+Two firmwares would not talk even once the medium worked, and the reason was
+not the medium. Meshtastic listens before it talks: it sweeps the channel and
+waits to be told whether anything is on it. That sweep was a command this model
+did not answer, so the firmware waited at it indefinitely. It was never failing
+to transmit; it was still listening. Answering that the sweep finished and
+found the channel clear is what let it key the radio.
+
+Two smaller things stood behind that. The radio has to be looked at between the
+guest's own accesses like the touch controller is, not on bus traffic, because
+an idle guest makes almost none. And two boards booted from one captured
+filesystem share an identity, so each discards the other's packets as its own;
+they need distinct addresses to be distinct nodes.
+
+With those, two emulated boards running unmodified Meshtastic exchange packets
+of ninety-two and forty-eight bytes, read them off their radios, and one
+reports two nodes on its own screen where it had reported one. It learned of
+the other over this air and nowhere else.
 
 ## Alternatives rejected
 

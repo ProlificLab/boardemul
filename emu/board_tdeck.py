@@ -310,10 +310,7 @@ def attach_input(server, board: Board, outdir: Path) -> InputTail:
     delivered once.
     """
     radio = board.spi.devices.get(SPI_RADIO)
-    if radio is not None and getattr(radio, "air", None) is not None:
-        # Between the guest's own accesses, so a frame off the air reaches the
-        # model without a second thread touching it (ADR 0010).
-        server.pumps.append(radio.pump)
+    on_air = radio if getattr(radio, "air", None) is not None else None
 
     tail = InputTail(Path(outdir) / "input.jsonl")
     touch = board.i2c0.devices.get(GT911().address)
@@ -353,6 +350,11 @@ def attach_input(server, board: Board, outdir: Path) -> InputTail:
         period = 1.0 / TOUCH_REPORT_HZ
         while not tail._stop.is_set():
             pump()
+            if on_air is not None:
+                # On the ticker rather than the bus pumps: an idle guest makes
+                # almost no register accesses, which is the same reason the
+                # touch controller is driven from here.
+                on_air.pump()
             if isinstance(touch, GT911):
                 # Idempotent: the client sends nothing for an unchanged level.
                 # This is where a mode write with no finger down moves the
