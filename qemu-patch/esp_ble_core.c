@@ -101,6 +101,20 @@ OBJECT_DECLARE_SIMPLE_TYPE(EspBleCore, ESP_BLE_CORE)
 /* Where the advertising set's record sits in exchange memory. Read off a
  * running controller (ADR 0044), not from a document. */
 #define ADV_RECORD_OFFSET 0x1400
+/* The receive descriptor ring, and how the ROM walks it. All read off the
+ * ROM's own code (ADR 0046), none of it from a document. */
+#define RX_RING_OFFSET    0x1000
+#define RX_RING_COUNT     10
+#define RX_DESC_SIZE      20
+#define RX_DONE           0x8000     /* +0: a packet is here */
+#define RX_ERROR_MASK     0x403D     /* +2: clear means it is good */
+#define PDU_ADV_IND       0x00       /* +4, low four bits */
+#define PDU_CONNECT_IND   0x05
+/* Where the link layer keeps the index of the descriptor it reads next.
+ * A ROM data address, stable for this ROM, and the only way to know
+ * which of the ten the ROM will look at. */
+#define LLD_ENV_PTR       0x3FCEFF78
+#define LLD_ENV_RX_INDEX  216
 #define R_INTFIFO       0x2D8
 
 #define CNTL_RESET      (1u << 31)
@@ -141,6 +155,7 @@ struct EspBleCore {
     char *air_name;             /* what this one is called in it */
     int air_fd;
     uint64_t sent;
+    uint64_t received;
 
     uint32_t regs[REG_COUNT];   /* what the guest wrote, word by word */
     uint32_t raw;               /* pending status bits */
@@ -512,11 +527,79 @@ static void ble_transmit(EspBleCore *s)
     if (s->air_fd <= 0) {
         return;
     }
-    length = ble_collect_payload(s, payload, sizeof(payload));
+    length = ble_collect_payload(s, payload + 1, sizeof(payload) - 1);
     if (!length) {
         return;
     }
-    ble_air_send(s, payload, length);
+    /* A frame on this air is the packet type and then the payload, so a
+     * receiver need not guess what it is holding (ADR 0046). */
+    payload[0] = PDU_ADV_IND;
+    ble_air_send(s, payload, length + 1);
+}
+
+/* Take whatever has arrived on the air. Called as an event completes, which
+ * is when the controller would have been listening. */
+static bool ble_air_poll(EspBleCore *s, uint8_t *frame, size_t room, size_t *got)
+{
+    ssize_t n;
+
+    if (s->air_fd <= 0) {
+        return false;
+    }
+    n = recv(s->air_fd, frame, room, MSG_DONTWAIT);
+    if (n <= 0) {
+        return false;
+    }
+    *got = (size_t)n;
+    qemu_log_mask(LOG_UNIMP, "esp-ble-core: heard %d byte(s) on the air%c", (int)n, 10);
+    return true;
+}
+
+/* Hand a received packet to the link layer the way its hardware would: fill
+ * the descriptor it is about to read, and say what kind of packet it was.
+ */
+static void ble_deliver(EspBleCore *s, const uint8_t *frame, size_t length)
+{
+    uint32_t env = 0;
+    uint8_t index = 0;
+    hwaddr ring = ble_em_addr(s, RX_RING_OFFSET);
+    hwaddr desc;
+    uint16_t done = RX_DONE, status = 0, kind;
+
+    if (!length) {
+        return;
+    }
+    kind = frame[0] & 0x0F;
+    if (!ring) {
+        qemu_log_mask(LOG_UNIMP, "esp-ble-core: deliver: ring unmapped%c", 10);
+        return;
+    }
+    address_space_read(&address_space_memory, LLD_ENV_PTR, MEMTXATTRS_UNSPECIFIED,
+                       &env, sizeof(env));
+    if (env < 0x3FC00000u || env >= 0x3FD00000u) {
+        qemu_log_mask(LOG_UNIMP, "esp-ble-core: deliver: env 0x%08x looks wrong%c",
+                      env, 10);
+        return;                         /* the link layer is not up yet */
+    }
+    address_space_read(&address_space_memory, env + LLD_ENV_RX_INDEX,
+                       MEMTXATTRS_UNSPECIFIED, &index, 1);
+    if (index >= RX_RING_COUNT) {
+        qemu_log_mask(LOG_UNIMP, "esp-ble-core: deliver: index %u out of range%c",
+                      index, 10);
+        return;
+    }
+    desc = ring + (hwaddr)index * RX_DESC_SIZE;
+
+    address_space_write(&address_space_memory, desc + 2, MEMTXATTRS_UNSPECIFIED,
+                        &status, sizeof(status));
+    address_space_write(&address_space_memory, desc + 4, MEMTXATTRS_UNSPECIFIED,
+                        &kind, sizeof(kind));
+    address_space_write(&address_space_memory, desc + 0, MEMTXATTRS_UNSPECIFIED,
+                        &done, sizeof(done));
+    s->received++;
+    qemu_log_mask(LOG_UNIMP, "esp-ble-core: delivered a type %u packet of "
+                  "%u byte(s) into descriptor %u at 0x%08llx%c", kind,
+                  (unsigned)length - 1, index, (unsigned long long)desc, 10);
 }
 
 static void ble_arm_event_timer(EspBleCore *s)
@@ -584,6 +667,13 @@ static void ble_kick(EspBleCore *s, uint32_t value)
 
     ble_peek(s, idx);
     ble_transmit(s);
+    {
+        uint8_t heard[64];
+        size_t got = 0;
+        if (ble_air_poll(s, heard, sizeof(heard), &got)) {
+            ble_deliver(s, heard, got);
+        }
+    }
 
     unsigned i = s->n_events;
     while (i > 0 && s->events[i - 1].start_hus > start) {

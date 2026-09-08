@@ -98,10 +98,17 @@ def overheard(tmp_path_factory, bluetooth_filesystem: Path) -> list[bytes]:
     return frames
 
 
+ADV_IND = 0x00
+
+
 def structures(frame: bytes) -> list[tuple[int, bytes]]:
     """Advertising data describes itself: each block is a length, a type, and
-    that many bytes. Walking it is how a payload is told from a run of bytes."""
-    out, at = [], 0
+    that many bytes. Walking it is how a payload is told from a run of bytes.
+
+    The first byte of a frame on this air is the packet type (ADR 0046), so
+    the payload starts after it.
+    """
+    out, at = [], 1
     while at < len(frame):
         length = frame[at]
         if length == 0 or at + 1 + length > len(frame):
@@ -109,6 +116,12 @@ def structures(frame: bytes) -> list[tuple[int, bytes]]:
         out.append((frame[at + 1], frame[at + 2:at + 1 + length]))
         at += 1 + length
     return out
+
+
+def test_a_frame_says_what_kind_of_packet_it_is(overheard) -> None:
+    """The air carries the type first, so a receiver need not guess."""
+    assert overheard, "nothing was heard on the Bluetooth air"
+    assert overheard[0][0] == ADV_IND, overheard[0][:4].hex(" ")
 
 
 def test_something_is_heard(overheard) -> None:
@@ -122,7 +135,7 @@ def test_what_arrives_is_advertising_data(overheard) -> None:
     A frame that merely contained the name could be any accident of memory."""
     blocks = structures(overheard[0])
     assert blocks, f"not advertising data: {overheard[0].hex(' ')}"
-    consumed = sum(2 + len(payload) for _, payload in blocks)
+    consumed = 1 + sum(2 + len(payload) for _, payload in blocks)
     assert consumed == len(overheard[0]), (
         f"{len(overheard[0]) - consumed} stray byte(s): {overheard[0].hex(' ')}")
 
