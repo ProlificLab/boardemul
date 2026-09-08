@@ -45,10 +45,17 @@ SHORT_FIELD = (140, 106, 218, 125)
 OK_BUTTON = (141, 207)
 OK_FACE = (117, 190, 167, 225)
 NOTICE = (100, 70, 300, 140)
+# The boot splash is green nearly everywhere; the interface is not.
+LOGO_AT = (10, 10)
 
 BLUE = lambda r, g, b: b > 150 and r < 110 and g < 140        # noqa: E731
 WHITE = lambda r, g, b: r > 230 and g > 230 and b > 230       # noqa: E731
 RED = lambda r, g, b: r > 150 and g < 90 and b < 90           # noqa: E731
+
+
+def is_boot_logo(frame: Path) -> bool:
+    r, g, b = pixel(frame, *LOGO_AT)
+    return g > 180 and r < 160 and b < 180
 
 
 def is_setup_dialog(frame: Path) -> bool:
@@ -96,10 +103,23 @@ def carve_filesystem(flash: Path, out: Path) -> int:
                      f"found {[p.label for p in parts]}")
 
 
+def _carve(build: Path, out: Path) -> int:
+    flash = build / FIRMWARE_MESHTASTIC.stem / "flash.bin"
+    if not flash.exists():
+        raise SystemExit(f"no flash image at {flash}")
+    size = carve_filesystem(flash, out)
+    print(f"wrote {out} ({size} bytes)")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("-o", "--out", type=Path, default=DEFAULT_OUT)
     ap.add_argument("--name", default="emu1", help="short name to set")
+    ap.add_argument("--bluetooth", action="store_true",
+                    help="switch Bluetooth on instead of setting a name: hold "
+                         "the boot logo, which is what the interface watches "
+                         "for (ADR 0026), and let it save and restart")
     ap.add_argument("--timeout", type=float, default=420.0)
     args = ap.parse_args(argv)
 
@@ -121,6 +141,18 @@ def main(argv: list[str] | None = None) -> int:
          "--timeout", str(args.timeout), "--stall", str(args.timeout)],
         cwd=REPO_ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
     try:
+        if args.bluetooth:
+            if not wait_for(frames, is_boot_logo, timeout=args.timeout * 0.5):
+                raise SystemExit("the boot logo never appeared")
+            print("logo is up; holding it to switch Bluetooth on", flush=True)
+            # Well past the eight hundred milliseconds the interface looks for.
+            tap(events, (160, 120), hold=2.5)
+            # It saves the setting and restarts into it; the restart is what
+            # writes the filesystem, so this waits for the far side of it.
+            time.sleep(60)
+            print("held; letting it save and restart", flush=True)
+            return _carve(build, args.out)
+
         if not wait_for(frames, is_setup_dialog, timeout=args.timeout * 0.6):
             raise SystemExit("the setup dialog never appeared")
         print("dialog is up; setting the name and accepting the region", flush=True)
