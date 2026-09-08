@@ -310,9 +310,15 @@ static void ble_kick(EspBleCore *s, uint32_t value)
     uint32_t ts_hs = (uint32_t)(e[2] | (e[3] << 8)) | ((uint32_t)((e[4] | (e[5] << 8)) & 0xFFF) << 16);
     uint32_t hus = (e[6] | (e[7] << 8)) & 0xFFFF;
     int64_t start = (int64_t)ts_hs * HUS_PER_HS + hus;
-    qemu_log_mask(LOG_UNIMP, "esp-ble-core: kick entry %u at 0x%08llx: start %lld hus, now %lld hus, word0 0x%04x%c",
-                  idx, (unsigned long long)entry, (long long)start, (long long)ble_now_hus(),
-                  e[0] | (e[1] << 8), 10);
+    /* The whole entry: four bytes of it are understood (a word of flags
+     * and the start time), and the rest is unread. Whatever tells the
+     * baseband which packet to send is in there. */
+    qemu_log_mask(LOG_UNIMP, "esp-ble-core: kick entry %u at 0x%08llx: start %lld hus, now %lld hus, entry "
+                  "%02x%02x %02x%02x %02x%02x %02x%02x %02x%02x %02x%02x %02x%02x %02x%02x%c",
+                  idx, (unsigned long long)entry, (long long)start,
+                  (long long)ble_now_hus(),
+                  e[0], e[1], e[2], e[3], e[4], e[5], e[6], e[7],
+                  e[8], e[9], e[10], e[11], e[12], e[13], e[14], e[15], 10);
 
     unsigned i = s->n_events;
     while (i > 0 && s->events[i - 1].start_hus > start) {
