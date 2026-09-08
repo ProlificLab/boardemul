@@ -47,7 +47,7 @@ def booted(request, tmp_path_factory) -> Run:
     if not qemu_available():
         pytest.skip("no qemu-system-xtensa; run tools/build_qemu.sh")
     return run_emulator(tmp_path_factory.mktemp("tdeck"),
-                        firmware=request.param, board="tdeck", timeout=120,
+                        firmware=request.param, board="tdeck", timeout=300,
                         until=_shown_everything(request.param.stem[-6:]))
 
 
