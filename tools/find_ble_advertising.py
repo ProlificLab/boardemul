@@ -18,7 +18,10 @@ import sys
 import time
 from pathlib import Path
 
-SRAM_BASE, SRAM_SIZE = 0x3FC80000, 0x70000
+# The exchange memory the controller maps can land anywhere in
+# 0x3fc00000..0x3fd00000, so this covers the top of that rather than
+# stopping at the end of the SRAM the machine advertises.
+SRAM_BASE, SRAM_SIZE = 0x3FC80000, 0x80000
 
 
 def qmp(sock_path):

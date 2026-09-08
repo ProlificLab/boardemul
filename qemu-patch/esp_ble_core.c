@@ -424,6 +424,18 @@ static void ble_write(void *opaque, hwaddr offset, uint64_t value, unsigned size
 {
     EspBleCore *s = opaque;
     hwaddr aligned = offset & ~3;
+
+    /* Which exchange-memory pages the controller maps, and to where. The ROM
+     * turns an offset into an address by reading one of these and checking its
+     * top bits against the page it asked for; a page it never mapped fails
+     * that check, and whatever it was staging goes nowhere useful. */
+    if (aligned >= R_EM_BASE0 && aligned < R_EM_BASE0 + 64 * 4) {
+        qemu_log_mask(LOG_UNIMP, "esp-ble-core: em base %u = 0x%08x "
+                      "(page 0x%04x, ram 0x%08x)%c",
+                      (unsigned)((aligned - R_EM_BASE0) / 4), (uint32_t)value,
+                      (uint32_t)(((value >> 18) & 0x3FFF) << 2),
+                      0x3FC00000u | (uint32_t)((value & 0x3FFFF) << 2), 10);
+    }
     uint32_t word = (uint32_t)value;
 
     if (size < 4) {

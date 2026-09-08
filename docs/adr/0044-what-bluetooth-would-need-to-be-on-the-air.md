@@ -64,6 +64,38 @@ controller schedules the events and never assembles a packet for them.
    fetches it; that step is not modelled, and it is where to look next --
    before, not after, any medium is built for Bluetooth to talk across.
 
+## How far that was chased
+
+Far enough to name the step rather than the area.
+
+The ROM function that stages advertising data is `r_lld_adv_adv_data_set`
+(stub 0x40003fb4, code 0x40016954), and it **runs**: filtered tracing shows the
+blocks past its early-out and the store itself translated, so it is not bailing
+out.
+
+It finds where to write by calling `r_emi_get_mem_addr_by_offset` (0x4000a360)
+with an exchange-memory offset. That translation is now decoded: the page is
+`offset >> 10`, the register serving it comes from a ROM table at 0x3ff1f526,
+and **the register itself is at 0x60031204 + index * 4** -- the block this
+project already answers. The ROM then checks `(reg >> 18) << 2` against the
+page it asked for, which is the readback assert ADR 0023 met from the other
+side, and computes `0x3fc00000 | ((reg & 0x3ffff) << 2)` plus the offset within
+the page.
+
+Logging those mappings shows the controller making about forty-eight hundred of
+them in a run, and they are sane: the exchange table is at 0x3fcca548, and the
+page holding the advertising offset maps to 0x3fccae38, where a descriptor is
+duly written. Twenty-five pages are mapped with a zero address, which resolves
+to 0x3fc00000 and is worth doubting later.
+
+**What never appears is the payload.** Not at the descriptor's address, not
+where the descriptor appears to point, not anywhere in the whole mapped range.
+The advertising bytes exist once, on the host's heap, and the controller writes
+structures about them without ever writing them. So the missing step is not
+"which function stages it" -- that function runs -- but what copies the bytes,
+and the likeliest answer is the part that would move them on the controller's
+behalf, which this project does not model.
+
 ## Consequences
 
 **Good**
