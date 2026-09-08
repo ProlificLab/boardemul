@@ -46,3 +46,4 @@ superseded ADR is marked superseded and points forward.
 | [0038](0038-how-far-a-packet-carries.md) | How far a packet carries | Accepted |
 | [0039](0039-the-place-between-the-boards.md) | The place between the boards | Accepted |
 | [0040](0040-stop-a-run-when-the-evidence-is-in.md) | Stop a run when the evidence is in | Accepted |
+| [0041](0041-one-translation-thread.md) | One translation thread | Accepted |

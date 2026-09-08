@@ -262,10 +262,16 @@ def main(argv: list[str] | None = None) -> int:
     # the board is built around, not the peripherals we model in Python.
     for spec in hw_module.SOC_DEVICES:
         cmd += ["-device", spec]
+    # One translation thread, always. Two of them race inside QEMU under load
+    # and take the whole emulator down with a segmentation fault -- rare, never
+    # reproducible on an idle machine, and it cost a test run to catch. It is
+    # also no slower here and sometimes much faster, because the peripherals
+    # this board models are serialised through one bus anyway (ADR 0041).
+    cmd += ["-accel", "tcg,thread=single"]
     if args.icount:
-        # 2^2 ns per instruction, 250 MIPS nominal, a single TCG thread as
-        # instruction counting requires; the vCPU sleeps when the guest idles.
-        cmd += ["-icount", "shift=2,sleep=on", "-accel", "tcg,thread=single"]
+        # 2^2 ns per instruction, 250 MIPS nominal; the vCPU sleeps when the
+        # guest idles. Instruction counting requires the single thread above.
+        cmd += ["-icount", "shift=2,sleep=on"]
 
     server: BusServer | None = None
     tail = None

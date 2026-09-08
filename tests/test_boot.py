@@ -36,21 +36,24 @@ LAUNCHER_FRAMES = 3         # clear, splash, then the menu
 
 
 @pytest.fixture(scope="module")
-def booted(tmp_path_factory) -> Run:
-    if not qemu_available():
-        pytest.skip("no qemu-system-xtensa; run tools/build_qemu.sh")
-    return run_emulator(tmp_path_factory.mktemp("boot"),
-                        wait_frames=LAUNCHER_FRAMES,
-                        until=lambda uart, frames: ("ictype:[328]" in uart
-                                                    and len(frames) >= LAUNCHER_FRAMES))
-
-
-@pytest.fixture(scope="module")
 def tapped(tmp_path_factory) -> Run:
     if not qemu_available():
         pytest.skip("no qemu-system-xtensa; run tools/build_qemu.sh")
     return run_emulator(tmp_path_factory.mktemp("tap"), tap=SETTING_ICON,
                         wait_frames=LAUNCHER_FRAMES)
+
+
+@pytest.fixture(scope="module")
+def booted(tapped: Run) -> Run:
+    """The same boot as the tapped one.
+
+    Everything this module asks of a plain boot is true of the run that also
+    taps: it waits for the launcher before touching anything, so the banner,
+    the memory, the touch controller and the launcher itself are all in it.
+    Booting a second time to look at them again costs a boot and proves
+    nothing further.
+    """
+    return tapped
 
 
 # -- boot -------------------------------------------------------------------
