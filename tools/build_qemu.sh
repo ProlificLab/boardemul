@@ -63,9 +63,12 @@ fi
 # The carried patches: the only places we change QEMU's own logic rather than
 # adding to it. Each is reported upstream and recorded in an ADR; when one
 # lands, delete the patch and supersede its ADR rather than carrying it on.
-#   gdma-out-eof-desc.patch  ADR 0017  https://github.com/espressif/qemu/issues/168
-#   spi1-dummy-lanes.patch    ADR 0022  https://github.com/espressif/qemu/issues/169
-#   system-bt-lpck-regs.patch ADR 0023  https://github.com/espressif/qemu/issues/171
+#   gdma-out-eof-desc.patch  ADR 0017  issue 168, offered as PR 176
+#   spi1-dummy-lanes.patch    ADR 0022  issue 169, offered as PR 177
+#   system-bt-lpck-regs.patch ADR 0023  issue 171, offered as PR 178
+# Each PR is the same diff as the patch beside it, against esp-develop, from
+# github.com/ProlificLab/qemu. When one is merged and the pinned tag moves past
+# it, delete the patch and supersede its ADR rather than carrying it on.
 # Applied from patch files rather than by hand so that they are declared,
 # reviewed like anything else, and fail loudly if a tag bump moves the code.
 for name in gdma-out-eof-desc.patch spi1-dummy-lanes.patch system-bt-lpck-regs.patch; do
