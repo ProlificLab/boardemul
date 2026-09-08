@@ -59,8 +59,20 @@ and nothing on the Python side can resolve an offset without them.
 **Costs, accepted**
 
 - **This is advertising, not Bluetooth.** No scanning, no connections, no
-  channel hopping, no timing beyond the event that triggers a send. A second
-  emulated board cannot yet answer one.
+  channel hopping, no timing beyond the event that triggers a send.
+
+- **And two boards cannot see each other over it, for a reason no amount of
+  modelling fixes.** Of the firmware here, only Meshtastic has a Bluetooth
+  stack at all -- the vendor builds carry none. Meshtastic is a peripheral: it
+  advertises so that a phone may connect. Traced against the ROM's own scanning
+  entry points, with advertising demonstrably running in the same run,
+  `r_llm_scan_start`, `r_lld_scan_start` and the scan receive handler are never
+  reached, not once. Neither board listens, so neither can hear the other.
+
+  What this firmware does exercise is a *central connecting to it*. That, not a
+  second board, is the peer it was built for, and reaching it means a receive
+  path and connection handling -- a much larger piece of work than the send
+  side, and worth doing only if that is the goal.
 - The device now does network I/O from a device model. It is the same choice
   the bus bridge and the GPIO block already make, and it is confined to a
   directory a scenario has to ask for.
