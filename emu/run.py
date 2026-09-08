@@ -239,6 +239,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--obstruction", type=float, default=0.0, metavar="DB",
                     help="anything else in the way, in dB, stated rather than "
                          "drawn at random so a run repeats (ADR 0039)")
+    ap.add_argument("--ble-air", default=None, metavar="DIR",
+                    help="share a directory so this board's Bluetooth can be "
+                         "heard by others; a different band from --air, so a "
+                         "different directory (ADR 0045)")
     ap.add_argument("--icount", action="store_true",
                     help="drive the guest clock from executed instructions (ADR 0027): "
                          "exact timer delivery and deterministic runs; the Bluetooth "
@@ -301,7 +305,8 @@ def main(argv: list[str] | None = None) -> int:
                              f"use one of {', '.join(lora.ENVIRONMENTS)} "
                              f"or an exponent")
         try:
-            hw = hw_module.build(args.outdir, air=args.air, position=where,
+            hw = hw_module.build(args.outdir, air=args.air, ble_air=args.ble_air,
+                                 position=where,
                                  antenna_dbi=args.antenna, exponent=exponent,
                                  obstruction_db=args.obstruction)
         except TypeError:

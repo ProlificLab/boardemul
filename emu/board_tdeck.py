@@ -210,7 +210,7 @@ class PhyGates(TraceRegion):
             v |= self.GATES.get(self.base + offset, 0)
         return v
 
-def build(outdir: Path, air: str | None = None,
+def build(outdir: Path, air: str | None = None, ble_air: str | None = None,
           position: tuple[float, float] = (0.0, 0.0),
           antenna_dbi: float = 0.0, exponent: float = 2.0,
           obstruction_db: float = 0.0) -> Board:
@@ -267,7 +267,10 @@ def build(outdir: Path, air: str | None = None,
         f"periph={GDMA_PERIPH_I2S1}",
         # The Bluetooth link-layer core's page, on QEMU's own clock: its timers
         # must interrupt within the half-slot they were set for (ADR 0025).
-        f"esp-ble-core,base=0x{BLE_CORE_BASE:x},irq={IRQ_RWBLE}",
+        # Bluetooth's own air, when a scenario gives it one: a different band
+        # from the radio's, so a different directory (ADR 0045).
+        f"esp-ble-core,base=0x{BLE_CORE_BASE:x},irq={IRQ_RWBLE}"
+        + (f",air={ble_air},airname={outdir.name}" if ble_air else ""),
     ]
     board = Board(regions=regions, gpio=gpio, spi=spi, i2c0=i2c0, i2c1=i2c1,
                   panel=panel, devices=devices)

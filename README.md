@@ -106,6 +106,13 @@ dialog gives it: `tools/make_configured_fs.py` does that by driving the dialog
 and keeps the filesystem it produces in `build/`, so the two-node mesh in
 `tests/test_mesh.py` rebuilds from the vendor image and nothing else.
 
+Bluetooth advertises on an air of its own with `--ble-air DIR`, built the same
+way (ADR 0045). `tools/make_configured_fs.py --bluetooth` captures a filesystem
+with it switched on, and what goes out is what the controller staged: the
+payload is not copied anywhere, so the core resolves the record's offsets
+through the controller's own mappings and sends what they point at
+(ADRs 0044-0045). It advertises; it does not scan or connect.
+
 ## Tests
 
 ```

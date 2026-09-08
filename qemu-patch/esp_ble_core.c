@@ -76,6 +76,11 @@
 #include "qapi/error.h"
 #include "qom/object.h"
 
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <dirent.h>
+
 #define TYPE_ESP_BLE_CORE "esp-ble-core"
 OBJECT_DECLARE_SIMPLE_TYPE(EspBleCore, ESP_BLE_CORE)
 
@@ -93,6 +98,9 @@ OBJECT_DECLARE_SIMPLE_TYPE(EspBleCore, ESP_BLE_CORE)
 #define R_TGT_HUS_FINE  0x0F0
 #define R_ET_KICK       0x100
 #define R_EM_BASE0      0x204
+/* Where the advertising set's record sits in exchange memory. Read off a
+ * running controller (ADR 0044), not from a document. */
+#define ADV_RECORD_OFFSET 0x1400
 #define R_INTFIFO       0x2D8
 
 #define CNTL_RESET      (1u << 31)
@@ -129,6 +137,10 @@ struct EspBleCore {
     uint64_t base;
     int32_t priority;
     int32_t irq_source;
+    char *air;                  /* directory shared with other radios */
+    char *air_name;             /* what this one is called in it */
+    int air_fd;
+    uint64_t sent;
 
     uint32_t regs[REG_COUNT];   /* what the guest wrote, word by word */
     uint32_t raw;               /* pending status bits */
@@ -332,6 +344,181 @@ static void ble_peek(EspBleCore *s, unsigned idx)
     }
 }
 
+/* The air, as ADR 0036 defines it: a directory in which every radio leaves a
+ * file naming the port it listens on, and transmitting means handing the frame
+ * to everyone else listed. Bluetooth gets a directory of its own because it is
+ * a different band -- a LoRa radio cannot hear these and should not (ADR 0045).
+ *
+ * It is spoken here in C rather than through the Python side, because the only
+ * thing that knows a packet exists is this device: it holds the base registers
+ * that say where the controller mapped it.
+ */
+static void ble_air_join(EspBleCore *s)
+{
+    struct sockaddr_in me = { .sin_family = AF_INET };
+    socklen_t len = sizeof(me);
+    char path[PATH_MAX], port[16];
+    int fd;
+
+    if (!s->air || !s->air[0]) {
+        return;
+    }
+    fd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (fd < 0) {
+        warn_report("esp-ble-core: no socket for the air: %s", strerror(errno));
+        return;
+    }
+    me.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    me.sin_port = 0;
+    if (bind(fd, (struct sockaddr *)&me, sizeof(me)) < 0 ||
+        getsockname(fd, (struct sockaddr *)&me, &len) < 0) {
+        warn_report("esp-ble-core: could not join the air: %s", strerror(errno));
+        close(fd);
+        return;
+    }
+    s->air_fd = fd;
+
+    snprintf(path, sizeof(path), "%s/%s.air", s->air,
+             s->air_name && s->air_name[0] ? s->air_name : "ble");
+    snprintf(port, sizeof(port), "%u", ntohs(me.sin_port));
+    FILE *f = fopen(path, "w");
+    if (f) {
+        fputs(port, f);
+        fclose(f);
+        info_report("esp-ble-core: on the air as %s on port %s", path, port);
+    }
+}
+
+static void ble_air_send(EspBleCore *s, const uint8_t *frame, size_t length)
+{
+    struct dirent *entry;
+    DIR *dir;
+
+    if (s->air_fd <= 0 || !length) {
+        return;
+    }
+    dir = opendir(s->air);
+    if (!dir) {
+        return;
+    }
+    while ((entry = readdir(dir))) {
+        char path[PATH_MAX], own[PATH_MAX];
+        struct sockaddr_in to = { .sin_family = AF_INET };
+        unsigned port = 0;
+        FILE *f;
+
+        const char *dot = strrchr(entry->d_name, '.');
+        if (!dot || strcmp(dot, ".air")) {
+            continue;
+        }
+        snprintf(own, sizeof(own), "%s.air",
+                 s->air_name && s->air_name[0] ? s->air_name : "ble");
+        if (!strcmp(entry->d_name, own)) {
+            continue;                   /* a radio does not hear itself */
+        }
+        snprintf(path, sizeof(path), "%s/%s", s->air, entry->d_name);
+        f = fopen(path, "r");
+        if (!f) {
+            continue;
+        }
+        if (fscanf(f, "%u", &port) == 1 && port) {
+            to.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+            to.sin_port = htons((uint16_t)port);
+            if (sendto(s->air_fd, frame, length, 0,
+                       (struct sockaddr *)&to, sizeof(to)) < 0) {
+                /* A radio that has gone leaves its file behind for a moment. */
+            }
+        }
+        fclose(f);
+    }
+    closedir(dir);
+    s->sent++;
+}
+
+/* Collect what the controller staged for this event.
+ *
+ * The advertising record holds offsets, and the ones that matter point at
+ * advertising data: a run of structures, each a length, a type, and that many
+ * bytes. Walking them is how the length is known without a constant, and how
+ * a run of zeroes is told from a payload.
+ */
+static size_t ble_collect_payload(EspBleCore *s, uint8_t *out, size_t room)
+{
+    uint8_t record[32];
+    size_t filled = 0;
+    hwaddr at = ble_em_addr(s, ADV_RECORD_OFFSET);
+
+    if (!at) {
+        return 0;
+    }
+    address_space_read(&address_space_memory, at, MEMTXATTRS_UNSPECIFIED,
+                       record, sizeof(record));
+
+    uint32_t taken[16];
+    unsigned n_taken = 0;
+
+    for (int half = 0; half < 16 && filled < room; half++) {
+        uint32_t offset = record[half * 2] | (record[half * 2 + 1] << 8);
+        uint8_t block[32];
+        hwaddr to;
+        bool already = false;
+
+        if (offset < 0x400 || offset >= 0x8000) {
+            continue;
+        }
+        /* The record holds its own offset among the others; following that
+         * puts the record itself on the air dressed as a payload. */
+        if (offset == ADV_RECORD_OFFSET) {
+            continue;
+        }
+        for (unsigned i = 0; i < n_taken; i++) {
+            already |= taken[i] == offset;
+        }
+        if (already) {
+            continue;                   /* the same block, referenced twice */
+        }
+        to = ble_em_addr(s, offset);
+        if (!to) {
+            continue;
+        }
+        address_space_read(&address_space_memory, to, MEMTXATTRS_UNSPECIFIED,
+                           block, sizeof(block));
+
+        /* Walk the structures. A length of zero ends the run, and anything
+         * that does not fit is not advertising data at all. */
+        size_t walked = 0;
+        while (walked < sizeof(block)) {
+            uint8_t length = block[walked];
+            if (length == 0 || walked + 1 + length > sizeof(block)) {
+                break;
+            }
+            walked += 1 + length;
+        }
+        if (walked == 0 || walked > room - filled) {
+            continue;
+        }
+        memcpy(out + filled, block, walked);
+        filled += walked;
+        taken[n_taken++] = offset;
+    }
+    return filled;
+}
+
+static void ble_transmit(EspBleCore *s)
+{
+    uint8_t payload[64];
+    size_t length;
+
+    if (s->air_fd <= 0) {
+        return;
+    }
+    length = ble_collect_payload(s, payload, sizeof(payload));
+    if (!length) {
+        return;
+    }
+    ble_air_send(s, payload, length);
+}
+
 static void ble_arm_event_timer(EspBleCore *s)
 {
     if (!s->n_events) {
@@ -396,6 +583,7 @@ static void ble_kick(EspBleCore *s, uint32_t value)
                   e[8], e[9], e[10], e[11], e[12], e[13], e[14], e[15], 10);
 
     ble_peek(s, idx);
+    ble_transmit(s);
 
     unsigned i = s->n_events;
     while (i > 0 && s->events[i - 1].start_hus > start) {
@@ -552,6 +740,7 @@ static void ble_realize(DeviceState *dev, Error **errp)
     }
     s->timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, ble_expire, s);
     s->event_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, ble_event_done, s);
+    ble_air_join(s);
 
     memory_region_init_io(&s->iomem, OBJECT(s), &ble_ops, s, TYPE_ESP_BLE_CORE, PAGE_SIZE);
     memory_region_add_subregion_overlap(get_system_memory(), s->base, &s->iomem, s->priority);
@@ -562,6 +751,8 @@ static Property ble_props[] = {
     DEFINE_PROP_UINT64("base", EspBleCore, base, 0x60031000),
     DEFINE_PROP_INT32("priority", EspBleCore, priority, 100),
     DEFINE_PROP_INT32("irq", EspBleCore, irq_source, 8),
+    DEFINE_PROP_STRING("air", EspBleCore, air),
+    DEFINE_PROP_STRING("airname", EspBleCore, air_name),
     DEFINE_PROP_END_OF_LIST(),
 };
 

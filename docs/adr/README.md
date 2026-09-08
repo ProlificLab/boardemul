@@ -50,3 +50,4 @@ superseded ADR is marked superseded and points forward.
 | [0042](0042-somewhere-to-put-an-attempt.md) | Somewhere to put an attempt | Accepted |
 | [0043](0043-the-other-board-gets-the-same-parts.md) | The other board gets the same parts | Accepted |
 | [0044](0044-what-bluetooth-would-need-to-be-on-the-air.md) | What Bluetooth would need to be on the air | Accepted |
+| [0045](0045-bluetooth-gets-an-air-of-its-own.md) | Bluetooth gets an air of its own | Accepted |
