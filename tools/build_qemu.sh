@@ -37,6 +37,50 @@ fi
 # ADR 0005: our C sources live in this repo and are installed into the QEMU tree
 # here, so that tree is never edited by hand and `git status` inside it shows
 # only our added files plus the build lines that name them.
+# Experiments: candidate changes that are not fixes yet. Never applied unless
+# named, one per comma, and the build says which are on. See
+# qemu-patch/experiments/README.md -- the point of the directory is that a
+# negative result is recorded instead of reverted into nothing.
+EXPERIMENTS="${BOARDEMUL_QEMU_EXPERIMENTS:-}"
+
+# Anything applied last time and not asked for now comes back out, so that a
+# build is what it says it is. Leaving one in would be exactly the undeclared
+# drift ADR 0001 exists to prevent, and it would be invisible.
+for PATCH in "${REPO_ROOT}"/qemu-patch/experiments/*.patch; do
+    [[ -f "${PATCH}" ]] || continue
+    name="$(basename "${PATCH}" .patch)"
+    if [[ ",${EXPERIMENTS}," == *",${name},"* ]]; then
+        continue
+    fi
+    if git -C "${SRC}" apply --reverse --check "${PATCH}" 2>/dev/null; then
+        git -C "${SRC}" apply --reverse "${PATCH}"
+        echo "==> reverted experiment ${name} (not asked for)"
+    fi
+done
+
+if [[ -n "${EXPERIMENTS}" ]]; then
+    IFS=',' read -ra WANTED <<< "${EXPERIMENTS}"
+    for name in "${WANTED[@]}"; do
+        PATCH="${REPO_ROOT}/qemu-patch/experiments/${name}.patch"
+        if [[ ! -f "${PATCH}" ]]; then
+            echo "ERROR: no experiment called '${name}'." >&2
+            echo "       Available:" >&2
+            ls -1 "${REPO_ROOT}/qemu-patch/experiments/"*.patch 2>/dev/null |
+                sed 's#.*/##; s#\.patch$##; s#^#         #' >&2
+            exit 1
+        fi
+        if git -C "${SRC}" apply --reverse --check "${PATCH}" 2>/dev/null; then
+            echo "==> EXPERIMENT ${name} already applied"
+        elif git -C "${SRC}" apply --check "${PATCH}" 2>/dev/null; then
+            git -C "${SRC}" apply "${PATCH}"
+            echo "==> EXPERIMENT ${name} applied -- this build is not a plain one"
+        else
+            echo "ERROR: experiment ${name} no longer applies to ${QEMU_TAG}." >&2
+            exit 1
+        fi
+    done
+fi
+
 echo "==> installing BoardEmul sources"
 cp "${REPO_ROOT}/qemu-patch/esp_board_glue.h" "${SRC}/include/hw/misc/"
 MESON_FILE="${SRC}/hw/misc/meson.build"

@@ -1,0 +1,26 @@
+diff --git a/hw/misc/esp32s3_cache.c b/hw/misc/esp32s3_cache.c
+index ef75966..c320c7b 100644
+--- a/hw/misc/esp32s3_cache.c
++++ b/hw/misc/esp32s3_cache.c
+@@ -78,6 +78,10 @@ static void esp32s3_mmu_invalidate_page(ESP32S3CacheState *s, hwaddr virt_addr,
+         for (int i = 0; i < ESP32S3_PAGE_SIZE / sizeof(invalid_value); i++) {
+             cache_word_data[i] = invalid_value;
+         }
++        /* Written straight through the region pointer, so QEMU has not
++         * seen it. Say so, or code already translated from this page stays
++         * live over contents that no longer exist. */
++        memory_region_set_dirty(&s->flash_mr, phys_addr, ESP32S3_PAGE_SIZE);
+     }
+ }
+ 
+@@ -111,6 +115,10 @@ static inline void esp32s3_write_mmu_value(ESP32S3CacheState *s, hwaddr reg_addr
+                 if (xts_aes_class->is_flash_enc_enabled(s->xts_aes)) {
+                     xts_aes_class->decrypt(s->xts_aes, physical_address, cache_data, ESP32S3_PAGE_SIZE);
+                 }
++                /* Same again for the page just read in: a write to guest
++                 * memory that did not go through the CPU. */
++                memory_region_set_dirty(&s->flash_mr, physical_address,
++                                        ESP32S3_PAGE_SIZE);
+             }
+         }
+         s->mmu[index].val = e.val;

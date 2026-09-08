@@ -47,3 +47,4 @@ superseded ADR is marked superseded and points forward.
 | [0039](0039-the-place-between-the-boards.md) | The place between the boards | Accepted |
 | [0040](0040-stop-a-run-when-the-evidence-is-in.md) | Stop a run when the evidence is in | Accepted |
 | [0041](0041-one-translation-thread.md) | One translation thread | Accepted |
+| [0042](0042-somewhere-to-put-an-attempt.md) | Somewhere to put an attempt | Accepted |

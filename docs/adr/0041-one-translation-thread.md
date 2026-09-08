@@ -79,7 +79,9 @@ straight through the region pointer, both when it fills a page from flash and
 when it stamps a discarded one -- without telling QEMU the memory changed,
 which is a real hazard; declaring those writes with `memory_region_set_dirty`
 changed the crash rate not at all (three faults in fifty-six against roughly
-the same before), so that is not this.
+the same before), so that is not this. That attempt is kept rather than
+discarded, in `qemu-patch/experiments/` (ADR 0042), so the same afternoon is
+not spent on it twice.
 
 What is left is the address-translation path itself, under two threads. That
 is QEMU's own machinery rather than anything this project adds to it, and it is
