@@ -110,6 +110,13 @@ OBJECT_DECLARE_SIMPLE_TYPE(EspBleCore, ESP_BLE_CORE)
 #define RX_ERROR_MASK     0x403D     /* +2: clear means it is good */
 #define PDU_ADV_IND       0x00       /* +4, low four bits */
 #define PDU_CONNECT_IND   0x05
+/* The handler reads a halfword here and treats it as the exchange-memory
+ * offset of the packet's own bytes, then copies this many of them
+ * (r_lld_adv_pkt_rx_connect_ind). Thirty-four is a connection request:
+ * six bytes of initiator address, six of advertiser, and twenty-two of
+ * connection data. */
+#define RX_DESC_PAYLOAD   18
+#define CONNECT_IND_SIZE  34
 /* Where the link layer keeps the index of the descriptor it reads next.
  * A ROM data address, stable for this ROM, and the only way to know
  * which of the ten the ROM will look at. */
@@ -594,12 +601,29 @@ static void ble_deliver(EspBleCore *s, const uint8_t *frame, size_t length)
                         &status, sizeof(status));
     address_space_write(&address_space_memory, desc + 4, MEMTXATTRS_UNSPECIFIED,
                         &kind, sizeof(kind));
+    /* Put the packet where the handler will look for it: the descriptor
+     * already names a buffer, and that is the controller's own choice of
+     * where its received bytes live. */
+    uint16_t where = 0;
+    address_space_read(&address_space_memory, desc + RX_DESC_PAYLOAD,
+                       MEMTXATTRS_UNSPECIFIED, &where, sizeof(where));
+    hwaddr into = where ? ble_em_addr(s, where) : 0;
+    if (into && length > 1) {
+        size_t bytes = length - 1;
+        if (bytes > CONNECT_IND_SIZE) {
+            bytes = CONNECT_IND_SIZE;
+        }
+        address_space_write(&address_space_memory, into, MEMTXATTRS_UNSPECIFIED,
+                            frame + 1, bytes);
+    }
+
     address_space_write(&address_space_memory, desc + 0, MEMTXATTRS_UNSPECIFIED,
                         &done, sizeof(done));
     s->received++;
     qemu_log_mask(LOG_UNIMP, "esp-ble-core: delivered a type %u packet of "
-                  "%u byte(s) into descriptor %u at 0x%08llx%c", kind,
-                  (unsigned)length - 1, index, (unsigned long long)desc, 10);
+                  "%u byte(s) into descriptor %u at 0x%08llx, payload offset "
+                  "0x%04x -> 0x%08llx%c", kind, (unsigned)length - 1, index,
+                  (unsigned long long)desc, where, (unsigned long long)into, 10);
 }
 
 static void ble_arm_event_timer(EspBleCore *s)

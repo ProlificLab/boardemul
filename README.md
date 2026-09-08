@@ -111,7 +111,11 @@ way (ADR 0045). `tools/make_configured_fs.py --bluetooth` captures a filesystem
 with it switched on, and what goes out is what the controller staged: the
 payload is not copied anywhere, so the core resolves the record's offsets
 through the controller's own mappings and sends what they point at
-(ADRs 0044-0045). It advertises; it does not scan or connect.
+(ADRs 0044-0045). It advertises, and it can be connected to: a central on that air sends a
+connection request, the firmware's own link layer validates it and starts
+scheduling connection events (ADRs 0046-0047). Meshtastic never scans, so
+two boards cannot find each other over Bluetooth; a central connecting in is
+the peer it was built for. The link comes up and carries nothing yet.
 
 ## Tests
 

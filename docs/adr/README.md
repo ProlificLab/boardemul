@@ -52,3 +52,4 @@ superseded ADR is marked superseded and points forward.
 | [0044](0044-what-bluetooth-would-need-to-be-on-the-air.md) | What Bluetooth would need to be on the air | Accepted |
 | [0045](0045-bluetooth-gets-an-air-of-its-own.md) | Bluetooth gets an air of its own | Accepted |
 | [0046](0046-the-controller-can-be-spoken-to.md) | The controller can be spoken to | Accepted |
+| [0047](0047-a-central-connects.md) | A central connects | Accepted |
