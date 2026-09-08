@@ -82,8 +82,10 @@ changed the crash rate not at all (three faults in fifty-six against roughly
 the same before), so that is not this.
 
 What is left is the address-translation path itself, under two threads. That
-is QEMU's own machinery rather than anything this project adds to it, and the
-next step is upstream with the reproduction above.
+is QEMU's own machinery rather than anything this project adds to it, and it is
+reported upstream as <https://github.com/espressif/qemu/issues/175>, with the
+reproduction above, the captures, and an explicit note that our boot uses
+out-of-tree devices so they cannot be fully ruled out.
 
 ## Alternatives rejected
 
