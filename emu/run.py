@@ -57,6 +57,10 @@ class RunResult:
     rtc_base: str = RTC_BASE
     strap_mode: int = STRAP_MODE
     notes: list[str] = field(default_factory=list)
+    # What the radio did, when the board has one. A mesh is two boards
+    # agreeing about this, so it has to be readable after the fact
+    # rather than only visible in a debug log.
+    radio: dict = field(default_factory=dict)
 
 
 def find_qemu(explicit: str | None = None) -> Path:
@@ -331,6 +335,18 @@ def main(argv: list[str] | None = None) -> int:
         if hw:
             hw.stop()
 
+    radio_stats: dict = {}
+    if hw is not None:
+        for device in getattr(hw.spi, "devices", {}).values():
+            if hasattr(device, "sent") and hasattr(device, "heard"):
+                radio_stats = {
+                    "sent": device.sent,
+                    "heard": device.heard,
+                    "collisions": getattr(device, "collisions", 0),
+                    "out_of_range": getattr(device, "out_of_range", 0),
+                    "wrong_frequency": getattr(device, "wrong_frequency", 0),
+                }
+
     result = RunResult(
         qemu_version=qemu_version(qemu),
         argv=cmd,
@@ -346,6 +362,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     if args.trace:
         result.notes.append("timing is meaningless in a traced run")
+    result.radio = radio_stats
+
     manifest = args.outdir / f"{tag}.manifest.json"
     manifest.write_text(json.dumps(asdict(result), indent=2))
 

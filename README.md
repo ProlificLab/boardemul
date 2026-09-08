@@ -99,6 +99,13 @@ orientation and segment handling are checked against synthetic wire traffic
 (`tests/test_lcd.py`), and what a frame even means on a display with no refresh
 command is ADR 0014.
 
+Two boards can be put on the same air with `--air DIR`, and `--at X,Y`,
+`--environment` and `--antenna` say where they stand and what is between them
+(ADRs 0036-0039). A node only transmits once it has a region, which the setup
+dialog gives it: `tools/make_configured_fs.py` does that by driving the dialog
+and keeps the filesystem it produces in `build/`, so the two-node mesh in
+`tests/test_mesh.py` rebuilds from the vendor image and nothing else.
+
 ## Tests
 
 ```
