@@ -97,7 +97,7 @@ def typed(tmp_path_factory) -> tuple[Run, dict]:
             outdir, lambda f: count_pixels(f, NOTICE, RED) > 200, timeout=30)
 
     run = run_emulator(tmp_path_factory.mktemp("touch"), firmware=FIRMWARE_MESHTASTIC,
-                       board="tdeck", timeout=460, icount=True,
+                       board="tdeck", timeout=460,
                        overlays=(f"0xc90000={MESHTASTIC_LITTLEFS}",),
                        extra=("--psram-octal",), script=drive)
     return run, seen

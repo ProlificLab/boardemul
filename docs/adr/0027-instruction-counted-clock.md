@@ -22,17 +22,29 @@ this host.
 
 It is not free for everything: under the counted clock the vendor firmware's
 250620 build did not print its battery-read line within the slow test's
-budget, where the wall-clock run does. Whether that is only the slower guest
-time or a timing the build depends on is not yet measured.
+budget, where the wall-clock run does.
+
+*Resolved 2026-09-05.* That had nothing to do with the clock. The build was
+blocked in its audio path, which never drained because the I2S transmit side
+stopped following its descriptor ring; it printed the line under either clock
+once that was fixed. The suspicion recorded here was wrong, and cost time
+later by making the clock look guilty.
 
 ## Decision
 
 1. **`run.py --icount`** adds `-icount shift=2,sleep=on -accel
    tcg,thread=single`. Off by default.
 
-2. **The Meshtastic slow tests run with it**, and the test support takes an
-   `icount` flag. The vendor T-Deck tests keep the wall clock until the
-   250620 observation is understood.
+2. **It is for firmware whose behaviour depends on exact timing**, which
+   means the Bluetooth link layer, and not for a firmware as a whole. The test
+   support takes an `icount` flag and no slow test currently sets it.
+
+   *Amended 2026-09-08.* This first said the Meshtastic slow tests run with it,
+   which was reasoning from the firmware rather than from what the test needs:
+   none of them exercise Bluetooth. They assert on what the guest says and
+   draws, not on when, and they pass on the wall clock. The counted clock cost
+   them about seven times their runtime -- three fixtures, five hundred and
+   twenty-six seconds against eighty-four.
 
 ## Consequences
 
@@ -45,10 +57,12 @@ time or a timing the build depends on is not yet measured.
 
 - Two ways to run, and a test must say which it means.
 
-**Open, as of this record**
+**Settled since**
 
-- The 250620 vendor build's battery marker under the counted clock.
-- Whether the counted clock should be the default once that is understood.
+- The 250620 battery marker was the I2S ring, not the clock.
+- The counted clock is not the default and should not be: it costs several
+  times the runtime and buys determinism that only timing-dependent firmware
+  needs.
 
 ## Resolved — 2026-09-07
 

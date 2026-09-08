@@ -36,7 +36,7 @@ def _boot(tmp_path_factory, overlays: tuple[str, ...]) -> Run:
     if not qemu_available():
         pytest.skip("no qemu-system-xtensa; run tools/build_qemu.sh")
     return run_emulator(tmp_path_factory.mktemp("mesh"), firmware=FIRMWARE_MESHTASTIC,
-                        board="tdeck", timeout=240, overlays=overlays, icount=True,
+                        board="tdeck", timeout=240, overlays=overlays,
                         until=lambda uart, frames: ("/littlefs/prefs/" in uart
                                                     and len(frames) >= 5),
                         extra=("--psram-octal",))   # the T-Deck has 8 MB of octal PSRAM
