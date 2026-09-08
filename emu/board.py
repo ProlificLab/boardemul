@@ -22,6 +22,10 @@ from pathlib import Path
 from emu.bus import BusServer, Region
 from emu.devices.epaper import EPaperPanel
 from emu.devices.i2c_devices import CST328, TCA8418, tdeck_max_devices
+from emu import sdimage
+from emu.devices.air import AirMedium
+from emu.devices.sdcard import SdCard
+from emu.devices.sx1262 import Sx1262
 from emu.i2c_link import I2CServer
 from emu.inputs import InputTail
 from emu.peripherals.gpio import GpioClient
@@ -44,10 +48,30 @@ IRQ_I2C_EXT0 = 42
 IRQ_I2C_EXT1 = 43
 
 # Board pins, from lib/TDeckMaxBoard/src/TDeckMaxBoard.h
+# The three parts on SPI2. The display's select was already named; the other
+# two were read off the firmware rather than guessed (ADR 0043): with the GPIO
+# trace on, pin 8 is pulled low immediately before the burst of SPI that fails
+# to mount a card, and pin 9 before an earlier burst, which is the radio being
+# probed. The firmware carries drivers for both -- it has "SD Card Size" and
+# "[SX1262] Received packet!" in it -- and 9 is the T-Deck's radio select too.
+SD_CS_PIN = 8
+RADIO_CS_PIN = 9
 EPD_CS_PIN = 34
 EPD_DC_PIN = 35
 EPD_BUSY_PIN = 37
 KEYBOARD_INT_PIN = 15
+# The radio's interrupt line. Not yet observed on this board; the T-Deck's
+# number is used, and nothing depends on it until the firmware waits on it.
+RADIO_DIO1_PIN = 45
+
+# Which device each chip select carries, and which of them drive MISO back.
+# The panel says nothing; the card and the radio both answer (ADR 0032).
+SPI_DISPLAY, SPI_RADIO, SPI_SDCARD = 0, 1, 2
+MISO_MASK = (1 << SPI_RADIO) | (1 << SPI_SDCARD)
+
+# A card of the same size as the other board's, for the same reason: it is
+# built here rather than shipped (ADR 0033).
+SD_CARD_MB = 32
 TOUCH_INT_PIN = 12
 
 # The real panel raises a data-ready interrupt for every frame it captures, so a
@@ -144,12 +168,24 @@ class Board:
         return args
 
 
-def build(outdir: Path) -> Board:
+def build(outdir: Path, air: str | None = None,
+          position: tuple[float, float] = (0.0, 0.0),
+          antenna_dbi: float = 0.0, exponent: float = 2.0,
+          obstruction_db: float = 0.0) -> Board:
     outdir = Path(outdir)
     panel = EPaperPanel(outdir / "frames",
                         quarter_turns=int(os.environ.get("BOARDEMUL_ROTATE", "0")))
     gpio = GpioClient(outdir / "gpio.sock")
-    spi = SpiServer(outdir / "spi2.sock", panel)
+    # The same three-part bus as the other board (ADR 0032), and for the same
+    # reason: with one chip select forwarded the card and the radio were not
+    # unmodelled but unreachable.
+    medium = AirMedium(air, outdir.name) if air else None
+    radio = Sx1262(air=medium, position=position, antenna_dbi=antenna_dbi,
+                   exponent=exponent, obstruction_db=obstruction_db,
+                   signal=lambda level: gpio.drive(RADIO_DIO1_PIN, level))
+    sdcard = SdCard(sdimage.build(size_mb=SD_CARD_MB))
+    spi = SpiServer(outdir / "spi2.sock",
+                    {SPI_DISPLAY: panel, SPI_RADIO: radio, SPI_SDCARD: sdcard})
     i2c0 = I2CServer(outdir / "i2c0.sock", i2c_devices(), name="i2c0")
     i2c1 = I2CServer(outdir / "i2c1.sock", [], name="i2c1")
 
@@ -161,8 +197,10 @@ def build(outdir: Path) -> Board:
         f"esp-gpio-block,base=0x{GPIO_BASE:x},irq={IRQ_GPIO},"
         f"socket={gpio.socket_path}",
         f"esp-spi-master,name=spi2,base=0x{SPI2_BASE:x},"
-        # The panel drives nothing back, so duplex transfers need no round trip.
-        f"cs_gpio={EPD_CS_PIN},dc_gpio={EPD_DC_PIN},miso=off,"
+        # The panel drives nothing back; the card and radio do, so MISO is
+        # per device rather than per bus.
+        f"cs_gpio={EPD_CS_PIN},cs1_gpio={RADIO_CS_PIN},cs2_gpio={SD_CS_PIN},"
+        f"dc_gpio={EPD_DC_PIN},miso=off,miso_mask={MISO_MASK},"
         f"socket={spi.socket_path}",
         f"esp-i2c-master,name=i2c0,base=0x{I2C0_BASE:x},irq={IRQ_I2C_EXT0},"
         f"socket={i2c0.socket_path}",

@@ -20,6 +20,7 @@
 #include "hw/qdev-properties.h"
 #include "hw/qdev-core.h"
 #include "hw/irq.h"
+#include "qemu/log.h"
 #include "exec/address-spaces.h"
 #include "exec/memory.h"
 #include "qapi/error.h"
@@ -253,6 +254,31 @@ static uint64_t gpio_read(void *opaque, hwaddr offset, unsigned size)
     }
 }
 
+/* Investigation hatch, off unless BOARDEMUL_GPIO_TRACE is set: report every
+ * line the guest drives, and which way. Which pin is a board's chip select is
+ * not written down anywhere for a board nobody has documented; it is the pin
+ * that goes low around the transaction, so this is how to find it (ADR 0006).
+ */
+static void gpio_trace_levels(uint64_t before, uint64_t after)
+{
+    static int enabled = -1;
+    uint64_t changed;
+
+    if (enabled < 0) {
+        enabled = getenv("BOARDEMUL_GPIO_TRACE") != NULL;
+    }
+    if (!enabled) {
+        return;
+    }
+    changed = before ^ after;
+    for (unsigned pin = 0; pin < GPIO_PIN_COUNT; pin++) {
+        if (changed & (1ULL << pin)) {
+            qemu_log_mask(LOG_UNIMP, "GPIO pin %u -> %d%c", pin,
+                          (int)((after >> pin) & 1), 10);
+        }
+    }
+}
+
 static void gpio_write(void *opaque, hwaddr offset, uint64_t val, unsigned size)
 {
     EspGpioBlock *s = opaque;
@@ -302,6 +328,7 @@ static void gpio_write(void *opaque, hwaddr offset, uint64_t val, unsigned size)
         }
         return;
     }
+    gpio_trace_levels(before, gpio_levels(s));
     gpio_levels_changed(s, before);
     return;
 irq:

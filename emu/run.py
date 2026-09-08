@@ -340,6 +340,7 @@ def main(argv: list[str] | None = None) -> int:
         for device in getattr(hw.spi, "devices", {}).values():
             if hasattr(device, "sent") and hasattr(device, "heard"):
                 radio_stats = {
+                    "commands": getattr(device, "commands", 0),
                     "sent": device.sent,
                     "heard": device.heard,
                     "collisions": getattr(device, "collisions", 0),
