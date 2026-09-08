@@ -40,7 +40,9 @@ def booted(tmp_path_factory) -> Run:
     if not qemu_available():
         pytest.skip("no qemu-system-xtensa; run tools/build_qemu.sh")
     return run_emulator(tmp_path_factory.mktemp("boot"),
-                        wait_frames=LAUNCHER_FRAMES)
+                        wait_frames=LAUNCHER_FRAMES,
+                        until=lambda uart, frames: ("ictype:[328]" in uart
+                                                    and len(frames) >= LAUNCHER_FRAMES))
 
 
 @pytest.fixture(scope="module")

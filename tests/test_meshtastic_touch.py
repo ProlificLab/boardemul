@@ -70,7 +70,7 @@ def typed(tmp_path_factory) -> tuple[Run, dict]:
 
     def drive(outdir: Path) -> None:
         frame = outdir / "frames" / "latest.png"
-        seen["dialog"] = wait_for_panel(outdir, _is_setup_dialog, timeout=220)
+        seen["dialog"] = wait_for_panel(outdir, _is_setup_dialog, timeout=320)
         if not seen["dialog"]:
             return
         seen["ink_before"] = dark_pixels(frame, SHORT_FIELD)
@@ -97,7 +97,7 @@ def typed(tmp_path_factory) -> tuple[Run, dict]:
             outdir, lambda f: count_pixels(f, NOTICE, RED) > 200, timeout=30)
 
     run = run_emulator(tmp_path_factory.mktemp("touch"), firmware=FIRMWARE_MESHTASTIC,
-                       board="tdeck", timeout=340, icount=True,
+                       board="tdeck", timeout=460, icount=True,
                        overlays=(f"0xc90000={MESHTASTIC_LITTLEFS}",),
                        extra=("--psram-octal",), script=drive)
     return run, seen

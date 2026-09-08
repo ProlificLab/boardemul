@@ -221,6 +221,17 @@ class Run:
         return [region_digest(f) for f in self.frames]
 
 
+def _uart(outdir: Path) -> str:
+    """Whatever the guest has said so far. Read again each time: a run being
+    waited on is still writing to it."""
+    for log in outdir.glob("*.uart.log"):
+        try:
+            return log.read_text(errors="replace")
+        except OSError:
+            return ""
+    return ""
+
+
 def _frames(outdir: Path) -> list[Path]:
     return sorted((outdir / "frames").glob("frame-*.png"))
 
@@ -230,11 +241,17 @@ def run_emulator(outdir: Path, *, firmware: Path = FIRMWARE,
                  wait_frames: int = 0, timeout: int = 150,
                  settle: int = 25, overlays: tuple[str, ...] = (),
                  icount: bool = False, extra: tuple[str, ...] = (),
-                 script=None) -> Run:
+                 script=None, until=None) -> Run:
     """Boot a firmware, optionally tapping the panel once it has drawn.
 
     A board with no panel model draws nothing, so waiting on frames is opt-in:
     wait_frames=0 means run to the timeout and report what the UART said.
+
+    `until(uart, frames)` is how a test says what it came to see. A boot that
+    has shown it has nothing left to prove, and waiting out the rest of the
+    timeout is time spent watching an idle guest -- which was most of the time
+    this suite took. Without it a run still goes to its timeout, except after a
+    tap or a script, where the interaction finishing is the same statement.
     """
     proc = subprocess.Popen(
         [sys.executable, "emu/run.py", str(firmware), "--bus", "--board", board,
@@ -271,7 +288,18 @@ def run_emulator(outdir: Path, *, firmware: Path = FIRMWARE,
             # drawn and sends touches and keys in turn. It runs while the guest
             # does, and the finally below still tears the run down if it raises.
             script(outdir)
-        proc.wait(timeout=timeout + SHUTDOWN_GRACE)
+
+        done = until is not None or script is not None or tap is not None
+        if not done:
+            proc.wait(timeout=timeout + SHUTDOWN_GRACE)
+        else:
+            deadline = time.monotonic() + timeout + SHUTDOWN_GRACE
+            while time.monotonic() < deadline:
+                if proc.poll() is not None:
+                    break               # the guest stopped on its own
+                if until is None or until(_uart(outdir), _frames(outdir)):
+                    break
+                time.sleep(0.5)
     finally:
         if proc.poll() is None:
             proc.terminate()
@@ -280,7 +308,4 @@ def run_emulator(outdir: Path, *, firmware: Path = FIRMWARE,
             except subprocess.TimeoutExpired:
                 proc.kill()
 
-    uart = ""
-    for log in outdir.glob("*.uart.log"):
-        uart = log.read_text(errors="replace")
-    return Run(outdir=outdir, frames=_frames(outdir), uart=uart)
+    return Run(outdir=outdir, frames=_frames(outdir), uart=_uart(outdir))

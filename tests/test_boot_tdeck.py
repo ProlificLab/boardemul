@@ -29,13 +29,26 @@ pytestmark = [
 ]
 
 
+def _shown_everything(build: str):
+    """The last things this module asks about: the battery read, an interface
+    that kept drawing, and for a build that starts its station at boot, that it
+    did. Once those are in, the rest of the timeout is an idle guest.
+    """
+    def shown(uart: str, frames: list) -> bool:
+        if "ADC_CALI" not in uart or len(frames) <= 100:
+            return False
+        return build not in STARTS_STATION_AT_BOOT or "WiFi client started" in uart
+    return shown
+
+
 @pytest.fixture(scope="module", params=FIRMWARE_TDECK_BUILDS or [FIRMWARE_TDECK],
                 ids=lambda p: p.stem.replace("T-Deck_UnitTest_", ""))
 def booted(request, tmp_path_factory) -> Run:
     if not qemu_available():
         pytest.skip("no qemu-system-xtensa; run tools/build_qemu.sh")
     return run_emulator(tmp_path_factory.mktemp("tdeck"),
-                        firmware=request.param, board="tdeck", timeout=120)
+                        firmware=request.param, board="tdeck", timeout=120,
+                        until=_shown_everything(request.param.stem[-6:]))
 
 
 def test_the_fpu_is_enabled_before_the_scheduler_starts(booted: Run) -> None:

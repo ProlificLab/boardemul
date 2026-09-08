@@ -12,6 +12,7 @@ import json
 import os
 import shutil
 import logging
+import signal
 import subprocess
 import sys
 import time
@@ -148,6 +149,7 @@ def run_qemu(argv: list[str], uart: Path, stderr_log: Path, timeout: float,
     # next write, which is indistinguishable from a guest stall; a file never
     # blocks and keeps the text, which is the point of having it.
     errfile = open(stderr_log, "wb")
+    previous = signal.signal(signal.SIGTERM, _take_the_guest_with_us)
     proc = subprocess.Popen(argv, stdout=subprocess.DEVNULL, stderr=errfile)
 
     last_size, last_bus = 0, 0
@@ -176,7 +178,19 @@ def run_qemu(argv: list[str], uart: Path, stderr_log: Path, timeout: float,
                 proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 proc.kill()
+        signal.signal(signal.SIGTERM, previous)
         errfile.close()
+
+
+def _take_the_guest_with_us(signum, frame):
+    """Turn a termination signal into an exception, so the teardown below runs.
+
+    Python ends the process outright on SIGTERM without unwinding, which leaves
+    QEMU orphaned and eating a core for as long as the machine is up. That
+    matters to anything that stops a run early rather than waiting for it, and
+    to anyone who kills one by hand.
+    """
+    raise KeyboardInterrupt(f"terminated by signal {signum}")
 
 
 def main(argv: list[str] | None = None) -> int:
