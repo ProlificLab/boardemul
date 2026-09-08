@@ -322,8 +322,16 @@ def main(argv: list[str] | None = None) -> int:
     if hw_module.SOC_DEVICES:
         print(f"soc     : {', '.join(hw_module.SOC_DEVICES)}")
     print(f"uart    : {uart}")
+    started = time.monotonic()
+    interrupted = False
     try:
         reason, wall = run_qemu(cmd, uart, elog, args.timeout, args.stall, server)
+    except KeyboardInterrupt:
+        # Stopped from outside, which is a normal way for a run to end when
+        # something is watching it and has seen enough. The manifest is the
+        # record of what happened, so it is worth as much here as anywhere.
+        interrupted = True
+        reason, wall = "stopped from outside", time.monotonic() - started
     finally:
         if server:
             _report_bus(server, tail, irq, hw)
@@ -370,6 +378,8 @@ def main(argv: list[str] | None = None) -> int:
 
     print(f"result  : {reason} after {wall:.1f}s, {result.uart_bytes} bytes of UART")
     print(f"manifest: {manifest}\n")
+    if interrupted:
+        return 0
     if uart.exists() and result.uart_bytes:
         print("--- last UART lines " + "-" * 40)
         tail = uart.read_text(errors="replace").splitlines()[-12:]

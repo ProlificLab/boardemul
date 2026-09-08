@@ -25,6 +25,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from emu.devices.air import AirMedium  # noqa: E402
 from tests.support import (  # noqa: E402
     FIRMWARE_MESHTASTIC, MESHTASTIC_LITTLEFS, REPO_ROOT, qemu_available,
 )
@@ -38,9 +39,12 @@ pytestmark = [
 
 CONFIGURED = REPO_ROOT / "build" / "littlefs-configured.bin"
 OVERLAY_AT = 0xC90000
-# Long enough for a configured node to send its first broadcast, which it does
-# within about a minute of guest time, and no longer.
-RUN_SECONDS = 120
+# A ceiling, not a plan. The test listens on the air and stops the nodes as
+# soon as it has heard both of them, so this only matters on a host slow enough
+# that the first broadcast takes that long -- which under a loaded suite it can
+# (ADR 0040).
+RUN_SECONDS = 300
+GRACE_SECONDS = 12
 
 
 @pytest.fixture(scope="module")
@@ -87,15 +91,28 @@ def two_nodes(tmp_path_factory, configured_filesystem: Path) -> dict[str, dict]:
     air.mkdir()
 
     nodes = {"one": "24:6F:28:00:00:11", "two": "24:6F:28:00:00:22"}
+
+    # A third station on the same air that only listens. It is how the test
+    # knows the nodes have started talking without waiting out their whole
+    # budget, and it transmits nothing, so neither node hears it.
+    listener = AirMedium(air, "listener")
     running = {name: _launch(name, work, air, mac, configured_filesystem)
                for name, mac in nodes.items()}
     try:
-        deadline = time.monotonic() + RUN_SECONDS + 90
+        deadline = time.monotonic() + RUN_SECONDS
+        overheard = 0
         while time.monotonic() < deadline:
+            overheard += len(listener.poll())
+            if overheard >= 2:
+                # Both have been on the air; give them a moment to have read
+                # each other before they are stopped.
+                time.sleep(GRACE_SECONDS)
+                break
             if all(p.poll() is not None for p in running.values()):
                 break
-            time.sleep(2)
+            time.sleep(1)
     finally:
+        listener.close()
         for proc in running.values():
             if proc.poll() is None:
                 proc.terminate()
