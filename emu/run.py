@@ -267,7 +267,10 @@ def main(argv: list[str] | None = None) -> int:
     # reproducible on an idle machine, and it cost a test run to catch. It is
     # also no slower here and sometimes much faster, because the peripherals
     # this board models are serialised through one bus anyway (ADR 0041).
-    cmd += ["-accel", "tcg,thread=single"]
+    # BOARDEMUL_TCG_THREADS=multi puts the second thread back, which is the
+    # configuration that crashes; it is here so the defect can be worked on
+    # rather than only avoided.
+    cmd += ["-accel", "tcg,thread=" + os.environ.get("BOARDEMUL_TCG_THREADS", "single")]
     if args.icount:
         # 2^2 ns per instruction, 250 MIPS nominal; the vCPU sleeps when the
         # guest idles. Instruction counting requires the single thread above.

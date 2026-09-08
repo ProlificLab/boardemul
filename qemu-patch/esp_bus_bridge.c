@@ -26,6 +26,9 @@
 
 #include <sys/socket.h>
 #include <sys/un.h>
+#include <signal.h>
+#include <execinfo.h>
+#include <ucontext.h>
 
 #define TYPE_ESP_BUS_BRIDGE "esp-bus-bridge"
 OBJECT_DECLARE_SIMPLE_TYPE(EspBusBridge, ESP_BUS_BRIDGE)
@@ -313,8 +316,62 @@ static void bridge_reset(void *opaque)
     }
 }
 
+
+/* Investigation hatch, off unless BOARDEMUL_CATCH_SEGV is set: print this
+ * process's own stack when it faults.
+ *
+ * The crash this is for happens only with two translation threads on a busy
+ * machine (ADR 0041). It does not survive being watched: under gdb the timing
+ * shifts and it never fires, and core dumps on this host go to a handler that
+ * cannot be redirected. Reporting from inside the process costs nothing until
+ * the fault, and leaves the timing alone.
+ */
+static void bridge_report_fault(int sig, siginfo_t *info, void *context)
+{
+    void *frames[48];
+    char head[256];
+    void *at = NULL;
+
+#if defined(__x86_64__) && defined(REG_RIP)
+    /* Where it actually faulted. The stack below is only the signal
+     * frame and whatever libc can unwind; generated code has no frame
+     * pointers, so this is the one address worth having. */
+    if (context) {
+        at = (void *)((ucontext_t *)context)->uc_mcontext.gregs[REG_RIP];
+    }
+#endif
+    int depth = backtrace(frames, ARRAY_SIZE(frames));
+    int len = snprintf(head, sizeof(head),
+                       "%s=== signal %d at address %p, faulting pc %p ===%s",
+                       "\n", sig, info ? info->si_addr : NULL, at, "\n");
+
+    if (write(STDERR_FILENO, head, len) < 0) {
+        /* Nothing useful to do about a failed write while crashing. */
+    }
+    backtrace_symbols_fd(frames, depth, STDERR_FILENO);
+    _exit(128 + sig);
+}
+
+static void bridge_catch_faults(void)
+{
+    static bool installed;
+    struct sigaction action;
+
+    if (installed || !getenv("BOARDEMUL_CATCH_SEGV")) {
+        return;
+    }
+    installed = true;
+    memset(&action, 0, sizeof(action));
+    action.sa_sigaction = bridge_report_fault;
+    action.sa_flags = SA_SIGINFO;
+    sigaction(SIGSEGV, &action, NULL);
+    sigaction(SIGBUS, &action, NULL);
+    sigaction(SIGABRT, &action, NULL);
+}
+
 static void bridge_realize(DeviceState *dev, Error **errp)
 {
+    bridge_catch_faults();
     EspBusBridge *s = ESP_BUS_BRIDGE(dev);
     struct sockaddr_un addr;
 

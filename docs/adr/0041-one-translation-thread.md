@@ -50,13 +50,45 @@ a second translation thread mostly contends for the same lock.
   it here. Nothing this project runs does: both firmwares spend their time
   waiting on peripherals this emulator serialises anyway.
 
+## What is known about it
+
+The defect was then gone after directly, and while it is not fixed, it is no
+longer a rumour.
+
+**It reproduces.** `BOARDEMUL_TCG_THREADS=multi`, fourteen runs of the
+Meshtastic boot at once, each with its own build directory: about one run in
+fifteen dies. It needs the load; alone on an idle machine, twenty-eight runs
+came up clean.
+
+**It cannot be watched.** Under gdb it never fires -- the timing shifts and the
+window closes -- and core dumps on this host go to a handler that cannot be
+redirected. `BOARDEMUL_CATCH_SEGV=1` gets around that by having the process
+report its own fault, which is how the first evidence in weeks was captured.
+
+**The signature is a translation entry that has been zeroed.** The fault is
+inside generated code, and the address it dies on is a *guest* address in
+internal RAM -- 0x3fcb45eb in three of four captures, 0x3fcf14db in the other.
+QEMU's fast path reaches host memory by adding an offset to the guest address,
+so faulting on the guest address itself means that offset was zero: the entry
+was read while it held nothing.
+
+**Two things it is not.** Our own devices map their regions once, at device
+creation, and never touch a mapping afterwards, so they are not moving memory
+under a running CPU. And the fork's cache model writes guest RAM directly --
+straight through the region pointer, both when it fills a page from flash and
+when it stamps a discarded one -- without telling QEMU the memory changed,
+which is a real hazard; declaring those writes with `memory_region_set_dirty`
+changed the crash rate not at all (three faults in fifty-six against roughly
+the same before), so that is not this.
+
+What is left is the address-translation path itself, under two threads. That
+is QEMU's own machinery rather than anything this project adds to it, and the
+next step is upstream with the reproduction above.
+
 ## Alternatives rejected
 
-**Find the race.** The honest first choice, and it needs a reproduction. It
-does not reproduce on demand, it does not reproduce under a debugger, and it
-took a busy machine and a fast suite to see it once. Turning off the thread
-that causes it is what makes runs trustworthy today; the reproduction can be
-gone after with a crash that is at least known to be waiting.
+**Find the race.** Attempted, above. It is now reproducible and characterised
+but not fixed, and the single thread is what makes runs trustworthy meanwhile.
 
 **Retry a crashed run in the harness.** It hides the defect precisely where it
 would otherwise be measurable, and a test suite that silently repeats a crashed
