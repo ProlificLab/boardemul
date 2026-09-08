@@ -52,17 +52,16 @@ controller schedules the events and never assembles a packet for them.
    guest's RAM through the monitor and reports where the advertising data is
    and where it is not.
 
-2. **Do not emit anything yet.** The emulator could take the payload off the
-   host's heap and put it on the air, and it would look like Bluetooth
-   working. It would be the emulator inventing a packet the modelled hardware
-   never produced, which is the opposite of how every other part of this
-   project was built (ADR 0006). A packet goes on the air when the controller
-   has assembled one.
+2. **Emit only what the controller points at.** Taking the payload off the
+   host's heap because it happens to be there would be inventing a packet; but
+   reading the descriptor the controller wrote, resolving its offsets through
+   the base registers the controller programmed, and emitting the bytes that
+   land is reading what the hardware staged. The first is theatre and the
+   second is a model. That distinction is the whole of this record.
 
-3. **The next unknown is named**: what makes the controller stage a PDU into
-   exchange memory. On real silicon the baseband is handed a descriptor and
-   fetches it; that step is not modelled, and it is where to look next --
-   before, not after, any medium is built for Bluetooth to talk across.
+3. **What remains is the medium, not the packet.** The packet is in hand. What
+   Bluetooth still lacks is what LoRa got in ADRs 0036-0039: something to carry
+   it, and a second station to hear it.
 
 ## How far that was chased
 
@@ -88,13 +87,33 @@ page holding the advertising offset maps to 0x3fccae38, where a descriptor is
 duly written. Twenty-five pages are mapped with a zero address, which resolves
 to 0x3fc00000 and is worth doubting later.
 
-**What never appears is the payload.** Not at the descriptor's address, not
-where the descriptor appears to point, not anywhere in the whole mapped range.
-The advertising bytes exist once, on the host's heap, and the controller writes
-structures about them without ever writing them. So the missing step is not
-"which function stages it" -- that function runs -- but what copies the bytes,
-and the likeliest answer is the part that would move them on the controller's
-behalf, which this project does not model.
+### And then the answer: nothing copies them
+
+The conclusion above, that the payload never reaches exchange memory, was
+wrong, and wrong in an instructive way. It came from looking for a *second
+copy* of the bytes and not finding one.
+
+Following every offset in the advertising descriptor, rather than the first
+two, resolves it. The record at 0x1400 holds two more: `0x2400` and `0x2c00`.
+Resolved through the same base registers, they land on
+`10 09 "Meshtastic..."` and `02 01 06 03 03 0f 18 11 07 ...` -- the name
+structure and the flags with the service UUIDs. They are the advertising data,
+reachable from the descriptor, at the moment an event runs.
+
+And their addresses are the heap addresses the search had already found.
+
+So nothing copies the bytes. **The controller maps the page the host's buffer
+already sits in into exchange memory and refers to it by offset.** The base
+registers do the work that a copy would otherwise do, which is exactly why
+there is one copy of the payload in RAM and why looking for a second one found
+nothing. The single copy was not evidence of a missing step; it was the
+mechanism.
+
+That also means the payload is legitimately available. Emitting it would not be
+reading a heap block the emulator has no business touching: it would be reading
+what the controller staged, through the controller's own mapping, at the moment
+the controller scheduled a transmission -- the same standard the radio path is
+held to.
 
 ## Consequences
 
@@ -107,7 +126,8 @@ behalf, which this project does not model.
 
 **Costs, accepted**
 
-- Bluetooth still transmits nothing, and this record does not change that.
+- Bluetooth still transmits nothing: the packet can be read, and nothing yet
+  carries it.
 - The `bt_em` window at `0x3fc00000` is now known not to be where the
   controller's tables live. It is left alone rather than removed: it was
   claimed because the guest faulted there (ADR 0023) and that reason still

@@ -257,6 +257,81 @@ static hwaddr ble_et_entry(EspBleCore *s, unsigned idx)
     return base + (hwaddr)idx * ET_ENTRY_SIZE;
 }
 
+/* Investigation hatch, off unless BOARDEMUL_BLE_PEEK is set.
+ *
+ * Resolve an exchange-memory offset the way the ROM does: the page is the
+ * offset rounded down to a kilobyte, the register serving it is the one whose
+ * top fourteen bits hold that page, and the address is its low bits scaled by
+ * four, plus the offset within the page.
+ */
+static hwaddr ble_em_addr(EspBleCore *s, uint32_t offset)
+{
+    uint32_t page = offset & ~0x3FFu;
+
+    for (unsigned i = 0; i < 64; i++) {
+        uint32_t reg = s->regs[(R_EM_BASE0 / 4) + i];
+        if ((((reg >> 18) & 0x3FFF) << 2) == page && (reg & 0x3FFFF) != 0) {
+            return (0x3FC00000u | ((reg & 0x3FFFF) << 2)) + (offset - page);
+        }
+    }
+    return 0;
+}
+
+static void ble_peek(EspBleCore *s, unsigned idx)
+{
+    static int enabled = -1;
+    static unsigned shown;
+    uint8_t buf[32];
+    hwaddr at;
+
+    if (enabled < 0) {
+        enabled = getenv("BOARDEMUL_BLE_PEEK") != NULL;
+    }
+    if (!enabled || shown >= 3) {
+        return;
+    }
+    shown++;
+
+    /* The advertising set's descriptor, and the two offsets it holds. */
+    at = ble_em_addr(s, 0x1400);
+    if (!at) {
+        qemu_log_mask(LOG_UNIMP, "esp-ble-core: peek: offset 0x1400 unmapped%c", 10);
+        return;
+    }
+    address_space_read(&address_space_memory, at, MEMTXATTRS_UNSPECIFIED, buf, sizeof(buf));
+    qemu_log_mask(LOG_UNIMP, "esp-ble-core: peek entry %u: 0x1400 -> 0x%08llx: "
+                  "%02x%02x %02x%02x %02x%02x %02x%02x %02x%02x %02x%02x %02x%02x %02x%02x%c",
+                  idx, (unsigned long long)at,
+                  buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7],
+                  buf[8], buf[9], buf[10], buf[11], buf[12], buf[13], buf[14], buf[15], 10);
+    qemu_log_mask(LOG_UNIMP, "esp-ble-core: peek entry %u rest: "
+                  "%02x%02x %02x%02x %02x%02x %02x%02x %02x%02x %02x%02x %02x%02x %02x%02x%c",
+                  idx,
+                  buf[16], buf[17], buf[18], buf[19], buf[20], buf[21], buf[22], buf[23],
+                  buf[24], buf[25], buf[26], buf[27], buf[28], buf[29], buf[30], buf[31], 10);
+
+    /* Follow every halfword that could be an offset of its own, not just the
+     * first two: a pointer to the payload could sit anywhere in the record. */
+    for (int half = 0; half < 16; half++) {
+        uint32_t ptr = buf[half * 2] | (buf[half * 2 + 1] << 8);
+        if (ptr < 0x400 || ptr >= 0x8000) {
+            continue;
+        }
+        hwaddr to = ble_em_addr(s, ptr);
+        if (!to) {
+            qemu_log_mask(LOG_UNIMP, "esp-ble-core: peek:   0x%04x unmapped%c", ptr, 10);
+            continue;
+        }
+        uint8_t seen[16];
+        address_space_read(&address_space_memory, to, MEMTXATTRS_UNSPECIFIED, seen, sizeof(seen));
+        qemu_log_mask(LOG_UNIMP, "esp-ble-core: peek:   0x%04x -> 0x%08llx: "
+                      "%02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x%c",
+                      ptr, (unsigned long long)to,
+                      seen[0], seen[1], seen[2], seen[3], seen[4], seen[5],
+                      seen[6], seen[7], seen[8], seen[9], seen[10], seen[11], 10);
+    }
+}
+
 static void ble_arm_event_timer(EspBleCore *s)
 {
     if (!s->n_events) {
@@ -319,6 +394,8 @@ static void ble_kick(EspBleCore *s, uint32_t value)
                   (long long)ble_now_hus(),
                   e[0], e[1], e[2], e[3], e[4], e[5], e[6], e[7],
                   e[8], e[9], e[10], e[11], e[12], e[13], e[14], e[15], 10);
+
+    ble_peek(s, idx);
 
     unsigned i = s->n_events;
     while (i > 0 && s->events[i - 1].start_hus > start) {
