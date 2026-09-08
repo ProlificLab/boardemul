@@ -100,10 +100,16 @@ def two_nodes(tmp_path_factory, configured_filesystem: Path) -> dict[str, dict]:
                for name, mac in nodes.items()}
     try:
         deadline = time.monotonic() + RUN_SECONDS
-        overheard = 0
+        senders: set[bytes] = set()
         while time.monotonic() < deadline:
-            overheard += len(listener.poll())
-            if overheard >= 2:
+            for frame in listener.poll():
+                # A mesh packet carries who sent it, four bytes in. Counting
+                # frames instead would stop as soon as one node had spoken
+                # twice, with the other still silent -- which is exactly how
+                # this went flaky under a loaded suite.
+                if len(frame) >= 8:
+                    senders.add(frame[4:8])
+            if len(senders) >= len(nodes):
                 # Both have been on the air; give them a moment to have read
                 # each other before they are stopped.
                 time.sleep(GRACE_SECONDS)
