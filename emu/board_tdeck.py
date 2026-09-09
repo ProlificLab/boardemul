@@ -24,6 +24,8 @@ from emu.board import TraceRegion, Board  # shared with the first board
 from emu.bus import Region
 from emu import sdimage
 from emu.i2c_link import I2CServer
+from emu.serial_link import SerialServer
+from emu.devices.gps import L76K
 from emu.devices.lcd import St7789Panel
 from emu.devices.air import AirMedium
 from emu.devices.es7210 import Es7210
@@ -213,7 +215,8 @@ class PhyGates(TraceRegion):
 def build(outdir: Path, air: str | None = None, ble_air: str | None = None,
           position: tuple[float, float] = (0.0, 0.0),
           antenna_dbi: float = 0.0, exponent: float = 2.0,
-          obstruction_db: float = 0.0) -> Board:
+          obstruction_db: float = 0.0,
+          gps: tuple[float, float, float] | None = None) -> Board:
     outdir = Path(outdir)
     panel = St7789Panel(outdir / "frames")
     gpio = GpioClient(outdir / "gpio.sock")
@@ -241,6 +244,15 @@ def build(outdir: Path, air: str | None = None, ble_air: str | None = None,
     codec = Es7210()         # the microphone codec the firmware probes for
     i2c0 = I2CServer(outdir / "i2c0.sock", [touch, keypad, codec], name="i2c0")
     i2c1 = I2CServer(outdir / "i2c1.sock", [], name="i2c1")
+    # The satellite receiver is a module the board is sold with or without, so
+    # it is here only when a scenario says where the board is -- the same way
+    # the radio only reaches an air when one is given (ADR 0052). The firmware
+    # probes the machine's second UART for a u-blox part first and then for
+    # this one; an L76K does not answer u-blox either, so that probe failing is
+    # the part behaving, not the model falling short.
+    receiver = SerialServer(outdir / "gps.sock",
+                            L76K(latitude=gps[0], longitude=gps[1],
+                                 altitude_m=gps[2]), name="gps") if gps else None
 
     regions: list[Region] = [PhyGates(n, b) if PhyGates.covers(b) else TraceRegion(n, b)
                              for n, b in UNMODELLED.items()]
@@ -273,7 +285,7 @@ def build(outdir: Path, air: str | None = None, ble_air: str | None = None,
         + (f",air={ble_air},airname={outdir.name}" if ble_air else ""),
     ]
     board = Board(regions=regions, gpio=gpio, spi=spi, i2c0=i2c0, i2c1=i2c1,
-                  panel=panel, devices=devices)
+                  panel=panel, gps=receiver, devices=devices)
     board.touch = touch
     board.keypad = keypad
     return board

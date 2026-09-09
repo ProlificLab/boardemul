@@ -57,3 +57,4 @@ superseded ADR is marked superseded and points forward.
 | [0049](0049-a-received-packet-says-when-it-arrived.md) | A received packet says when it arrived | Accepted |
 | [0050](0050-what-a-connection-event-is-told.md) | What a connection event is told | Superseded by 0051 |
 | [0051](0051-a-link-that-stays-up.md) | A link that stays up | Accepted |
+| [0052](0052-a-part-on-a-serial-line.md) | A part on a serial line | Accepted |

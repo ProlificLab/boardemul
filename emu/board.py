@@ -20,10 +20,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from emu.bus import BusServer, Region
+from emu.serial_link import SerialServer
 from emu.devices.epaper import EPaperPanel
 from emu.devices.i2c_devices import CST328, TCA8418, tdeck_max_devices
 from emu import sdimage
 from emu.devices.air import AirMedium
+from emu.devices.gps import L76K
 from emu.devices.sdcard import SdCard
 from emu.devices.sx1262 import Sx1262
 from emu.i2c_link import I2CServer
@@ -131,6 +133,10 @@ def i2c_devices() -> list[I2CDevice]:
     which is how you find out which device's answers a driver actually chokes on.
     """
     devices = tdeck_max_devices()
+    # This board carries the same satellite receiver on the same UART, and its
+    # own GPS example will not look for one until the port expander beside it
+    # answers -- which is why it is fitted here rather than on the other board's
+    # say-so (ADR 0052).
     only = os.environ.get("BOARDEMUL_I2C")
     if only:
         wanted = {int(a, 16) for a in only.replace(" ", "").split(",") if a}
@@ -147,31 +153,50 @@ class Board:
     i2c1: I2CServer
     panel: SpiDevice        # whichever panel this board carries
     devices: list[str] = field(default_factory=list)
+    # A part on one of the machine's own UARTs, when the scenario asks for one.
+    # It needs no device of ours: the fork's controller already speaks to a
+    # character device, so a socket is the whole of it (ADR 0052).
+    gps: "SerialServer | None" = None
 
     def start(self) -> None:
         self.gpio.start()
         self.spi.start()
         self.i2c0.start()
         self.i2c1.start()
+        if self.gps:
+            self.gps.start()
         # BUSY idles high on this panel. Set before QEMU connects; the client
         # replays it on connect, so the line is right from the first fetch.
         self.gpio.drive(EPD_BUSY_PIN, 1)
 
     def stop(self) -> None:
-        for link in (self.spi, self.i2c0, self.i2c1, self.gpio):
-            link.stop()
+        for link in (self.spi, self.i2c0, self.i2c1, self.gpio, self.gps):
+            if link:
+                link.stop()
 
     def qemu_args(self) -> list[str]:
         args: list[str] = []
         for spec in self.devices:
             args += ["-device", spec]
+        # The order matters and is the only thing that names the port: the
+        # console is given first, in build_argv, so this one is the machine's
+        # second UART, which is where the board's satellite receiver sits.
+        if self.gps:
+            args += ["-serial", f"unix:{self.gps.socket_path}"]
         return args
 
 
-def build(outdir: Path, air: str | None = None,
+def build(outdir: Path, air: str | None = None, ble_air: str | None = None,
           position: tuple[float, float] = (0.0, 0.0),
           antenna_dbi: float = 0.0, exponent: float = 2.0,
-          obstruction_db: float = 0.0) -> Board:
+          obstruction_db: float = 0.0,
+          gps: tuple[float, float, float] | None = None) -> Board:
+    """`ble_air` is accepted and does nothing here: this board has a radio but
+    no Bluetooth controller modelled, so there is no part for an air to reach.
+    Every board takes the same arguments on purpose -- when they did not, the
+    caller's `except TypeError` quietly dropped this board back to a build with
+    no air at all, and the radio options did nothing for a release (ADR 0052).
+    """
     outdir = Path(outdir)
     panel = EPaperPanel(outdir / "frames",
                         quarter_turns=int(os.environ.get("BOARDEMUL_ROTATE", "0")))
@@ -188,6 +213,9 @@ def build(outdir: Path, air: str | None = None,
                     {SPI_DISPLAY: panel, SPI_RADIO: radio, SPI_SDCARD: sdcard})
     i2c0 = I2CServer(outdir / "i2c0.sock", i2c_devices(), name="i2c0")
     i2c1 = I2CServer(outdir / "i2c1.sock", [], name="i2c1")
+    receiver = SerialServer(outdir / "gps.sock",
+                            L76K(latitude=gps[0], longitude=gps[1],
+                                 altitude_m=gps[2]), name="gps") if gps else None
 
     regions: list[Region] = [TraceRegion(n, b) for n, b in UNMODELLED.items()]
 
@@ -208,7 +236,7 @@ def build(outdir: Path, air: str | None = None,
         f"socket={i2c1.socket_path}",
     ]
     return Board(regions=regions, gpio=gpio, spi=spi, i2c0=i2c0, i2c1=i2c1,
-                 panel=panel, devices=devices)
+                 panel=panel, gps=receiver, devices=devices)
 
 
 def attach_input(server: BusServer, board: Board, outdir: Path) -> InputTail:

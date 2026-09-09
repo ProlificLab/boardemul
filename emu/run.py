@@ -239,6 +239,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--obstruction", type=float, default=0.0, metavar="DB",
                     help="anything else in the way, in dB, stated rather than "
                          "drawn at random so a run repeats (ADR 0039)")
+    ap.add_argument("--gps", default=None, metavar="LAT,LON[,ALT]",
+                    help="put a satellite receiver on the board's second UART "
+                         "and have it report this position, in degrees and "
+                         "metres (ADR 0052). Without it the board has no "
+                         "module, which is how they are sold")
     ap.add_argument("--ble-air", default=None, metavar="DIR",
                     help="share a directory so this board's Bluetooth can be "
                          "heard by others; a different band from --air, so a "
@@ -304,14 +309,23 @@ def main(argv: list[str] | None = None) -> int:
             raise SystemExit(f"unknown environment {args.environment!r}; "
                              f"use one of {', '.join(lora.ENVIRONMENTS)} "
                              f"or an exponent")
-        try:
-            hw = hw_module.build(args.outdir, air=args.air, ble_air=args.ble_air,
-                                 position=where,
-                                 antenna_dbi=args.antenna, exponent=exponent,
-                                 obstruction_db=args.obstruction)
-        except TypeError:
-            # Boards that have no radio take none of this.
-            hw = hw_module.build(args.outdir)
+        fix = None
+        if args.gps:
+            parts = args.gps.split(",")
+            if len(parts) not in (2, 3):
+                raise SystemExit("--gps wants LAT,LON or LAT,LON,ALT in degrees "
+                                 "and metres")
+            fix = (float(parts[0]), float(parts[1]),
+                   float(parts[2]) if len(parts) > 2 else 0.0)
+        # Every board takes the same arguments, so this is a plain call. It used
+        # to be wrapped in `except TypeError: build(outdir)`, and when one board
+        # gained an argument the other did not, that quietly dropped it back to
+        # a build with no air -- the radio options did nothing on it and nothing
+        # said so (ADR 0052).
+        hw = hw_module.build(args.outdir, air=args.air, ble_air=args.ble_air,
+                             position=where, antenna_dbi=args.antenna,
+                             exponent=exponent, obstruction_db=args.obstruction,
+                             gps=fix)
         hw.start()
         server = BusServer(args.outdir / f"{tag}.bus.sock", hw.regions)
         irq = IrqChannel(args.outdir / f"{tag}.irq.sock")
@@ -432,6 +446,9 @@ def _report_bus(server: BusServer, tail=None, irq=None, hw=None) -> None:
                           f"{dev.delivered} character(s) delivered, "
                           f"{len(dev.pending)} still queued")
         print(f"  gpio: {hw.gpio.sent} pin level(s) driven from the host")
+        if hw.gps:
+            print(f"  gps: {hw.gps.bytes_in} byte(s) in, {hw.gps.bytes_out} out")
+            print(f"    {hw.gps.device.summary()}")
 
     busy = sorted((r for r in server.regions if r.accesses),
                   key=lambda r: -r.accesses)

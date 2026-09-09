@@ -79,22 +79,36 @@ def typed(tmp_path_factory) -> tuple[Run, dict]:
         # with no input, so the first touch has to be prompt. Every input
         # afterwards resets that.
         send_touch(outdir, *SHORT_ICON)         # binds the keypad to the field
-        time.sleep(6)
+        # The keypad is bound when the on-screen keyboard is actually up, and
+        # on its way in it covers the OK button. Waiting for that rather than
+        # for a number of seconds is what keeps this from failing on a loaded
+        # host, where six seconds of wall time can be almost no guest time at
+        # all -- which is how it failed (ADR 0040).
+        seen["keyboard"] = wait_for_panel(
+            outdir, lambda f: count_pixels(f, OK_FACE, BLUE) < 100, timeout=180)
+        if not seen["keyboard"]:
+            return
         for character in "emu1":
             send_key(outdir, character)
             time.sleep(2.5)
-        time.sleep(4)
+        # Bounded, not assumed: if nothing was typed this falls through with
+        # the field still empty and the assertion says so.
+        wait_for_panel(outdir, lambda f: dark_pixels(f, SHORT_FIELD) > 0, timeout=90)
         seen["ink_after"] = dark_pixels(frame, SHORT_FIELD)
 
         send_touch(outdir, *SHORT_ICON)         # the same icon puts it away
-        time.sleep(6)
+        # And the OK button is reachable again only once it has gone; tapping
+        # where the keyboard still is presses a key instead.
+        if not wait_for_panel(
+                outdir, lambda f: count_pixels(f, OK_FACE, BLUE) > 500, timeout=180):
+            return
         # Committing makes the firmware restart itself to apply the settings,
         # and it says so on the panel first. The notice is what to wait for:
         # the run is launched with -no-reboot, so the reset ends the guest and
         # no second banner is ever printed.
         send_touch(outdir, *OK_BUTTON)
         seen["reboot_notice"] = wait_for_panel(
-            outdir, lambda f: count_pixels(f, NOTICE, RED) > 200, timeout=30)
+            outdir, lambda f: count_pixels(f, NOTICE, RED) > 200, timeout=90)
 
     run = run_emulator(tmp_path_factory.mktemp("touch"), firmware=FIRMWARE_MESHTASTIC,
                        board="tdeck", timeout=460,
