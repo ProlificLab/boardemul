@@ -1,9 +1,10 @@
 # ADR 0047 — A central connects
 
-**Status:** Accepted — 2026-09-08. **Corrected by ADR 0048:** the event kind
-this ADR reads as a connection is an advertising event, and no connection
-forms. What still stands is that the request reaches the link layer and the
-ROM validates it; everything below about acceptance does not.
+**Status:** Accepted — 2026-09-08. **Corrected by ADR 0048:** a connection is
+made, but it is unmade in the same breath rather than waiting out a timeout,
+and the event kind read here as proof of one is an advertising event. What
+stands is that the request reaches the link layer, the ROM validates it, and
+the controller acts on it.
 
 ## Context
 

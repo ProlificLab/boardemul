@@ -11,12 +11,12 @@ data whose interval, latency and timeout the controller validates before it
 will look at them. Nothing here is accepted on this emulator's say-so -- the
 firmware's own link layer decides.
 
-What these tests do *not* show is a connection. ADR 0048 measured what becomes
-of the request: the ROM validates it, `r_lld_con_start` runs, and the
-controller library tears the connection down inside the same call. The board
-goes on advertising throughout. So the last test below asserts only what it
-can see -- that the request reaches the link layer and changes what the
-controller schedules -- and claims nothing about a link being up.
+What becomes of the request afterwards is ADR 0048: the controller does make a
+connection -- it stops advertising, starts its link layer controller, and tells
+the host -- and then unmakes it between one advertising event and the next, so
+nothing is ever carried over the link. These tests reach as far as that and no
+further, and the last one asserts what it can actually see rather than a link
+being up.
 """
 
 from __future__ import annotations
@@ -48,10 +48,10 @@ OVERLAY_AT = 0xC90000
 RUN_SECONDS = 330
 PDU_CONNECT_IND = 0x05
 # The first word of an exchange-table entry, as the core logs it. The board
-# schedules the first kind continuously; the second appears only after a
-# connection request and, despite the name it was first given, is an
-# advertising event too -- it keeps the advertising cadence and carries
-# `r_lld_adv_frm_cbk` (ADR 0048).
+# schedules the first kind continuously. The second is an advertising event
+# too -- it keeps the advertising cadence and carries `r_lld_adv_frm_cbk`
+# (ADR 0048) -- but a board left alone scheduled none in four hundred and
+# sixty-six events, so its arrival is a signal that the request landed.
 ADVERTISING_EVENT = "0228"
 REQUESTED_EVENT = "0230"
 
@@ -144,9 +144,10 @@ def test_it_was_advertising_first(connected) -> None:
 
 
 def test_the_request_changes_what_the_controller_schedules(connected) -> None:
-    """The link layer acts on the request: it schedules a kind of event it
-    never schedules while merely advertising. That is the whole claim -- the
-    connection does not survive `r_lld_con_start` (ADR 0048)."""
+    """The link layer acts on the request: it schedules a kind of event a
+    board left alone does not. That is the whole claim here -- the connection
+    the controller then makes does not outlive one advertising interval, and
+    proving that needs a trace this test does not take (ADR 0048)."""
     assert f"entry {REQUESTED_EVENT}" in connected, (
         "the link layer scheduled nothing new; the request changed "
         "nothing:\n" + connected[-1500:])
