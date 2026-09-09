@@ -69,10 +69,21 @@ whether or not it made anything of the contents.
 **Costs, accepted**
 
 - **A scan still finds nothing.** The driver takes the frame and makes nothing
-  of it, which points at the buffer's contents: a real one almost certainly
-  carries a hardware receive header before the packet, and this model writes
-  the packet alone. That is the next thing to find, and unlike everything above
-  it can be looked for now that the driver reads what it is given.
+  of it, which points at the buffer's contents rather than at the handshake.
+
+  That is now a much smaller search than it was. Because the driver reacts,
+  the code that reads the buffer runs, and diffing the blocks a run translates
+  with a frame against one without gives **forty-five**, in four tight
+  clusters. One of them is a three-instruction accessor that reads the first
+  word of something and takes its low eleven bits -- a length, which is what a
+  hardware receive header would put in front of the packet.
+
+  Staging such a header was tried at four bytes and at twelve. The driver takes
+  the frame either way and still reports nothing, so the size is not the whole
+  of it and guessing further at the layout is the thing this project does not
+  do. `BOARDEMUL_WIFI_HEADER` stages one for the next attempt; the accessor at
+  `0x420d4ffb` and the other three clusters are where the layout is written
+  down.
 - The status mask is a range, not a bit.
 - One frame is delivered, once. A scan sweeps channels and would want a beacon
   on the right one at the right moment, which needs the air the radio and
