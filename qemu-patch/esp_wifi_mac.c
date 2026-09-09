@@ -52,6 +52,20 @@ OBJECT_DECLARE_SIMPLE_TYPE(EspWifiMac, ESP_WIFI_MAC)
 #define REG_COUNT       (PAGE_SIZE / 4)
 /* Where the driver puts the receive ring, read off a run (ADR 0054). */
 #define R_RX_RING       0x088
+/* And the command beside it. Having taken a descriptor back, the driver
+ * sets bit 0 here and waits for the hardware to clear it -- the same
+ * self-clearing shape as the reset gate above. Watched, not assumed: with
+ * the status answered, the receive path read +0x090 and +0xc64, then set
+ * this and span on it. There is no radio here to keep it busy, so the
+ * command is taken as soon as it is given. */
+#define R_RX_COMMAND    0x084
+#define RX_COMMAND_GO   0x00000001u
+/* Where the hardware got to. With the command taken, the driver reads
+ * this next, always straight after the memory base at +0xc64 -- which is
+ * the shape of an address being put back together out of a base and a
+ * position. It reads nothing, and asks again. So this is where the model
+ * has to say which descriptor it filled. */
+#define R_RX_LAST       0x090
 /* This page is not blank paper. Before this device existed it was served by
  * the board's PhyGates model, which answers the waits the firmware makes
  * during bring-up -- each one read off a disassembled polling loop, never
@@ -65,6 +79,22 @@ OBJECT_DECLARE_SIMPLE_TYPE(EspWifiMac, ESP_WIFI_MAC)
  */
 #define R_MAC_RESET     0xd14
 #define MAC_RESET_ACK   0x00000001u
+/* Why the handler was woken. Found by raising the interrupt with nothing to
+ * say and watching what it went and read: it reads this, gets nothing, and
+ * returns -- then comes straight back, because the line is still asserted.
+ * So a frame is not announced by the interrupt alone; it is announced here,
+ * and the handler puts the line down by acknowledging what it has seen.
+ *
+ * Which bit means "a frame arrived" is not known. BOARDEMUL_WIFI_STATUS sets
+ * what is raised, so it can be narrowed by halves against a plain observable:
+ * whether the driver then takes the descriptor back.
+ */
+#define R_INT_STATUS    0xc3c
+/* And how it is put down. The handler does not write the status back --
+ * it writes the bits it has dealt with here, which is the ordinary
+ * split of a status register and its acknowledgement. Watched, not
+ * assumed: with the status raised it read +0xc3c and wrote +0xc40. */
+#define R_INT_CLEAR     0xc40
 
 /* The part's ordinary DMA descriptor, as esp_i2s_master.c documents it. */
 #define DESC_SIZE_MASK    0xFFFu
@@ -105,7 +135,12 @@ struct EspWifiMac {
     int irq_level;
 
     QEMUTimer *hatch;
+    /* Armed when a frame is delivered: the reads that follow are the
+     * handler asking why it was woken, and the register it consults is
+     * the one this model has to answer. */
+    unsigned trace_left;
     bool gated;
+    uint32_t status_mask;
     uint32_t ring;              /* what the driver handed us */
     hwaddr delivered_to;        /* the descriptor a frame went into */
     unsigned deliveries;
@@ -202,6 +237,9 @@ static void wifi_deliver(void *opaque)
                   "0x%08x of descriptor 0x%08llx, word 0x%08x -> 0x%08x, and "
                   "raised interrupt %d%c", (unsigned)sizeof(beacon), buffer,
                   (unsigned long long)desc, word, filled, s->irq_source, 10);
+    s->regs[R_INT_STATUS / 4] = s->status_mask;
+    s->regs[R_RX_LAST / 4] = (uint32_t)desc;
+    s->trace_left = 40;
     wifi_raise(s, 1);
     /* Look again shortly: the answer is whether the driver re-armed it. */
     timer_mod_ns(s->hatch, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + 200000000LL);
@@ -215,6 +253,11 @@ static uint64_t wifi_read(void *opaque, hwaddr offset, unsigned size)
     if (s->gated && offset == R_MAC_RESET) {
         value |= MAC_RESET_ACK;
     }
+    if (s->trace_left) {
+        s->trace_left--;
+        qemu_log_mask(LOG_UNIMP, "esp-wifi-mac: after the frame, rd +0x%03x "
+                      "= 0x%08x%c", (unsigned)offset, value, 10);
+    }
     return value;
 }
 
@@ -225,7 +268,26 @@ static void wifi_write(void *opaque, hwaddr offset, uint64_t value, unsigned siz
     if (offset >= PAGE_SIZE) {
         return;
     }
+    if (offset == R_RX_COMMAND) {
+        s->regs[offset / 4] = (uint32_t)value & ~RX_COMMAND_GO;
+        return;
+    }
+    if (offset == R_INT_CLEAR) {
+        /* What the handler has dealt with. The line goes down when nothing is
+         * left; a status that never clears is a handler that never stops. */
+        s->regs[R_INT_STATUS / 4] &= ~(uint32_t)value;
+        s->regs[offset / 4] = (uint32_t)value;
+        if (!s->regs[R_INT_STATUS / 4]) {
+            wifi_raise(s, 0);
+        }
+        return;
+    }
     s->regs[offset / 4] = (uint32_t)value;
+    if (s->trace_left) {
+        s->trace_left--;
+        qemu_log_mask(LOG_UNIMP, "esp-wifi-mac: after the frame, wr +0x%03x "
+                      "= 0x%08x%c", (unsigned)offset, (uint32_t)value, 10);
+    }
     if (offset == R_RX_RING && value) {
         s->ring = (uint32_t)value;
         qemu_log_mask(LOG_UNIMP, "esp-wifi-mac: the driver handed over a "
@@ -274,6 +336,8 @@ static void wifi_realize(DeviceState *dev, Error **errp)
         s->irq_line = qdev_get_gpio_in(DEVICE(intc), s->irq_source);
     }
     s->gated = g_strcmp0(getenv("BOARDEMUL_PHY_GATES"), "0") != 0;
+    const char *mask = getenv("BOARDEMUL_WIFI_STATUS");
+    s->status_mask = mask ? (uint32_t)strtoul(mask, NULL, 0) : 0xFFFFFFFFu;
     s->hatch = timer_new_ns(QEMU_CLOCK_VIRTUAL, wifi_deliver, s);
     qemu_register_reset(wifi_reset, s);
     if (after) {

@@ -59,4 +59,5 @@ superseded ADR is marked superseded and points forward.
 | [0051](0051-a-link-that-stays-up.md) | A link that stays up | Accepted |
 | [0052](0052-a-part-on-a-serial-line.md) | A part on a serial line | Accepted |
 | [0053](0053-the-screen-has-a-brightness.md) | The screen has a brightness | Accepted |
-| [0054](0054-what-wifi-would-need-to-hear-something.md) | What WiFi would need to hear something | Accepted |
+| [0054](0054-what-wifi-would-need-to-hear-something.md) | What WiFi would need to hear something | Mostly answered by 0055 |
+| [0055](0055-a-frame-the-wifi-driver-accepts.md) | A frame the WiFi driver accepts | Accepted |
