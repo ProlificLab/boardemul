@@ -256,6 +256,13 @@ def run_emulator(outdir: Path, *, firmware: Path = FIRMWARE,
     proc = subprocess.Popen(
         [sys.executable, "emu/run.py", str(firmware), "--bus", "--board", board,
          "--tag", "t", "--outdir", str(outdir), "--timeout", str(timeout),
+         # Its own flash image. The default is build/<firmware>/, shared by
+         # every run of that firmware, and building one rewrites the file a
+         # still-running guest has open -- which shows up as the guest dying on
+         # a stack canary, nowhere near the cause. Two tests booting the same
+         # build is all it takes, and the mesh tests learned this already
+         # (ADR 0036).
+         "--builddir", str(outdir / "build"),
          "--stall", str(timeout)]
         + [arg for spec in overlays for arg in ("--overlay", spec)]
         + (["--icount"] if icount else [])
