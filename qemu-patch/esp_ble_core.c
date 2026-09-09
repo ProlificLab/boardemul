@@ -311,6 +311,41 @@ static hwaddr ble_em_addr(EspBleCore *s, uint32_t offset)
     return 0;
 }
 
+/* Investigation hatch, off unless BOARDEMUL_BLE_SCHED is set.
+ *
+ * The end-of-event handler (r_sch_prog_end_isr, ROM 0x4002d58c) does not
+ * dispatch on the entry itself: it takes the index from a byte at offset 256
+ * of a table in RAM, reads a callback pointer sixteen bytes into that table
+ * per index, and skips the call outright when the pointer is null. So whether
+ * an event is ever serviced is decided in this table, not by the status the
+ * entry ends with -- which is why it is worth reading.
+ */
+#define SCHED_TABLE   0x3FCEFA8Cu
+#define SCHED_STRIDE  16
+#define SCHED_CURRENT 256
+
+static void ble_sched_peek(EspBleCore *s, unsigned idx, const char *when)
+{
+    static int enabled = -1;
+    uint32_t slot[4] = {0};
+    uint8_t current = 0;
+
+    if (enabled < 0) {
+        enabled = getenv("BOARDEMUL_BLE_SCHED") != NULL;
+    }
+    if (!enabled) {
+        return;
+    }
+    address_space_read(&address_space_memory,
+                       SCHED_TABLE + (hwaddr)idx * SCHED_STRIDE,
+                       MEMTXATTRS_UNSPECIFIED, slot, sizeof(slot));
+    address_space_read(&address_space_memory, SCHED_TABLE + SCHED_CURRENT,
+                       MEMTXATTRS_UNSPECIFIED, &current, 1);
+    qemu_log_mask(LOG_UNIMP, "esp-ble-core: sched %s entry %u: arg0 0x%08x "
+                  "callback 0x%08x arg2 0x%08x word3 0x%08x, current %u%c",
+                  when, idx, slot[0], slot[1], slot[2], slot[3], current, 10);
+}
+
 static void ble_peek(EspBleCore *s, unsigned idx)
 {
     static int enabled = -1;
@@ -656,6 +691,7 @@ static void ble_event_done(void *opaque)
     address_space_write(&address_space_memory, entry, MEMTXATTRS_UNSPECIFIED, &word0, 2);
     qemu_log_mask(LOG_UNIMP, "esp-ble-core: entry %u %s at %lld hus%c", idx,
                   late ? "skipped" : "ended", (long long)ble_now_hus(), 10);
+    ble_sched_peek(s, idx, "done");
 
     memmove(&s->events[0], &s->events[1], (s->n_events - 1) * sizeof(s->events[0]));
     s->n_events--;
@@ -690,6 +726,7 @@ static void ble_kick(EspBleCore *s, uint32_t value)
                   e[8], e[9], e[10], e[11], e[12], e[13], e[14], e[15], 10);
 
     ble_peek(s, idx);
+    ble_sched_peek(s, idx, "kick");
     ble_transmit(s);
     {
         uint8_t heard[64];

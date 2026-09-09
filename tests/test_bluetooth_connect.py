@@ -1,16 +1,22 @@
 #!/usr/bin/env python3
-"""A central connects to the board over Bluetooth.
+"""A central speaks to the board over Bluetooth.
 
 This is the peer the firmware was built for. Meshtastic never scans (ADR 0045),
 so it cannot meet another board; what it waits for is something connecting to
-it, which is what this does.
+it, which is what this sends.
 
 The connection request is what the specification says one is, and what the ROM
 checks it against: an initiator address, an advertiser address, and connection
 data whose interval, latency and timeout the controller validates before it
-will accept them. Nothing here is accepted on this emulator's say-so -- the
-firmware's own link layer decides, and the proof is that it changes what it
-schedules afterwards.
+will look at them. Nothing here is accepted on this emulator's say-so -- the
+firmware's own link layer decides.
+
+What these tests do *not* show is a connection. ADR 0048 measured what becomes
+of the request: the ROM validates it, `r_lld_con_start` runs, and the
+controller library tears the connection down inside the same call. The board
+goes on advertising throughout. So the last test below asserts only what it
+can see -- that the request reaches the link layer and changes what the
+controller schedules -- and claims nothing about a link being up.
 """
 
 from __future__ import annotations
@@ -41,11 +47,13 @@ BLUETOOTH_FS = REPO_ROOT / "build" / "littlefs-bluetooth.bin"
 OVERLAY_AT = 0xC90000
 RUN_SECONDS = 330
 PDU_CONNECT_IND = 0x05
-# What the controller schedules while it is only advertising, and the kind it
-# adds once a connection is up. Both are the first word of an exchange-table
-# entry, as the core logs them.
+# The first word of an exchange-table entry, as the core logs it. The board
+# schedules the first kind continuously; the second appears only after a
+# connection request and, despite the name it was first given, is an
+# advertising event too -- it keeps the advertising cadence and carries
+# `r_lld_adv_frm_cbk` (ADR 0048).
 ADVERTISING_EVENT = "0228"
-CONNECTION_EVENT = "0230"
+REQUESTED_EVENT = "0230"
 
 
 def connect_request() -> bytes:
@@ -135,9 +143,10 @@ def test_it_was_advertising_first(connected) -> None:
     assert f"entry {ADVERTISING_EVENT}" in connected, connected[-1500:]
 
 
-def test_the_controller_accepts_and_starts_a_connection(connected) -> None:
-    """The firmware's own link layer decides, and it says so by scheduling a
-    kind of event it never schedules while merely advertising."""
-    assert f"entry {CONNECTION_EVENT}" in connected, (
-        "the link layer never scheduled a connection event; it accepted "
+def test_the_request_changes_what_the_controller_schedules(connected) -> None:
+    """The link layer acts on the request: it schedules a kind of event it
+    never schedules while merely advertising. That is the whole claim -- the
+    connection does not survive `r_lld_con_start` (ADR 0048)."""
+    assert f"entry {REQUESTED_EVENT}" in connected, (
+        "the link layer scheduled nothing new; the request changed "
         "nothing:\n" + connected[-1500:])
