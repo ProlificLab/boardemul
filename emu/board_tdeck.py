@@ -138,11 +138,11 @@ UNMODELLED = {
     # this is where the vendor firmware stops: with these invisible, the last
     # bus access looked like PSRAM timing calibration on SPI0, which sent a
     # whole investigation the wrong way.
-    # Where the vendor firmware actually stops. It writes a little config here
-    # and then polls +0x050 about a thousand times a second, forever, inside
-    # esp_wifi_start(). Undocumented in both the fork's register map and IDF's,
-    # and claimed only so the stall is visible rather than swallowed by the
-    # machine's catch-all.
+    # The radio front end, and the busiest window nothing models: half a
+    # million accesses. It is not a stall, whatever an older note here said --
+    # the firmware brings its station up and scans, and most of the traffic is
+    # a calibration table going in through +0xc8 and +0xcc and the scan hopping
+    # channels. What it never does is hear anything (ADR 0054).
     # The MAC stage of esp_wifi_start(), once the PHY is up. IDF's own base list
     # names nothing at 0x60033000..0x60037FFF, but WDEV_RND_REG at 0x6003507C
     # places the MAC/WDEV block there. 0x60035000 itself is deliberately NOT
