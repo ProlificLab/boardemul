@@ -53,6 +53,22 @@ assumed.
 
 - **A connection is not a conversation.** Nothing is exchanged over it yet: no
   data channel packets, no channel hopping, no GATT. The link is up and empty.
+
+  How empty was then measured. Each connection request buys exactly one
+  connection event, after which the controller returns to advertising: the
+  peripheral waits for the master to speak, hears nothing, and gives up.
+  Feeding the link changes that only in degree -- a packet every thirty
+  milliseconds took the run from four connection events to sixteen, with three
+  hundred and ninety-five of them delivered into descriptors -- but the ROM
+  never runs `r_lld_con_rx`, `r_lld_con_frm_isr` or `r_lld_con_frm_cbk`, not
+  once. Nothing on the link is consumed.
+
+  So the next unknown is not where a data packet goes but what makes the ROM
+  service a connection event at all. Its advertising events reach their handler
+  through the end callback; its connection events, scheduled through the same
+  table and ended the same way, do not. Something distinguishes them -- most
+  likely the status the event ends with, or an interrupt this model does not
+  raise -- and that is where to look before any data path is built.
 - The advertiser address in the request is not the board's, and nothing checks
   it, because addresses are not modelled. A real central would have to use the
   address it heard.
