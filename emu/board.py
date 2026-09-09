@@ -26,6 +26,7 @@ from emu.devices.i2c_devices import CST328, TCA8418, tdeck_max_devices
 from emu import sdimage
 from emu.devices.air import AirMedium
 from emu.devices.gps import L76K
+from emu.devices.ledc import Ledc
 from emu.devices.sdcard import SdCard
 from emu.devices.sx1262 import Sx1262
 from emu.i2c_link import I2CServer
@@ -133,10 +134,6 @@ def i2c_devices() -> list[I2CDevice]:
     which is how you find out which device's answers a driver actually chokes on.
     """
     devices = tdeck_max_devices()
-    # This board carries the same satellite receiver on the same UART, and its
-    # own GPS example will not look for one until the port expander beside it
-    # answers -- which is why it is fitted here rather than on the other board's
-    # say-so (ADR 0052).
     only = os.environ.get("BOARDEMUL_I2C")
     if only:
         wanted = {int(a, 16) for a in only.replace(" ", "").split(",") if a}
@@ -173,6 +170,10 @@ class Board:
         for link in (self.spi, self.i2c0, self.i2c1, self.gpio, self.gps):
             if link:
                 link.stop()
+
+    def region(self, name: str) -> "Region | None":
+        """A window's model by name, for a run that wants to report on it."""
+        return next((r for r in self.regions if r.name == name), None)
 
     def qemu_args(self) -> list[str]:
         args: list[str] = []
@@ -213,11 +214,18 @@ def build(outdir: Path, air: str | None = None, ble_air: str | None = None,
                     {SPI_DISPLAY: panel, SPI_RADIO: radio, SPI_SDCARD: sdcard})
     i2c0 = I2CServer(outdir / "i2c0.sock", i2c_devices(), name="i2c0")
     i2c1 = I2CServer(outdir / "i2c1.sock", [], name="i2c1")
+    # The same receiver on the same UART as the other board. No firmware to
+    # hand exercises it here -- this board's own GPS example gives up before it
+    # touches a UART at all -- so it is plumbed and unproven (ADR 0052).
     receiver = SerialServer(outdir / "gps.sock",
                             L76K(latitude=gps[0], longitude=gps[1],
                                  altitude_m=gps[2]), name="gps") if gps else None
 
-    regions: list[Region] = [TraceRegion(n, b) for n, b in UNMODELLED.items()]
+    # Most of these windows are claimed only so that an access to them is
+    # visible rather than swallowed. The backlight controller is the one
+    # with a model behind it (ADR 0053).
+    regions: list[Region] = [Ledc(n, b) if n == "ledc" else TraceRegion(n, b)
+                             for n, b in UNMODELLED.items()]
 
     # GPIO is declared first: the SPI master registers a chip-select watch when
     # it is realized, and -device instances are realized in command-line order.

@@ -61,6 +61,10 @@ class RunResult:
     # agreeing about this, so it has to be readable after the fact
     # rather than only visible in a debug log.
     radio: dict = field(default_factory=dict)
+    # What the screen's backlight did. A firmware that dims or blanks the panel
+    # says so here rather than only in a log line, so a run can be asked about
+    # it afterwards (ADR 0053).
+    backlight: dict = field(default_factory=dict)
 
 
 def find_qemu(explicit: str | None = None) -> Path:
@@ -363,6 +367,7 @@ def main(argv: list[str] | None = None) -> int:
             hw.stop()
 
     radio_stats: dict = {}
+    backlight_stats: dict = {}
     if hw is not None:
         for device in getattr(hw.spi, "devices", {}).values():
             if hasattr(device, "sent") and hasattr(device, "heard"):
@@ -374,6 +379,17 @@ def main(argv: list[str] | None = None) -> int:
                     "out_of_range": getattr(device, "out_of_range", 0),
                     "wrong_frequency": getattr(device, "wrong_frequency", 0),
                 }
+        lit = hw.region("ledc")
+        if lit is not None and hasattr(lit, "levels"):
+            backlight_stats = {
+                f"channel{index}": {
+                    "now": lit.brightness(index),
+                    "lowest": min(lit.levels[index]),
+                    "highest": max(lit.levels[index]),
+                    "changes": len(lit.levels[index]),
+                }
+                for index in lit.driving() if lit.levels[index]
+            }
 
     result = RunResult(
         qemu_version=qemu_version(qemu),
@@ -391,6 +407,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.trace:
         result.notes.append("timing is meaningless in a traced run")
     result.radio = radio_stats
+    result.backlight = backlight_stats
 
     manifest = args.outdir / f"{tag}.manifest.json"
     manifest.write_text(json.dumps(asdict(result), indent=2))
@@ -446,6 +463,10 @@ def _report_bus(server: BusServer, tail=None, irq=None, hw=None) -> None:
                           f"{dev.delivered} character(s) delivered, "
                           f"{len(dev.pending)} still queued")
         print(f"  gpio: {hw.gpio.sent} pin level(s) driven from the host")
+        backlight = hw.region("ledc")
+        if backlight is not None and hasattr(backlight, "summary"):
+            print(f"  {backlight.summary()}")
+
         if hw.gps:
             print(f"  gps: {hw.gps.bytes_in} byte(s) in, {hw.gps.bytes_out} out")
             print(f"    {hw.gps.device.summary()}")

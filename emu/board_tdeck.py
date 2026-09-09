@@ -26,6 +26,7 @@ from emu import sdimage
 from emu.i2c_link import I2CServer
 from emu.serial_link import SerialServer
 from emu.devices.gps import L76K
+from emu.devices.ledc import Ledc
 from emu.devices.lcd import St7789Panel
 from emu.devices.air import AirMedium
 from emu.devices.es7210 import Es7210
@@ -212,6 +213,15 @@ class PhyGates(TraceRegion):
             v |= self.GATES.get(self.base + offset, 0)
         return v
 
+def _claim(name: str, base: int) -> Region:
+    """What to put behind a window. Most are claimed only so that an access is
+    visible rather than swallowed by the machine's catch-all; the backlight
+    controller is modelled (ADR 0053), and the radio gates answer (ADR 0019)."""
+    if name == "ledc":
+        return Ledc(name, base)
+    return PhyGates(name, base) if PhyGates.covers(base) else TraceRegion(name, base)
+
+
 def build(outdir: Path, air: str | None = None, ble_air: str | None = None,
           position: tuple[float, float] = (0.0, 0.0),
           antenna_dbi: float = 0.0, exponent: float = 2.0,
@@ -254,8 +264,7 @@ def build(outdir: Path, air: str | None = None, ble_air: str | None = None,
                             L76K(latitude=gps[0], longitude=gps[1],
                                  altitude_m=gps[2]), name="gps") if gps else None
 
-    regions: list[Region] = [PhyGates(n, b) if PhyGates.covers(b) else TraceRegion(n, b)
-                             for n, b in UNMODELLED.items()]
+    regions: list[Region] = [_claim(n, b) for n, b in UNMODELLED.items()]
     for name, (base, size) in EXTRA_REGIONS.items():
         cls = {"PhyGates": PhyGates, "SarAdc": SarAdc}.get(EXTRA_CLASSES.get(name, ""), TraceRegion)
         regions.append(cls(name, base, size))
