@@ -1,6 +1,9 @@
 # ADR 0050 — What a connection event is told
 
-**Status:** Accepted — 2026-09-09. Names the next wall; does not take it down.
+**Status:** Accepted — 2026-09-09. **Superseded by ADR 0051**, which took the
+wall down and found it was not where this ADR pointed: the control block was
+not what a connection event was waiting for. What stands is the descriptor
+header fix and the measurement that motivated the search.
 
 ## Context
 

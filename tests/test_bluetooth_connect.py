@@ -1,26 +1,23 @@
 #!/usr/bin/env python3
-"""A central speaks to the board over Bluetooth.
+"""A central connects to the board over Bluetooth, and keeps the link.
 
 This is the peer the firmware was built for. Meshtastic never scans (ADR 0045),
 so it cannot meet another board; what it waits for is something connecting to
-it, which is what this sends.
+it, which is what this does.
 
 The connection request is what the specification says one is, and what the ROM
 checks it against: an initiator address, an advertiser address, and connection
 data whose interval, latency and timeout the controller validates before it
-will look at them. Nothing here is accepted on this emulator's say-so -- the
-firmware's own link layer decides.
+will accept them. Nothing here is accepted on this emulator's say-so -- the
+firmware's own link layer decides, and what it decides is visible in the
+schedule it then keeps.
 
-The connection that follows is the firmware's own: it stops advertising, starts
-its link layer controller, tells the host, and begins scheduling connection
-events on the interval the request asked for. That last part is what the tests
-below look at, because it is the controller keeping a schedule this emulator
-never gave it.
-
-The link then ends, and correctly: the central on the air says nothing after
-its request, and a peripheral that hears nothing from its master gives up
-after about six intervals (ADR 0049). Carrying data over the link needs a
-channel-hopping medium that does not exist yet.
+That schedule is the point of these tests. A connection the controller has
+accepted but cannot service dies after about six intervals, which is what the
+specification gives a link to establish itself (ADR 0049); one that is being
+serviced runs on the interval it was given for as long as its master keeps
+speaking (ADR 0051). The difference between those two is what is measured
+here, and neither of them is something this emulator supplies.
 """
 
 from __future__ import annotations
@@ -51,19 +48,27 @@ pytestmark = [
 BLUETOOTH_FS = REPO_ROOT / "build" / "littlefs-bluetooth.bin"
 OVERLAY_AT = 0xC90000
 RUN_SECONDS = 330
-REQUESTS = 6
+# How long the central goes on speaking after it has connected. This is wall
+# time and the guest runs slower, so it buys rather less link time than it
+# looks -- which is why the assertions below are in the guest's own clock.
+KEEPALIVE_SECONDS = 20
 PDU_CONNECT_IND = 0x05
-# The first word of an exchange-table entry, as the core logs it. The board
-# schedules the first kind continuously, whatever else is happening; the second
-# it schedules only while it has a connection to service.
-ADVERTISING_EVENT = "0228"
-CONNECTION_EVENT = "02f8"
+# The first word of an exchange-table entry, as the core logs it. These are the
+# kinds a board schedules while it is only advertising; the controller has
+# several for a connection and they were not all seen at once, so anything
+# that is not one of these is taken as the connection's. They are the
+# controller's constants, not this project's.
+ADVERTISING_EVENTS = ("0228", "0230")
 # What the request asks for, and so what the controller's own events should be
 # spaced by. A connection interval is counted in units of 1.25 ms.
 INTERVAL_UNITS = 24
 INTERVAL_MS = INTERVAL_UNITS * 1.25
 # The core logs its timestamps in half-microseconds.
 HUS_PER_MS = 2000
+# Comfortably past the six intervals the specification gives a connection to
+# establish itself, and low enough that a guest crawling under a loaded suite
+# still reaches it.
+ALIVE_MS = 2000
 
 
 def connect_request() -> bytes:
@@ -72,18 +77,25 @@ def connect_request() -> bytes:
     the ROM insists on, which is why it accepts this and not any 34 bytes."""
     initiator = bytes.fromhex("ccbbaa286f24")
     advertiser = bytes.fromhex("0100000000c0")
-    data = (struct.pack("<I", 0xAF9AB4C3)       # access address
-            + bytes.fromhex("555555")           # CRC seed
-            + bytes([3])                        # window size
-            + struct.pack("<H", 1)              # window offset
+    data = (struct.pack("<I", 0xAF9AB4C3)        # access address
+            + bytes.fromhex("555555")            # CRC seed
+            + bytes([3])                         # window size
+            + struct.pack("<H", 1)               # window offset
             + struct.pack("<H", INTERVAL_UNITS)  # interval
-            + struct.pack("<H", 0)              # latency
-            + struct.pack("<H", 72)             # timeout, 720 ms
-            + bytes.fromhex("ffffffff1f")       # channel map
-            + bytes([0x0D]))                    # hop and clock accuracy
+            + struct.pack("<H", 0)               # latency
+            + struct.pack("<H", 72)              # timeout, 720 ms
+            + bytes.fromhex("ffffffff1f")        # channel map
+            + bytes([0x0D]))                     # hop and clock accuracy
     payload = initiator + advertiser + data
     assert len(payload) == 34, len(payload)
     return bytes([PDU_CONNECT_IND]) + payload
+
+
+def empty_packet() -> bytes:
+    """What a master sends when it has nothing to say: a data packet whose
+    LLID is one and whose payload is empty. It carries nothing, and hearing it
+    is what tells a peripheral its master is still there."""
+    return bytes([0x01])
 
 
 def connection_events(log: str) -> list[int]:
@@ -93,9 +105,9 @@ def connection_events(log: str) -> list[int]:
     entry's first word and the time it was kicked, so the controller's own
     schedule can be read back without tracing the ROM.
     """
-    return [int(m.group(1)) for m in re.finditer(
-        r"kick entry \d+ at \S+ start \d+ hus, now (\d+) hus, "
-        rf"entry {CONNECTION_EVENT} ", log)]
+    return [int(at) for at, kind in re.findall(
+        r"kick entry \d+ at \S+ start \d+ hus, now (\d+) hus, entry ([0-9a-f]{4}) ",
+        log) if kind not in ADVERTISING_EVENTS]
 
 
 @pytest.fixture(scope="module")
@@ -113,7 +125,7 @@ def bluetooth_filesystem() -> Path:
 
 @pytest.fixture(scope="module")
 def connected(tmp_path_factory, bluetooth_filesystem: Path) -> str:
-    """Boot the board, wait to hear it, connect to it, and report the trace."""
+    """Boot the board, wait to hear it, connect, then keep speaking to it."""
     work = tmp_path_factory.mktemp("blecon")
     air = work / "air"
     air.mkdir()
@@ -137,14 +149,13 @@ def connected(tmp_path_factory, bluetooth_filesystem: Path) -> str:
             if proc.poll() is not None:
                 break
             time.sleep(0.5)
-        # A handful of requests, spaced far enough apart that each connection
-        # has run its course before the next arrives. A barrage would work too
-        # but the events of one link would run into the next, and the interval
-        # between them is the thing being measured.
-        for _ in range(REQUESTS):
-            central.send(connect_request())
-            time.sleep(3)
-        time.sleep(10)
+        central.send(connect_request())
+        # One request, then talk. A real central sends exactly one, and the
+        # link then lives or dies on whether it is spoken to.
+        until = time.monotonic() + KEEPALIVE_SECONDS
+        while time.monotonic() < until and proc.poll() is None:
+            central.send(empty_packet())
+            time.sleep(0.01)
     finally:
         central.close()
         if proc.poll() is None:
@@ -166,29 +177,42 @@ def test_the_request_reaches_the_link_layer(connected) -> None:
 
 def test_it_was_advertising_first(connected) -> None:
     """Otherwise there was nothing to connect to and nothing is proven."""
-    assert f"entry {ADVERTISING_EVENT}" in connected, connected[-1500:]
+    assert f"entry {ADVERTISING_EVENTS[0]}" in connected, connected[-1500:]
 
 
 def test_the_controller_accepts_and_starts_a_connection(connected) -> None:
     """The firmware's own link layer decides, and it says so by scheduling a
     kind of event it never schedules while merely advertising."""
-    assert f"entry {CONNECTION_EVENT}" in connected, (
+    assert connection_events(connected), (
         "the link layer never scheduled a connection event; it accepted "
         "nothing:\n" + connected[-1500:])
 
 
-def test_the_connection_runs_at_the_interval_it_was_asked_for(connected) -> None:
-    """The strongest thing available without tracing the ROM: the controller
-    keeps a schedule of its own, and it is the one the request named. Nothing
-    in this emulator supplies that cadence -- it comes out of the connection
-    parameters the firmware accepted (ADR 0049)."""
+def test_the_link_stays_up_while_it_is_spoken_to(connected) -> None:
+    """The difference between a connection that was accepted and one that is
+    being serviced. Unserviced it dies after about six intervals; here it
+    should last for as long as the central keeps talking (ADR 0051)."""
     events = connection_events(connected)
-    assert len(events) >= 3, f"only {len(events)} connection event(s): {events}"
-    gaps = [(b - a) / HUS_PER_MS for a, b in zip(events, events[1:])]
-    # Consecutive events within one connection. A gap much larger than the
-    # interval is the boundary between two connections, and says nothing
-    # against the ones inside.
-    within = [g for g in gaps if g < INTERVAL_MS * 3]
-    assert within, f"no two connection events ran close together: {gaps}"
-    assert all(abs(g - INTERVAL_MS) < 1.0 for g in within), (
-        f"connection events were not {INTERVAL_MS} ms apart: {within}")
+    assert len(events) >= 40, f"only {len(events)} connection event(s)"
+    lived = (events[-1] - events[0]) / HUS_PER_MS
+    assert lived >= ALIVE_MS, (
+        f"the link ran for {lived:.0f} ms over {len(events)} events, which is "
+        f"not past the window a connection is given to establish itself")
+
+
+def test_the_connection_runs_at_the_interval_it_was_asked_for(connected) -> None:
+    """The controller keeps a schedule of its own, and it is the one the
+    request named. Nothing in this emulator supplies that cadence -- it comes
+    out of the connection parameters the firmware accepted.
+
+    The middle gap is the measure, not every gap: an event whose packet did
+    not arrive in time is skipped, and the next one lands an interval later,
+    which is the link working rather than failing.
+    """
+    events = connection_events(connected)
+    gaps = sorted((b - a) / HUS_PER_MS for a, b in zip(events, events[1:]))
+    assert gaps, f"only {len(events)} connection event(s)"
+    middle = gaps[len(gaps) // 2]
+    assert abs(middle - INTERVAL_MS) < 1.0, (
+        f"connection events ran {middle:.2f} ms apart, not {INTERVAL_MS}; "
+        f"the shortest was {gaps[0]:.2f} and the longest {gaps[-1]:.2f}")

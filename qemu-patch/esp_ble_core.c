@@ -129,12 +129,48 @@ OBJECT_DECLARE_SIMPLE_TYPE(EspBleCore, ESP_BLE_CORE)
  * +10 -- the ROM raises an internal error if anything above those twenty-eight
  * bits is set. Within the half-slot, +12 is a position the ROM reads as
  * `624 - fine`, so it is in the same half-microseconds as everything else
- * here. The top two bits of +6 choose the rate. */
+ * here. The top two bits of +6 choose the rate.
+ *
+ * The time recorded is the event's own start, not the moment the model
+ * happens to hand the packet over. A connection resynchronises itself to
+ * this timestamp every event, so handing it the clock at kick time -- some
+ * two milliseconds before the event opens -- drags the anchor earlier and
+ * the link runs a millisecond fast. */
 #define RX_DESC_RATE      6          /* in bits 15..14 */
 #define RX_DESC_CLOCK_LO  8
 #define RX_DESC_CLOCK_HI  10
 #define RX_DESC_FINE      12
 #define RX_CLOCK_HI_MASK  0x0FFF     /* the clock is twenty-eight bits */
+/* +12 carries two things. Its low ten bits are the position within the
+ * half-slot -- r_lld_adv_pkt_rx_connect_post reads exactly ten of them -- and
+ * bits 15..11 name the activity the packet belongs to. r_lld_rxdesc_check
+ * compares those against the link it was asked about and reports nothing
+ * received when they differ, so a descriptor without them is invisible to a
+ * connection however complete it otherwise looks. Advertising is activity
+ * zero, which is why it never needed this. */
+#define RX_DESC_FINE_MASK   0x03FF
+#define RX_DESC_LINK_SHIFT  11
+/* And which activity an event belongs to comes off the entry itself: the
+ * control structure it names sits at link * 45 + 512 halfwords. */
+#define CS_BASE_HALFWORDS     512
+#define CS_HALFWORDS_PER_LINK 45
+/* Where an event's control structure is, and what the hardware says about how
+ * the event went.
+ *
+ * r_sch_prog_ble_push (ROM 0x4002d674) writes the structure's exchange-memory
+ * address into the entry it is filling, at +8, counted in halfwords:
+ * link * 45 + 512, which is (link * 90 + 1024) / 2. So an entry names its own
+ * structure, and this model does not have to know which link an event belongs
+ * to -- it reads it off the entry, as the baseband would.
+ *
+ * r_lld_con_frm_isr then reads the high byte of the halfword at +86 of that
+ * structure and will not treat the event as having gone cleanly unless it is
+ * zero. Nothing in the ROM ever writes that byte: it is the hardware's to
+ * write, so left alone it is whatever the memory happened to hold, and a
+ * connection is told every one of its events failed.
+ */
+#define ET_CS_HALFWORD    8        /* the entry's +8, the structure in halfwords */
+#define CS_EVENT_STATUS   87       /* the high byte of the halfword at +86 */
 /* Where the link layer keeps the index of the descriptor it reads next.
  * A ROM data address, stable for this ROM, and the only way to know
  * which of the ten the ROM will look at. */
@@ -155,6 +191,14 @@ OBJECT_DECLARE_SIMPLE_TYPE(EspBleCore, ESP_BLE_CORE)
 #define FIFO_DEPTH      16
 #define BIT_END         (1u << 5)
 #define BIT_SKIP        (1u << 6)
+/* A packet arrived during the event. r_rwble_isr (ROM 0x4002b564) hands this
+ * bit to r_sch_prog_rx_isr, which calls the event's own callback with a reason
+ * of 2 -- and that is the only way a connection ever looks at what it
+ * received. Advertising does not need it: its end callback walks the
+ * descriptor ring itself. The bit is raised with the end, not before it,
+ * because r_rwble_isr takes them in that order out of one status word and the
+ * receive handler insists the entry's status is already past 2. */
+#define BIT_RX          (1u << 2)
 
 #define ET_ENTRY_SIZE   16
 #define ET_STATUS_SHIFT 3
@@ -189,7 +233,7 @@ struct EspBleCore {
     unsigned fifo_len;
 
     /* Exchange-table entries kicked and not yet ended, by start time. */
-    struct { unsigned idx; int64_t start_hus; } events[ET_MAX_PENDING];
+    struct { unsigned idx; int64_t start_hus; bool received; } events[ET_MAX_PENDING];
     unsigned n_events;
     QEMUTimer *event_timer;
 
@@ -618,7 +662,8 @@ static bool ble_air_poll(EspBleCore *s, uint8_t *frame, size_t room, size_t *got
 /* Hand a received packet to the link layer the way its hardware would: fill
  * the descriptor it is about to read, and say what kind of packet it was.
  */
-static void ble_deliver(EspBleCore *s, const uint8_t *frame, size_t length)
+static bool ble_deliver(EspBleCore *s, const uint8_t *frame, size_t length,
+                        unsigned link, int64_t at)
 {
     uint32_t env = 0;
     uint8_t index = 0;
@@ -627,7 +672,7 @@ static void ble_deliver(EspBleCore *s, const uint8_t *frame, size_t length)
     uint16_t done = RX_DONE, status = 0, kind;
 
     if (!length) {
-        return;
+        return false;
     }
     /* The descriptor's +4 is the packet's own two header bytes, not just its
      * type: the first says what kind of packet it is -- an advertising type,
@@ -638,21 +683,21 @@ static void ble_deliver(EspBleCore *s, const uint8_t *frame, size_t length)
     kind = (uint16_t)frame[0] | (uint16_t)((length - 1) << 8);
     if (!ring) {
         qemu_log_mask(LOG_UNIMP, "esp-ble-core: deliver: ring unmapped%c", 10);
-        return;
+        return false;
     }
     address_space_read(&address_space_memory, LLD_ENV_PTR, MEMTXATTRS_UNSPECIFIED,
                        &env, sizeof(env));
     if (env < 0x3FC00000u || env >= 0x3FD00000u) {
         qemu_log_mask(LOG_UNIMP, "esp-ble-core: deliver: env 0x%08x looks wrong%c",
                       env, 10);
-        return;                         /* the link layer is not up yet */
+        return false;                         /* the link layer is not up yet */
     }
     address_space_read(&address_space_memory, env + LLD_ENV_RX_INDEX,
                        MEMTXATTRS_UNSPECIFIED, &index, 1);
     if (index >= RX_RING_COUNT) {
         qemu_log_mask(LOG_UNIMP, "esp-ble-core: deliver: index %u out of range%c",
                       index, 10);
-        return;
+        return false;
     }
     desc = ring + (hwaddr)index * RX_DESC_SIZE;
 
@@ -666,10 +711,10 @@ static void ble_deliver(EspBleCore *s, const uint8_t *frame, size_t length)
      * it, so whatever the last user of this descriptor left behind becomes the
      * time the connection is supposed to start (ADR 0049). The rate is written
      * rather than left alone for the same reason. */
-    int64_t at = ble_now_hus();
     uint16_t clock_lo = (uint16_t)((at / HUS_PER_HS) & 0xFFFF);
     uint16_t clock_hi = (uint16_t)(((at / HUS_PER_HS) >> 16) & RX_CLOCK_HI_MASK);
-    uint16_t fine = (uint16_t)(at % HUS_PER_HS);
+    uint16_t fine = (uint16_t)(((at % HUS_PER_HS) & RX_DESC_FINE_MASK)
+                               | ((link & 0x1F) << RX_DESC_LINK_SHIFT));
     uint16_t rate = 0;                  /* one megabit, as advertising is */
 
     address_space_write(&address_space_memory, desc + RX_DESC_RATE,
@@ -701,9 +746,11 @@ static void ble_deliver(EspBleCore *s, const uint8_t *frame, size_t length)
     s->received++;
     qemu_log_mask(LOG_UNIMP, "esp-ble-core: delivered a type %u packet of "
                   "%u byte(s) into descriptor %u at 0x%08llx, payload offset "
-                  "0x%04x -> 0x%08llx%c", frame[0] & 0x0F,
+                  "0x%04x -> 0x%08llx (link %u)%c", frame[0] & 0x0F,
                   (unsigned)length - 1, index,
-                  (unsigned long long)desc, where, (unsigned long long)into, 10);
+                  (unsigned long long)desc, where, (unsigned long long)into,
+                  link, 10);
+    return true;
 }
 
 static void ble_arm_event_timer(EspBleCore *s)
@@ -728,6 +775,7 @@ static void ble_event_done(void *opaque)
     }
     unsigned idx = s->events[0].idx;
     bool late = s->events[0].start_hus + EVENT_HUS < ble_now_hus() - EVENT_HUS;
+    bool took = s->events[0].received;
     hwaddr entry = ble_et_entry(s, idx);
     uint16_t word0 = 0;
 
@@ -736,12 +784,33 @@ static void ble_event_done(void *opaque)
     address_space_write(&address_space_memory, entry, MEMTXATTRS_UNSPECIFIED, &word0, 2);
     qemu_log_mask(LOG_UNIMP, "esp-ble-core: entry %u %s at %lld hus%c", idx,
                   late ? "skipped" : "ended", (long long)ble_now_hus(), 10);
+
+    /* Say how the event went. Nothing in this model can go wrong on the air,
+     * so the only honest answer is that nothing did -- but it has to be said,
+     * because the byte is the hardware's and the memory it sits in is not
+     * cleared by anyone else (ADR 0051). Only the byte the ROM was seen to
+     * read is written; the rest of the structure is not this model's to
+     * invent. */
+    uint16_t cs = 0;
+    address_space_read(&address_space_memory, entry + ET_CS_HALFWORD,
+                       MEMTXATTRS_UNSPECIFIED, &cs, sizeof(cs));
+    hwaddr control = cs ? ble_em_addr(s, (uint32_t)cs * 2) : 0;
+    if (control) {
+        uint8_t clean = 0;
+        address_space_write(&address_space_memory, control + CS_EVENT_STATUS,
+                            MEMTXATTRS_UNSPECIFIED, &clean, 1);
+    }
     ble_sched_peek(s, idx, "done");
 
     memmove(&s->events[0], &s->events[1], (s->n_events - 1) * sizeof(s->events[0]));
     s->n_events--;
-    s->raw |= late ? BIT_SKIP : BIT_END;
-    ble_fifo_push(s, late ? BIT_SKIP : BIT_END);
+    /* An event that never ran received nothing, whatever is in the ring. */
+    uint32_t raised = late ? BIT_SKIP : BIT_END;
+    if (took && !late) {
+        raised |= BIT_RX;
+    }
+    s->raw |= raised;
+    ble_fifo_push(s, raised);
     ble_update_irq(s);
     ble_arm_event_timer(s);
 }
@@ -773,11 +842,17 @@ static void ble_kick(EspBleCore *s, uint32_t value)
     ble_peek(s, idx);
     ble_sched_peek(s, idx, "kick");
     ble_transmit(s);
+    /* The entry names its own control structure, and the structure's place in
+     * exchange memory says which link the event is for. */
+    uint16_t cs = (uint16_t)(e[ET_CS_HALFWORD] | (e[ET_CS_HALFWORD + 1] << 8));
+    unsigned link = cs >= CS_BASE_HALFWORDS
+        ? (cs - CS_BASE_HALFWORDS) / CS_HALFWORDS_PER_LINK : 0;
+    bool received = false;
     {
         uint8_t heard[64];
         size_t got = 0;
         if (ble_air_poll(s, heard, sizeof(heard), &got)) {
-            ble_deliver(s, heard, got);
+            received = ble_deliver(s, heard, got, link, start);
         }
     }
 
@@ -788,6 +863,7 @@ static void ble_kick(EspBleCore *s, uint32_t value)
     }
     s->events[i].idx = idx;
     s->events[i].start_hus = start;
+    s->events[i].received = received;
     s->n_events++;
     ble_arm_event_timer(s);
 }
