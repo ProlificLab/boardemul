@@ -117,6 +117,11 @@ OBJECT_DECLARE_SIMPLE_TYPE(EspBleCore, ESP_BLE_CORE)
  * connection data. */
 #define RX_DESC_PAYLOAD   18
 #define CONNECT_IND_SIZE  34
+/* The most any legacy packet carries: thirty-seven bytes of advertising
+ * payload, of which a connection request is thirty-four, and twenty-seven on
+ * a connection. Capping the copy here is what keeps a malformed frame off the
+ * air from writing past the buffer the descriptor named. */
+#define MAX_PDU_BYTES     37
 /* When the packet arrived, which the hardware records and the link layer
  * needs: r_lld_adv_pkt_rx_connect_post builds a connection's anchor point out
  * of these. The clock is the same twenty-eight bit half-slot count the
@@ -624,7 +629,13 @@ static void ble_deliver(EspBleCore *s, const uint8_t *frame, size_t length)
     if (!length) {
         return;
     }
-    kind = frame[0] & 0x0F;
+    /* The descriptor's +4 is the packet's own two header bytes, not just its
+     * type: the first says what kind of packet it is -- an advertising type,
+     * or on a connection the LLID and the sequence bits -- and the second is
+     * how many bytes follow. r_lld_con_rx reads that length out of the high
+     * byte and refuses a zero LLID, so a connection's packets cannot be read
+     * at all from the type alone. */
+    kind = (uint16_t)frame[0] | (uint16_t)((length - 1) << 8);
     if (!ring) {
         qemu_log_mask(LOG_UNIMP, "esp-ble-core: deliver: ring unmapped%c", 10);
         return;
@@ -678,8 +689,8 @@ static void ble_deliver(EspBleCore *s, const uint8_t *frame, size_t length)
     hwaddr into = where ? ble_em_addr(s, where) : 0;
     if (into && length > 1) {
         size_t bytes = length - 1;
-        if (bytes > CONNECT_IND_SIZE) {
-            bytes = CONNECT_IND_SIZE;
+        if (bytes > MAX_PDU_BYTES) {
+            bytes = MAX_PDU_BYTES;
         }
         address_space_write(&address_space_memory, into, MEMTXATTRS_UNSPECIFIED,
                             frame + 1, bytes);
@@ -690,7 +701,8 @@ static void ble_deliver(EspBleCore *s, const uint8_t *frame, size_t length)
     s->received++;
     qemu_log_mask(LOG_UNIMP, "esp-ble-core: delivered a type %u packet of "
                   "%u byte(s) into descriptor %u at 0x%08llx, payload offset "
-                  "0x%04x -> 0x%08llx%c", kind, (unsigned)length - 1, index,
+                  "0x%04x -> 0x%08llx%c", frame[0] & 0x0F,
+                  (unsigned)length - 1, index,
                   (unsigned long long)desc, where, (unsigned long long)into, 10);
 }
 

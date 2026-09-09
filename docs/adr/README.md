@@ -55,3 +55,4 @@ superseded ADR is marked superseded and points forward.
 | [0047](0047-a-central-connects.md) | A central connects | Corrected by 0048 |
 | [0048](0048-the-connection-is-made-and-unmade-at-once.md) | The connection is made and unmade at once | Accepted |
 | [0049](0049-a-received-packet-says-when-it-arrived.md) | A received packet says when it arrived | Accepted |
+| [0050](0050-what-a-connection-event-is-told.md) | What a connection event is told | Accepted |
