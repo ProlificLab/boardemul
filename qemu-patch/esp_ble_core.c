@@ -117,6 +117,19 @@ OBJECT_DECLARE_SIMPLE_TYPE(EspBleCore, ESP_BLE_CORE)
  * connection data. */
 #define RX_DESC_PAYLOAD   18
 #define CONNECT_IND_SIZE  34
+/* When the packet arrived, which the hardware records and the link layer
+ * needs: r_lld_adv_pkt_rx_connect_post builds a connection's anchor point out
+ * of these. The clock is the same twenty-eight bit half-slot count the
+ * exchange table's entries are timed in, split low half at +8 and high at
+ * +10 -- the ROM raises an internal error if anything above those twenty-eight
+ * bits is set. Within the half-slot, +12 is a position the ROM reads as
+ * `624 - fine`, so it is in the same half-microseconds as everything else
+ * here. The top two bits of +6 choose the rate. */
+#define RX_DESC_RATE      6          /* in bits 15..14 */
+#define RX_DESC_CLOCK_LO  8
+#define RX_DESC_CLOCK_HI  10
+#define RX_DESC_FINE      12
+#define RX_CLOCK_HI_MASK  0x0FFF     /* the clock is twenty-eight bits */
 /* Where the link layer keeps the index of the descriptor it reads next.
  * A ROM data address, stable for this ROM, and the only way to know
  * which of the ten the ROM will look at. */
@@ -636,6 +649,26 @@ static void ble_deliver(EspBleCore *s, const uint8_t *frame, size_t length)
                         &status, sizeof(status));
     address_space_write(&address_space_memory, desc + 4, MEMTXATTRS_UNSPECIFIED,
                         &kind, sizeof(kind));
+
+    /* Say when it arrived. A descriptor left without this is not merely
+     * missing a detail: a connection request's anchor point is computed from
+     * it, so whatever the last user of this descriptor left behind becomes the
+     * time the connection is supposed to start (ADR 0049). The rate is written
+     * rather than left alone for the same reason. */
+    int64_t at = ble_now_hus();
+    uint16_t clock_lo = (uint16_t)((at / HUS_PER_HS) & 0xFFFF);
+    uint16_t clock_hi = (uint16_t)(((at / HUS_PER_HS) >> 16) & RX_CLOCK_HI_MASK);
+    uint16_t fine = (uint16_t)(at % HUS_PER_HS);
+    uint16_t rate = 0;                  /* one megabit, as advertising is */
+
+    address_space_write(&address_space_memory, desc + RX_DESC_RATE,
+                        MEMTXATTRS_UNSPECIFIED, &rate, sizeof(rate));
+    address_space_write(&address_space_memory, desc + RX_DESC_CLOCK_LO,
+                        MEMTXATTRS_UNSPECIFIED, &clock_lo, sizeof(clock_lo));
+    address_space_write(&address_space_memory, desc + RX_DESC_CLOCK_HI,
+                        MEMTXATTRS_UNSPECIFIED, &clock_hi, sizeof(clock_hi));
+    address_space_write(&address_space_memory, desc + RX_DESC_FINE,
+                        MEMTXATTRS_UNSPECIFIED, &fine, sizeof(fine));
     /* Put the packet where the handler will look for it: the descriptor
      * already names a buffer, and that is the controller's own choice of
      * where its received bytes live. */

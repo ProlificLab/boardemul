@@ -54,3 +54,4 @@ superseded ADR is marked superseded and points forward.
 | [0046](0046-the-controller-can-be-spoken-to.md) | The controller can be spoken to | Accepted |
 | [0047](0047-a-central-connects.md) | A central connects | Corrected by 0048 |
 | [0048](0048-the-connection-is-made-and-unmade-at-once.md) | The connection is made and unmade at once | Accepted |
+| [0049](0049-a-received-packet-says-when-it-arrived.md) | A received packet says when it arrived | Accepted |
