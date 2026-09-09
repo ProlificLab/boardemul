@@ -103,8 +103,9 @@ firmware will read next.
 
 ## Alternatives rejected
 
-**Fill a descriptor with a beacon and see what happens.** Without knowing which
-bits carry the length or which interrupt to raise, this is guessing at a
+**Fill a descriptor with a beacon and see what happens.** The descriptor's
+layout is known now, but which interrupt to raise is not, and neither is what
+the driver does when it wakes. Filling one and hoping is guessing at a
 structure the firmware will act on, which is the failure mode ADRs 0048 and
 0050 already cost three documents to.
 
