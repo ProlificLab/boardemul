@@ -71,6 +71,11 @@ itself and using that bit to latch each value, not asking the hardware to fade.
 - The measurement that chose this also cleared five windows: `uhci`, `pcnt`,
   `lcd_cam`, `spi3` and two of the WiFi MAC windows are never touched by any
   firmware here, so nothing is missing behind them.
+- **A run now answers the question itself.** Every claimed window and what the
+  firmware did with it goes into the manifest, and a chip select the controller
+  clocked bytes into with nothing on it is reported beside the I2C addresses
+  nobody answered. Both were already known to the run and thrown away, which is
+  why choosing this feature meant grepping through months of bus logs by hand.
 
 **Costs, accepted**
 

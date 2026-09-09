@@ -66,7 +66,11 @@ class SpiServer:
         self.socket_path = str(socket_path)
         self.devices: dict[int, SpiDevice] = (
             dict(device) if isinstance(device, dict) else {0: device})
-        self._unmodelled: set[int] = set()
+        # Chip selects the controller clocked bytes into with nothing on
+        # them. A part the firmware talks to and this board does not model
+        # is the whole question of what hardware is missing, so it is
+        # counted rather than only noticed (ADR 0053).
+        self.unmodelled: dict[int, int] = {}
         self._listener: socket.socket | None = None
         self._conn: socket.socket | None = None
         self._thread: threading.Thread | None = None
@@ -130,7 +134,7 @@ class SpiServer:
                 # bytes into empty air, so drop them and answer a duplex read
                 # with the idle level of an undriven line.
                 if kind == SEG_DUPLEX:
-                    self._unmodelled.add(cs)
+                    self.unmodelled[cs] = self.unmodelled.get(cs, 0) + 1
                 reply = None
             else:
                 try:

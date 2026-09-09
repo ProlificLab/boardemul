@@ -65,6 +65,10 @@ class RunResult:
     # says so here rather than only in a log line, so a run can be asked about
     # it afterwards (ADR 0053).
     backlight: dict = field(default_factory=dict)
+    # Every window this board claims on the register bridge, and how much the
+    # firmware used it. This is the list the next piece of hardware to model
+    # comes off (ADR 0053).
+    unmodelled: dict = field(default_factory=dict)
 
 
 def find_qemu(explicit: str | None = None) -> Path:
@@ -368,6 +372,7 @@ def main(argv: list[str] | None = None) -> int:
 
     radio_stats: dict = {}
     backlight_stats: dict = {}
+    unmodelled_stats: dict = {}
     if hw is not None:
         for device in getattr(hw.spi, "devices", {}).values():
             if hasattr(device, "sent") and hasattr(device, "heard"):
@@ -379,6 +384,11 @@ def main(argv: list[str] | None = None) -> int:
                     "out_of_range": getattr(device, "out_of_range", 0),
                     "wrong_frequency": getattr(device, "wrong_frequency", 0),
                 }
+        # Every claimed window and what the firmware did with it. The run
+        # already prints the busiest few; keeping the whole list in the record
+        # is what makes "which hardware is missing" a question a run answers
+        # rather than one to go and grep bus logs for afterwards (ADR 0053).
+        unmodelled_stats = {r.name: r.accesses for r in hw.regions if r.accesses}
         lit = hw.region("ledc")
         if lit is not None and hasattr(lit, "levels"):
             backlight_stats = {
@@ -408,6 +418,7 @@ def main(argv: list[str] | None = None) -> int:
         result.notes.append("timing is meaningless in a traced run")
     result.radio = radio_stats
     result.backlight = backlight_stats
+    result.unmodelled = unmodelled_stats
 
     manifest = args.outdir / f"{tag}.manifest.json"
     manifest.write_text(json.dumps(asdict(result), indent=2))
@@ -434,6 +445,12 @@ def _report_bus(server: BusServer, tail=None, irq=None, hw=None) -> None:
         print(f"  spi2: {hw.spi.segments} segment(s), {hw.spi.bytes_in} byte(s) in"
               + (f"  ({hw.spi.bytes_in / hw.spi.segments:.0f} bytes/segment)"
                  if hw.spi.segments else ""))
+        # The same question the I2C buses answer below: what did the firmware
+        # talk to that nothing here answers?
+        if hw.spi.unmodelled:
+            empty = ", ".join(f"select {cs} ({n} segment(s))"
+                              for cs, n in sorted(hw.spi.unmodelled.items()))
+            print(f"    clocked into nothing: {empty}")
         print(f"    {hw.panel.summary()}")
         latest = getattr(hw.panel, "latest", None)
         if latest:
