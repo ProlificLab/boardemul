@@ -1,6 +1,7 @@
 # ADR 0054 — What WiFi would need to hear something
 
 **Status:** Accepted — 2026-09-09. Names the work; does not do it.
+Amended the same day: the descriptor layout is no longer unknown.
 
 ## Context
 
@@ -51,12 +52,23 @@ firmware will read next.
    is removed, because a wrong description of where something stops is worse
    than none -- it sends the next investigation to the wrong register.
 
-2. **Record the ring rather than build on it.** Three things are known: which
-   register carries it, how the descriptors are linked, and how large the
-   buffers are. Three are not: which bits of the flags word are the length the
-   hardware fills in, which interrupt says a frame arrived, and what the
-   driver does with a descriptor it has been given. None of those can be read
-   off a run, because no frame has ever arrived to make the driver act.
+2. **Record the ring rather than build on it.** What is known: which register
+   carries it, how the descriptors are linked, how large the buffers are, and
+   -- see below -- the layout of the word in front of each one. What is not:
+   which interrupt says a frame arrived, and what the driver does with a
+   descriptor it has been given. Neither can be read off a run, because no
+   frame has ever arrived to make the driver act.
+
+   **The descriptor is the chip's own, not the WiFi MAC's.** `0x808a48a4` is
+   `0x8a4 | (0x8a4 << 12) | (1 << 31)` exactly, and under the layout this
+   project already walks for I2S -- "size 0..11, length 12..23, suc_eof at 30,
+   owner at 31", `esp_i2s_master.c` -- that reads as a buffer of 2212 bytes,
+   a length initialised to the same, and the owner bit set. Two independent
+   things agree: the constant decomposes with nothing left over, and the same
+   twelve-byte {word, buffer, next} shape is what the DMA engine uses
+   everywhere else on this part. So delivering a frame means writing the bytes
+   into the buffer, putting their count in the length, clearing the owner bit,
+   and raising something.
 
 3. **It will need a device in C.** Delivering a frame means writing into guest
    memory at a moment of the model's choosing and raising an interrupt, which a
@@ -80,9 +92,11 @@ firmware will read next.
   a board has is modelled: every I2C address any firmware talks to, every chip
   select, both I2S engines, the radio, the card, Bluetooth, the receiver on the
   second UART, and the backlight.
-- The descriptor's flags word is recorded as one observed constant. Reading it
-  properly means disassembling the controller library's own interrupt handler,
-  which is in flash rather than ROM and has no names to go on.
+- The two remaining unknowns both need the controller library's own interrupt
+  handler, which is in flash rather than ROM and has no names to go on. The
+  code that hands the ring to the MAC does not help: it reads an
+  already-built pointer out of a global and stores it, and the descriptors are
+  built somewhere else.
 - A scan finding an access point is only the first thing WiFi could do. A
   connection, and then traffic, is more again -- and would want an air of its
   own, as the radio and Bluetooth each have.
