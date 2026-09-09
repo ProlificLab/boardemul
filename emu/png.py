@@ -9,6 +9,7 @@ one back.
 
 from __future__ import annotations
 
+import os
 import struct
 import zlib
 from pathlib import Path
@@ -34,8 +35,15 @@ def write_png(path: Path, width: int, height: int, pixels: bytes,
         return (struct.pack(">I", len(body)) + tag + body
                 + struct.pack(">I", zlib.crc32(tag + body) & 0xFFFFFFFF))
 
-    Path(path).write_bytes(
+    # Written beside the real name and moved onto it, because the panel rewrites
+    # `latest.png` continuously while a test reads it, and a reader that catches
+    # a half-written file sees something that is not a PNG at all. A rename is
+    # the one operation on a file that cannot be observed half done.
+    path = Path(path)
+    part = path.with_name(path.name + ".part")
+    part.write_bytes(
         b"\x89PNG\r\n\x1a\n"
         + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, colour, 0, 0, 0))
         + chunk(b"IDAT", zlib.compress(raw, 9))
         + chunk(b"IEND", b""))
+    os.replace(part, path)

@@ -76,6 +76,25 @@ firmware will read next.
    is in C (ADR 0025). That is a new file rather than scattered edits, so it
    stays inside ADR 0001, but it is not a small one.
 
+   That device is now written (`esp_wifi_mac.c`), and what it establishes is a
+   negative: a frame put in the first descriptor the hardware still owns, with
+   its length set and its owner bit cleared, is **not taken by the driver** --
+   not with the WiFi MAC's own interrupt raised, nor with the MAC's
+   non-maskable, the power, or the baseband source. The descriptor is left
+   exactly as the model wrote it. So the interrupt was never the only thing
+   missing, and sweeping sources will not find the rest: the driver's handler
+   almost certainly reads a status register to learn why it was woken, and what
+   it expects to find there is the same thing that has to come out of the
+   library's own code.
+
+   **A device is not a window.** Replacing the trace window with this one broke
+   the station bring-up, and it took an A/B against the committed tree to see
+   it: the page was not blank paper but a `PhyGates` window, and it answers a
+   wait the firmware makes on bit 0 of `+0xd14` for the MAC to acknowledge its
+   reset (ADR 0019). The device now answers it, and honours the same
+   `BOARDEMUL_PHY_GATES=0` hatch. Anything else moved from Python to C wants
+   the same check.
+
 ## Consequences
 
 **Good**

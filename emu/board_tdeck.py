@@ -104,6 +104,12 @@ I2S1_BASE, GDMA_PERIPH_I2S1 = 0x6002D000, 4
 # took 0x1000 and ran into IO_MUX at 0x60009000, which the fork models -- the
 # third bite from ADR 0008's amendment, this time by size rather than by base.
 BLE_CORE_BASE = 0x60031000
+# The WiFi MAC's page. A C device rather than a claimed window, because
+# handing the driver a received frame means writing into guest memory and
+# raising an interrupt, and neither is possible from the register bridge
+# (ADR 0054). With its hatch unset it behaves exactly as the window did.
+WIFI_MAC_BASE = 0x60033000
+IRQ_WIFI_MAC = 0            # ETS_WIFI_MAC_INTR_SOURCE
 IRQ_RWBLE = 8          # ETS_RWBLE_INTR_SOURCE: the dispatcher's line (ADR 0024)
 
 EXTRA_REGIONS = {
@@ -149,7 +155,6 @@ UNMODELLED = {
     # claimed: the fork's catch-all serves the hardware RNG at 0x6003507C, and
     # shadowing it with a trace window starves the bootloader of entropy and
     # stops the boot at "entry" (ADR 0008, amended).
-    "wifi_mac0": 0x60033000,
     "wifi_mac1": 0x60034000,
     "wifi_mac3": 0x60036000,
     "wifi_mac4": 0x60037000,
@@ -290,6 +295,7 @@ def build(outdir: Path, air: str | None = None, ble_air: str | None = None,
         # must interrupt within the half-slot they were set for (ADR 0025).
         # Bluetooth's own air, when a scenario gives it one: a different band
         # from the radio's, so a different directory (ADR 0045).
+        f"esp-wifi-mac,base=0x{WIFI_MAC_BASE:x},irq={IRQ_WIFI_MAC}",
         f"esp-ble-core,base=0x{BLE_CORE_BASE:x},irq={IRQ_RWBLE}"
         + (f",air={ble_air},airname={outdir.name}" if ble_air else ""),
     ]
