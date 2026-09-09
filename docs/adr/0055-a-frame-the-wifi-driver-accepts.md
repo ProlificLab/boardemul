@@ -71,19 +71,22 @@ whether or not it made anything of the contents.
 - **A scan still finds nothing.** The driver takes the frame and makes nothing
   of it, which points at the buffer's contents rather than at the handshake.
 
-  That is now a much smaller search than it was. Because the driver reacts,
-  the code that reads the buffer runs, and diffing the blocks a run translates
-  with a frame against one without gives **forty-five**, in four tight
-  clusters. One of them is a three-instruction accessor that reads the first
-  word of something and takes its low eleven bits -- a length, which is what a
-  hardware receive header would put in front of the packet.
+  That is now a much smaller search than it was. Because the driver reacts, the
+  code that reads the frame runs, and diffing the blocks a run translates with
+  a frame against one without gives **forty-five**, in four tight clusters.
 
-  Staging such a header was tried at four bytes and at twelve. The driver takes
-  the frame either way and still reports nothing, so the size is not the whole
-  of it and guessing further at the layout is the thing this project does not
-  do. `BOARDEMUL_WIFI_HEADER` stages one for the next attempt; the accessor at
-  `0x420d4ffb` and the other three clusters are where the layout is written
-  down.
+  One of them is a field accessor -- given a number it returns one of three
+  things -- and resolving its literals says where those things live. Not in the
+  buffer, which is what a first reading of it suggested: they are registers in
+  this same page. The frame's **length is the low eleven bits of `+0xca8`**,
+  bits 16..23 of the same register are a second field, and the low four of
+  `+0xcb0` are a third.
+
+  Reading zero for the length is why the driver first took the frame and made
+  nothing of it. Told the length, it reads it back as the fifty-six bytes that
+  were delivered, checks `+0xcf0`, and discards the frame anyway -- and asks
+  for nothing else. So what remains is in the bytes themselves, and the two
+  fields not yet supplied are where to start.
 - The status mask is a range, not a bit.
 - One frame is delivered, once. A scan sweeps channels and would want a beacon
   on the right one at the right moment, which needs the air the radio and

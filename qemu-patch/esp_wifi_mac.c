@@ -67,6 +67,15 @@ OBJECT_DECLARE_SIMPLE_TYPE(EspWifiMac, ESP_WIFI_MAC)
  * position. It reads nothing, and asks again. So this is where the model
  * has to say which descriptor it filled. */
 #define R_RX_LAST       0x090
+/* How big the frame was. Not in the buffer: the receive path reaches it
+ * through a little accessor that selects a field by number, and the
+ * fields it selects are the low eleven bits here, bits 16..23 of the same
+ * register, and the low four of +0xcb0. Reading zero for the length is why
+ * the driver first took the frame and made nothing of it; told the length,
+ * it reads it, checks +0xcf0, and still discards -- so what is left is in
+ * the bytes, not in this page. */
+#define R_RX_LENGTH     0xca8
+#define RX_LENGTH_MASK  0x7FFu
 /* This page is not blank paper. Before this device existed it was served by
  * the board's PhyGates model, which answers the waits the firmware makes
  * during bring-up -- each one read off a disassembled polling loop, never
@@ -142,7 +151,6 @@ struct EspWifiMac {
     unsigned trace_left;
     bool gated;
     uint32_t status_mask;
-    uint32_t header_bytes;
     uint32_t ring;              /* what the driver handed us */
     hwaddr delivered_to;        /* the descriptor a frame went into */
     unsigned deliveries;
@@ -224,27 +232,12 @@ static void wifi_deliver(void *opaque)
     if (!buffer) {
         return;
     }
-    /* A real buffer does not start with the packet. The receive path has a
-     * tiny accessor that reads the first word and takes its low eleven bits,
-     * which is a length -- so the hardware writes a header in front and the
-     * packet follows it. How long that header is is not established, hence
-     * BOARDEMUL_WIFI_HEADER. */
-    uint8_t staged[sizeof(beacon) + 64] = { 0 };
-    uint32_t head = s->header_bytes;
-    if (head > 64) {
-        head = 64;
-    }
-    if (head >= 4) {
-        uint32_t first = (uint32_t)sizeof(beacon) & 0x7FFu;
-        memcpy(staged, &first, sizeof(first));
-    }
-    memcpy(staged + head, beacon, sizeof(beacon));
     address_space_write(&address_space_memory, buffer, MEMTXATTRS_UNSPECIFIED,
-                        staged, head + sizeof(beacon));
+                        beacon, sizeof(beacon));
     /* Keep the size the driver gave the buffer; say how much arrived, mark it
      * the end of the frame, and hand it back by clearing the owner bit. */
     uint32_t filled = (word & DESC_SIZE_MASK)
-                    | (((uint32_t)sizeof(beacon) + head) << DESC_LENGTH_SHIFT)
+                    | ((uint32_t)sizeof(beacon) << DESC_LENGTH_SHIFT)
                     | DESC_EOF;
     address_space_write(&address_space_memory, desc, MEMTXATTRS_UNSPECIFIED,
                         &filled, sizeof(filled));
@@ -256,7 +249,8 @@ static void wifi_deliver(void *opaque)
                   (unsigned long long)desc, word, filled, s->irq_source, 10);
     s->regs[R_INT_STATUS / 4] = s->status_mask;
     s->regs[R_RX_LAST / 4] = (uint32_t)desc;
-    s->trace_left = 40;
+    s->regs[R_RX_LENGTH / 4] = (uint32_t)sizeof(beacon) & RX_LENGTH_MASK;
+    s->trace_left = 120;
     wifi_raise(s, 1);
     /* Look again shortly: the answer is whether the driver re-armed it. */
     timer_mod_ns(s->hatch, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + 200000000LL);
@@ -355,8 +349,6 @@ static void wifi_realize(DeviceState *dev, Error **errp)
     s->gated = g_strcmp0(getenv("BOARDEMUL_PHY_GATES"), "0") != 0;
     const char *mask = getenv("BOARDEMUL_WIFI_STATUS");
     s->status_mask = mask ? (uint32_t)strtoul(mask, NULL, 0) : 0xFFFFFFFFu;
-    const char *head = getenv("BOARDEMUL_WIFI_HEADER");
-    s->header_bytes = head ? (uint32_t)strtoul(head, NULL, 0) : 0;
     s->hatch = timer_new_ns(QEMU_CLOCK_VIRTUAL, wifi_deliver, s);
     qemu_register_reset(wifi_reset, s);
     if (after) {
