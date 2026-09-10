@@ -453,7 +453,12 @@ static void wifi_deliver(void *opaque)
     s->regs[R_INT_STATUS / 4] = s->status_mask;
     s->regs[R_RX_LAST / 4] = (uint32_t)desc;
     s->regs[R_RX_QUEUES / 4] = s->queue_mask & RX_QUEUE_MASK;
-    s->trace_left = s->deliveries <= 1 ? s->trace_window : 0;
+    /* Armed once, on the first frame that actually goes on, and then left to
+     * run out. Reassigning it per delivery -- which this did -- switches the
+     * trace off again a beacon later, and nine accesses is not a trace. */
+    if (s->deliveries == 1) {
+        s->trace_left = s->trace_window;
+    }
     wifi_raise(s, 1);
     /* Again after a gap. It has to be long enough for the driver to hand the
      * descriptor back -- at a tenth of a second it ran the ring dry after two
