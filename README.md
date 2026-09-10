@@ -46,9 +46,10 @@ The second board runs LilyGO's own `UnitTest` firmware, unmodified, all the way
 into its LVGL interface -- and the interface answers keys and taps. In one
 110-second run: 740 frames at a steady ten a second, every injected keystroke
 delivered and echoed by the firmware itself (`Key pressed : 0x69`), 66 touch
-reports read. The status bar shows a modelled battery voltage; the WiFi scan
-finds no networks, correctly; the panel says "Radio is offline", which is the
-LoRa radio honestly reporting absent.
+reports read. The status bar shows a modelled battery voltage; the panel says
+"Radio is offline", which is the LoRa radio honestly reporting absent. Given
+`--wifi-ap NAME` its WiFi scan finds that network, on every scan (ADR 0057);
+without one it finds nothing, correctly.
 
 Getting there is five records long, and each one is a wall the firmware stopped
 at and how it was read rather than guessed: the FPU enabled out of reset

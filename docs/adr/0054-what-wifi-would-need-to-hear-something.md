@@ -1,7 +1,10 @@
 # ADR 0054 — What WiFi would need to hear something
 
 **Status:** Accepted — 2026-09-09. Names the work; does not do it.
-Amended the same day: the descriptor layout is no longer unknown.
+Amended the same day: the descriptor layout is no longer unknown. The work
+itself is done in ADRs 0056 and 0057, and the cost this one records -- "WiFi
+finds no networks, and that is the whole of the gap" -- no longer holds on the
+T-Deck board.
 
 ## Context
 

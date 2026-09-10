@@ -107,7 +107,8 @@ BLE_CORE_BASE = 0x60031000
 # The WiFi MAC's page. A C device rather than a claimed window, because
 # handing the driver a received frame means writing into guest memory and
 # raising an interrupt, and neither is possible from the register bridge
-# (ADR 0054). With its hatch unset it behaves exactly as the window did.
+# (ADR 0054). With no access point configured it behaves exactly as the window
+# did; with one it beacons, and the firmware finds the network (ADR 0057).
 WIFI_MAC_BASE = 0x60033000
 IRQ_WIFI_MAC = 0            # ETS_WIFI_MAC_INTR_SOURCE
 IRQ_RWBLE = 8          # ETS_RWBLE_INTR_SOURCE: the dispatcher's line (ADR 0024)
