@@ -231,7 +231,8 @@ def build(outdir: Path, air: str | None = None, ble_air: str | None = None,
           position: tuple[float, float] = (0.0, 0.0),
           antenna_dbi: float = 0.0, exponent: float = 2.0,
           obstruction_db: float = 0.0,
-          gps: tuple[float, float, float] | None = None) -> Board:
+          gps: tuple[float, float, float] | None = None,
+          wifi_ap: tuple[str, int, int] | None = None) -> Board:
     outdir = Path(outdir)
     panel = St7789Panel(outdir / "frames")
     gpio = GpioClient(outdir / "gpio.sock")
@@ -295,7 +296,12 @@ def build(outdir: Path, air: str | None = None, ble_air: str | None = None,
         # must interrupt within the half-slot they were set for (ADR 0025).
         # Bluetooth's own air, when a scenario gives it one: a different band
         # from the radio's, so a different directory (ADR 0045).
-        f"esp-wifi-mac,base=0x{WIFI_MAC_BASE:x},irq={IRQ_WIFI_MAC}",
+        # An access point in the air, when a run asks for one: the device
+        # beacons on the channel the controller is tuned to, which is what a
+        # scanning station has to hear to find a network (ADR 0057).
+        f"esp-wifi-mac,base=0x{WIFI_MAC_BASE:x},irq={IRQ_WIFI_MAC}"
+        + (f",ssid={wifi_ap[0]},beacon-ms={wifi_ap[1]},channel={wifi_ap[2]}"
+           if wifi_ap else ""),
         f"esp-ble-core,base=0x{BLE_CORE_BASE:x},irq={IRQ_RWBLE}"
         + (f",air={ble_air},airname={outdir.name}" if ble_air else ""),
     ]

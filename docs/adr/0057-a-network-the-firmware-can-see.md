@@ -63,12 +63,25 @@ and the model reads the same byte.
 
 **Good**
 
-- **The firmware finds a network.** Its own words: with beacons arriving,
-  `[WIFI] no networks found` stops being printed for scans that heard one --
-  six of twenty-seven at one beacon every half second, fourteen of
-  twenty-four at one every tenth of a second. `no matching wifi found!`
-  remains, and should: the network this model advertises is not in the
-  firmware's own list of access points to join.
+- **The firmware finds a network, on every scan.** Its own words: with an
+  access point beaconing ten times a second, `[WIFI] no networks found` is
+  printed **zero** times across twenty-two completed scans. It was printed for
+  every scan of every run before today. `no matching wifi found!` remains, and
+  should: the network this model advertises is not in the firmware's own list
+  of access points to join.
+
+  The rate matters and says something. At one beacon every half second only
+  six scans of twenty-seven heard it; at one every tenth of a second -- which
+  is what a real access point does -- every scan does. So the model does not
+  need to know when the driver is listening, it only needs to beacon like an
+  access point.
+
+- **It is a run option, not a hatch.** `--wifi-ap NAME[,MS[,CHANNEL]]` puts an
+  access point in the air; the device builds the beacon around the name, so an
+  SSID of any length works, and beacons until the run ends. Two thousand
+  beacons in a two-hundred-second run, of which the driver took 1987 -- the
+  thirteen it missed are moments while it was bringing its station up, and the
+  device says so and waits.
 
 - Every step from the interrupt to the scan result is now known and watched:
   the status bit, the ring, the forty-eight-byte header, the length field, the
@@ -80,19 +93,20 @@ and the model reads the same byte.
 
 **Costs, accepted**
 
-- **A beacon lands in a scan's collection window about half the time**, so a
-  scan sometimes still reports nothing. A real access point beacons every
-  hundred milliseconds on its own channel and a station dwells long enough to
-  hear it; this model delivers on the channel the driver is tuned to, which is
-  not the same thing as delivering when it is listening. What decides the
-  other half is not yet known.
+- **Two header fields are set to what the code demands, not to what they
+  mean.** Word 0's bits 28 and 29 have to have one of them set or the flash
+  routine that dispatches on the frame's type goes nowhere; both are set,
+  because which one and why is not established. The same is true of the byte
+  at +8, which has to be 64, 65 or one of 120 to 127.
 
-- The frame is still a fixed beacon behind a hatch. An access point in the air
-  -- an SSID, a channel, a beacon interval, a run that says one is there --
-  is a separate step, and the next one.
+- **The Max board gets none of this.** It has no WiFi MAC device modelled at
+  all, so `--wifi-ap` there is accepted, warned about, and ignored -- said out
+  loud rather than silent, which is ADR 0052's lesson.
+
+- **Nothing associates, and nothing is transmitted.** Finding a network is the
+  first thing WiFi can do, not the last. A connection wants the model to
+  answer probe requests and authentication, which means reading what the
+  firmware transmits, which this device does not yet do.
 
 - Reading `wDevCtrl+44` is a device reaching into driver memory. It is right
   about the channel and wrong in principle, and it is written down as such.
-
-- The frame is not associated with, and nothing is transmitted. Finding a
-  network is the first thing WiFi can do, not the last.

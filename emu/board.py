@@ -191,14 +191,21 @@ def build(outdir: Path, air: str | None = None, ble_air: str | None = None,
           position: tuple[float, float] = (0.0, 0.0),
           antenna_dbi: float = 0.0, exponent: float = 2.0,
           obstruction_db: float = 0.0,
-          gps: tuple[float, float, float] | None = None) -> Board:
-    """`ble_air` is accepted and does nothing here: this board has a radio but
-    no Bluetooth controller modelled, so there is no part for an air to reach.
-    Every board takes the same arguments on purpose -- when they did not, the
-    caller's `except TypeError` quietly dropped this board back to a build with
-    no air at all, and the radio options did nothing for a release (ADR 0052).
+          gps: tuple[float, float, float] | None = None,
+          wifi_ap: tuple[str, int, int] | None = None) -> Board:
+    """`ble_air` and `wifi_ap` are accepted and do nothing here: this board has
+    a radio but no Bluetooth controller and no WiFi MAC modelled, so there is no
+    part for either to reach. Every board takes the same arguments on purpose --
+    when they did not, the caller's `except TypeError` quietly dropped this
+    board back to a build with no air at all, and the radio options did nothing
+    for a release (ADR 0052). Being ignored is said out loud below for the same
+    reason.
     """
     outdir = Path(outdir)
+    if wifi_ap:
+        logging.getLogger("board").warning(
+            "this board has no WiFi MAC modelled, so the access point %r is "
+            "not put on the air", wifi_ap[0])
     panel = EPaperPanel(outdir / "frames",
                         quarter_turns=int(os.environ.get("BOARDEMUL_ROTATE", "0")))
     gpio = GpioClient(outdir / "gpio.sock")

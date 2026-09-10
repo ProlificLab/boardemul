@@ -153,20 +153,54 @@ OBJECT_DECLARE_SIMPLE_TYPE(EspWifiMac, ESP_WIFI_MAC)
 /* How far to follow a chain before deciding it is not one. */
 #define DESC_MAX          16
 
-static const uint8_t beacon[] = {
-    0x80, 0x00,                                     /* a beacon */
-    0x00, 0x00,                                     /* duration */
-    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,             /* to everyone */
-    0x02, 0x00, 0x00, 0x00, 0x00, 0x01,             /* from us */
-    0x02, 0x00, 0x00, 0x00, 0x00, 0x01,             /* our network */
-    0x00, 0x00,                                     /* sequence */
-    0, 0, 0, 0, 0, 0, 0, 0,                         /* timestamp */
-    0x64, 0x00,                                     /* every 100 */
-    0x01, 0x00,                                     /* an infrastructure one */
-    0x00, 0x09, 'B', 'o', 'a', 'r', 'd', 'E', 'm', 'u', 'l',
-    0x01, 0x04, 0x82, 0x84, 0x8B, 0x96,             /* the rates it offers */
-    0x03, 0x01, 0x01,                               /* on channel one */
-};
+/* A beacon, built rather than stored, because an access point's name is a
+ * variable-length element in the middle of it and everything after moves.
+ * The fields are the ones a scanning station reads: who it is from, what it
+ * is called, what rates it offers, and which channel it is on -- the last of
+ * which the driver checks against the channel the frame arrived on.
+ *
+ * The address is locally administered (bit 1 of the first byte), because a
+ * model must not put a real vendor's address on the air.
+ */
+#define BEACON_MAX      96
+#define SSID_MAX        32
+
+static size_t build_beacon(uint8_t *out, const char *ssid, unsigned channel)
+{
+    size_t len = strlen(ssid);
+    size_t at = 0;
+
+    if (len > SSID_MAX) {
+        len = SSID_MAX;
+    }
+    static const uint8_t head[] = {
+        0x80, 0x00,                                     /* a beacon */
+        0x00, 0x00,                                     /* duration */
+        0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,             /* to everyone */
+        0x02, 0x00, 0x00, 0x00, 0x00, 0x01,             /* from us */
+        0x02, 0x00, 0x00, 0x00, 0x00, 0x01,             /* our network */
+        0x00, 0x00,                                     /* sequence */
+        0, 0, 0, 0, 0, 0, 0, 0,                         /* timestamp */
+        0x64, 0x00,                                     /* every 100 */
+        0x01, 0x00,                                     /* an infrastructure one */
+    };
+    memcpy(out, head, sizeof(head));
+    at = sizeof(head);
+    out[at++] = 0x00;                                   /* the name */
+    out[at++] = (uint8_t)len;
+    memcpy(out + at, ssid, len);
+    at += len;
+    out[at++] = 0x01;                                   /* the rates it offers */
+    out[at++] = 0x04;
+    out[at++] = 0x82;
+    out[at++] = 0x84;
+    out[at++] = 0x8B;
+    out[at++] = 0x96;
+    out[at++] = 0x03;                                   /* and its channel */
+    out[at++] = 0x01;
+    out[at++] = (uint8_t)(channel ? channel : 1);
+    return at;
+}
 
 /* Every frame on the air ends with a check sequence over its own bytes, and a
  * receiver that validates one will throw away a frame that has none. The
@@ -211,8 +245,11 @@ struct EspWifiMac {
     uint32_t header_words[RX_HEADER / 4];
     uint32_t header_set;
     /* The channel a delivered beacon claims. Zero means "whatever the
-     * controller is tuned to". BOARDEMUL_WIFI_CHANNEL. */
-    unsigned channel;
+     * controller is tuned to". BOARDEMUL_WIFI_CHANNEL, or the property. */
+    uint32_t channel;
+    /* The access point this device puts in the air, if any. */
+    char *ssid;
+    uint32_t beacon_ms;
     bool gated;
     uint32_t status_mask;
     uint32_t queue_mask;
@@ -254,24 +291,6 @@ static hwaddr wifi_free_descriptor(EspWifiMac *s, uint32_t *word_out)
     return 0;
 }
 
-/* Did the driver take the descriptor we filled? It says so by owning it
- * again, which it does whether or not it made anything of the contents. */
-static void wifi_check_taken(EspWifiMac *s)
-{
-    uint32_t desc[3] = { 0 };
-
-    if (!s->delivered_to) {
-        return;
-    }
-    if (address_space_read(&address_space_memory, s->delivered_to,
-                           MEMTXATTRS_UNSPECIFIED, desc, sizeof(desc)) != MEMTX_OK) {
-        return;
-    }
-    qemu_log_mask(LOG_UNIMP, "esp-wifi-mac: descriptor 0x%08llx now 0x%08x -- "
-                  "the driver has %s it%c", (unsigned long long)s->delivered_to,
-                  desc[0], (desc[0] & DESC_OWNER) ? "taken" : "NOT taken", 10);
-}
-
 static void wifi_deliver(void *opaque)
 {
     EspWifiMac *s = opaque;
@@ -292,15 +311,20 @@ static void wifi_deliver(void *opaque)
         }
         s->delivered_to = 0;
     }
-    if (s->deliveries >= s->repeat) {
+    if (s->repeat && s->deliveries >= s->repeat) {
         qemu_log_mask(LOG_UNIMP, "esp-wifi-mac: put %u frame(s) on; the driver "
                       "took %u%c", s->deliveries, s->taken, 10);
         wifi_raise(s, 0);
         return;
     }
     if (!s->ring) {
-        qemu_log_mask(LOG_UNIMP, "esp-wifi-mac: no receive ring was ever "
-                      "handed over; nothing to deliver into%c", 10);
+        /* The driver hands the ring over while it starts its station, which is
+         * well after this device is created. Said once, then waited for. */
+        if (!s->deliveries) {
+            qemu_log_mask(LOG_UNIMP, "esp-wifi-mac: no receive ring handed "
+                          "over yet; waiting%c", 10);
+        }
+        timer_mod_ns(s->hatch, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + s->gap_ns);
         return;
     }
     desc = wifi_free_descriptor(s, &word);
@@ -331,8 +355,8 @@ static void wifi_deliver(void *opaque)
      * what the code makes plain and BOARDEMUL_WIFI_HEADER overrides any word
      * of it as `offset:value` pairs -- which turns each remaining guess into
      * a run rather than a rebuild. */
-    uint8_t staged[RX_HEADER + sizeof(beacon) + 4] = { 0 };
-    uint8_t frame[sizeof(beacon)];
+    uint8_t staged[RX_HEADER + BEACON_MAX + 4] = { 0 };
+    uint8_t frame[BEACON_MAX];
     uint32_t header[RX_HEADER / 4] = { 0 };
 
     /* A beacon has to say it is on the channel it arrived on. The driver
@@ -347,8 +371,8 @@ static void wifi_deliver(void *opaque)
      * memory from a device is a shortcut, and an honest one only because the
      * alternative is not available: the channel is programmed through the
      * radio's front-end windows, which this project models in Python, and this
-     * device cannot see them. BOARDEMUL_WIFI_CHANNEL pins it instead. */
-    memcpy(frame, beacon, sizeof(frame));
+     * device cannot see them. BOARDEMUL_WIFI_CHANNEL, or the channel property,
+     * pins it instead. */
     unsigned channel = s->channel;
     if (!channel) {
         uint32_t control = 0;
@@ -360,11 +384,13 @@ static void wifi_deliver(void *opaque)
                                MEMTXATTRS_UNSPECIFIED, &current, sizeof(current));
         }
         channel = current & 0x0F;
+        if (channel < 1 || channel > 14) {
+            channel = 1;
+        }
     }
-    if (channel >= 1 && channel <= 14) {
-        frame[sizeof(frame) - 1] = (uint8_t)channel;
-    }
-    uint32_t fcs = frame_check(frame, sizeof(frame));
+    size_t frame_len = build_beacon(frame, s->ssid ? s->ssid : "BoardEmul",
+                                    channel);
+    uint32_t fcs = frame_check(frame, frame_len);
 
     /* The frame's length, in the two places the stack reads it.
      *
@@ -379,9 +405,17 @@ static void wifi_deliver(void *opaque)
      *
      * The count includes the check sequence, which is what the descriptor's
      * own length says arrived. */
-    uint32_t length = (uint32_t)sizeof(beacon) + 4u;
+    uint32_t length = (uint32_t)frame_len + 4u;
     header[1] = length << 8;
     header[11] = length & 0xFFFu;
+    /* Word 0, bits 28 and 29. The flash routine that dispatches on the frame's
+     * type reads word 0, ands it with 0x30000000, and goes nowhere useful if
+     * the result is zero -- so at least one of them has to be set for a frame
+     * to be looked at at all. What each one means is not established, which is
+     * why both are set and why this is a measured requirement rather than a
+     * decoded field. Without it the driver takes every frame and no scan ever
+     * reports a network. */
+    header[0] = 0x30000000u;
     for (unsigned i = 0; i < RX_HEADER / 4; i++) {
         if (s->header_set & (1u << i)) {
             header[i] = s->header_words[i];
@@ -389,23 +423,31 @@ static void wifi_deliver(void *opaque)
     }
     memcpy(staged, header, sizeof(header));
     staged[RX_HEADER_TAG] = (uint8_t)s->header_tag;
-    memcpy(staged + RX_HEADER, frame, sizeof(frame));
-    memcpy(staged + RX_HEADER + sizeof(beacon), &fcs, sizeof(fcs));
+    memcpy(staged + RX_HEADER, frame, frame_len);
+    memcpy(staged + RX_HEADER + frame_len, &fcs, sizeof(fcs));
+    size_t staged_len = RX_HEADER + frame_len + 4;
     address_space_write(&address_space_memory, buffer, MEMTXATTRS_UNSPECIFIED,
-                        staged, sizeof(staged));
+                        staged, staged_len);
     /* Keep the size the driver gave the buffer; say how much arrived, mark it
      * the end of the frame, and hand it back by clearing the owner bit. */
     uint32_t filled = (word & DESC_SIZE_MASK)
-                    | ((uint32_t)sizeof(staged) << DESC_LENGTH_SHIFT)
+                    | ((uint32_t)staged_len << DESC_LENGTH_SHIFT)
                     | DESC_EOF;
     address_space_write(&address_space_memory, desc, MEMTXATTRS_UNSPECIFIED,
                         &filled, sizeof(filled));
     s->delivered_to = desc;
     s->deliveries++;
+    /* A standing access point never reaches the summary below, so it says how
+     * it is getting on as it goes. Taken means the driver re-armed the
+     * descriptor, which is the only thing the model can see. */
+    if (!s->repeat && s->deliveries % 100 == 0) {
+        qemu_log_mask(LOG_UNIMP, "esp-wifi-mac: %u beacon(s) put on the air, "
+                      "the driver took %u%c", s->deliveries, s->taken, 10);
+    }
     if (s->deliveries <= 2) {
     qemu_log_mask(LOG_UNIMP, "esp-wifi-mac: put %u byte(s) into the buffer at "
                   "0x%08x of descriptor 0x%08llx, word 0x%08x -> 0x%08x, and "
-                  "raised interrupt %d%c", (unsigned)sizeof(staged), buffer,
+                  "raised interrupt %d%c", (unsigned)staged_len, buffer,
                   (unsigned long long)desc, word, filled, s->irq_source, 10);
     }
     s->regs[R_INT_STATUS / 4] = s->status_mask;
@@ -531,9 +573,13 @@ static void wifi_realize(DeviceState *dev, Error **errp)
     const char *queues = getenv("BOARDEMUL_WIFI_QUEUE");
     s->queue_mask = queues ? (uint32_t)strtoul(queues, NULL, 0) : 1;
     const char *gap = getenv("BOARDEMUL_WIFI_GAP");
-    s->gap_ns = (gap ? (int64_t)strtoll(gap, NULL, 0) : 500) * 1000000LL;
+    int64_t period = gap ? strtoll(gap, NULL, 0)
+                         : (s->beacon_ms ? (int64_t)s->beacon_ms : 500);
+    s->gap_ns = period * 1000000LL;
     const char *many = getenv("BOARDEMUL_WIFI_REPEAT");
-    s->repeat = many ? (unsigned)strtoul(many, NULL, 0) : 1;
+    /* Zero is "keep going", which is what an access point does. */
+    s->repeat = many ? (unsigned)strtoul(many, NULL, 0)
+                     : (s->beacon_ms ? 0u : 1u);
     /* offset:value pairs, comma separated, offsets in bytes within the
      * header. Parsed here rather than per frame so a malformed value is
      * reported once. */
@@ -558,18 +604,24 @@ static void wifi_realize(DeviceState *dev, Error **errp)
         g_free(dup);
     }
     const char *pinned = getenv("BOARDEMUL_WIFI_CHANNEL");
-    s->channel = pinned ? (unsigned)strtoul(pinned, NULL, 0) : 0;
+    if (pinned) {
+        s->channel = (uint32_t)strtoul(pinned, NULL, 0);
+    }
     const char *window = getenv("BOARDEMUL_WIFI_TRACE");
     s->trace_window = window ? (unsigned)strtoul(window, NULL, 0) : 120;
     const char *mask = getenv("BOARDEMUL_WIFI_STATUS");
     s->status_mask = mask ? (uint32_t)strtoul(mask, NULL, 0) : RX_DONE_STATUS;
     s->hatch = timer_new_ns(QEMU_CLOCK_VIRTUAL, wifi_deliver, s);
     qemu_register_reset(wifi_reset, s);
-    if (after) {
-        /* Investigation hatch: how many seconds into the run to deliver one.
-         * Off unless asked for, and then it does exactly one thing once. */
+    if (after || s->beacon_ms) {
+        /* Either the investigation hatch -- how many seconds into the run to
+         * deliver one -- or a standing access point, which starts beaconing
+         * once the driver has had time to bring its station up. Nothing is
+         * lost by starting before that: a delivery with no ring handed over
+         * yet says so and comes back. */
+        double first = after ? atof(after) : (double)s->beacon_ms / 1000.0;
         timer_mod_ns(s->hatch, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL)
-                     + (int64_t)(atof(after) * 1000000000.0));
+                     + (int64_t)(first * 1000000000.0));
     }
 
     memory_region_init_io(&s->iomem, OBJECT(s), &wifi_ops, s,
@@ -585,6 +637,12 @@ static Property wifi_props[] = {
     /* The WiFi MAC's own source number. Which one the driver actually listens
      * on is not settled, so it is a property rather than a constant. */
     DEFINE_PROP_INT32("irq", EspWifiMac, irq_source, 0),
+    /* An access point in the air: what it is called, how often it beacons in
+     * milliseconds (zero for none), and which channel it claims (zero to
+     * claim whichever the controller is tuned to). */
+    DEFINE_PROP_STRING("ssid", EspWifiMac, ssid),
+    DEFINE_PROP_UINT32("beacon-ms", EspWifiMac, beacon_ms, 0),
+    DEFINE_PROP_UINT32("channel", EspWifiMac, channel, 0),
     DEFINE_PROP_END_OF_LIST(),
 };
 

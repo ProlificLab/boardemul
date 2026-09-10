@@ -252,6 +252,11 @@ def main(argv: list[str] | None = None) -> int:
                          "and have it report this position, in degrees and "
                          "metres (ADR 0052). Without it the board has no "
                          "module, which is how they are sold")
+    ap.add_argument("--wifi-ap", default=None, metavar="SSID[,MS[,CHANNEL]]",
+                    help="put an access point in the air: its name, how often "
+                         "it beacons in milliseconds (100 by default), and the "
+                         "channel it claims (by default whichever the "
+                         "controller is tuned to)")
     ap.add_argument("--ble-air", default=None, metavar="DIR",
                     help="share a directory so this board's Bluetooth can be "
                          "heard by others; a different band from --air, so a "
@@ -330,10 +335,18 @@ def main(argv: list[str] | None = None) -> int:
         # gained an argument the other did not, that quietly dropped it back to
         # a build with no air -- the radio options did nothing on it and nothing
         # said so (ADR 0052).
+        access_point = None
+        if args.wifi_ap:
+            parts = args.wifi_ap.split(",")
+            if not parts[0]:
+                raise SystemExit("--wifi-ap wants a name")
+            access_point = (parts[0],
+                            int(parts[1]) if len(parts) > 1 and parts[1] else 100,
+                            int(parts[2]) if len(parts) > 2 and parts[2] else 0)
         hw = hw_module.build(args.outdir, air=args.air, ble_air=args.ble_air,
                              position=where, antenna_dbi=args.antenna,
                              exponent=exponent, obstruction_db=args.obstruction,
-                             gps=fix)
+                             gps=fix, wifi_ap=access_point)
         hw.start()
         server = BusServer(args.outdir / f"{tag}.bus.sock", hw.regions)
         irq = IrqChannel(args.outdir / f"{tag}.irq.sock")
