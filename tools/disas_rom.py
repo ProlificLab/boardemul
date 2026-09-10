@@ -11,10 +11,6 @@ SIMD mnemonics a misaligned disassembler invents.
 Length is decidable from the first byte alone: the narrow forms are op0 in
 {8, 9, A, B, C, D}, everything else is three bytes.
 
-One known gap: the ST2 group's split between `movi.n` and the narrow branches
-does not always agree with what a traced guest does -- two instructions in one
-flash routine decode as `movi.n` and demonstrably branch. Treat a narrow
-branch as a claim to check against a step trace, not as a fact.
 
     python3 disas_rom.py ROM_BIN 0x40041184 60
     python3 disas_rom.py ROM_BIN 0x40041184 60 --symbols logs/rom/symbols.txt
@@ -144,12 +140,16 @@ def decode(pc: int, blob: bytes, at: int) -> tuple[str, int]:
     if op0 == 0xB:
         return "addi.n a%d, a%d, %d" % (hi, s, t if t else -1), size
     if op0 == 0xC:
-        if (hi >> 2) & 0x2:
-            offset = t | ((hi & 0x3) << 4)
-            return "%s a%d, 0x%08x" % ("bnez.n" if hi & 0x4 else "beqz.n",
+        # ST2. The t field decides: its top bit selects a branch, the next bit
+        # which one, and what is left of it joins r as the immediate. Settled
+        # against a step trace, which is the only reason it is right: two
+        # earlier readings each explained one instruction and not the other.
+        if t & 0x8:
+            offset = ((t & 0x3) << 4) | hi
+            return "%s a%d, 0x%08x" % ("bnez.n" if t & 0x4 else "beqz.n",
                                        s, pc + 4 + offset), size
-        value = t | (hi << 4)
-        return "movi.n a%d, %d" % (s, value - 128 if value >= 96 else value), size
+        value = ((t & 0x7) << 4) | hi
+        return "movi.n a%d, %d" % (s, value - 128 if value >= 0x60 else value), size
     if op0 == 0xD:
         if hi == 0xF:
             return {0: "ret.n", 1: "retw.n", 2: "break.n",

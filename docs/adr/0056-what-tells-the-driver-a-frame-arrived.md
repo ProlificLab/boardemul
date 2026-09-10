@@ -191,14 +191,16 @@ timeout per probe, and reports guest timestamps seven times larger than a
 normal run for the same work. Two runs were spent before that was noticed, and
 both looked like results.
 
-**The disassembler has one known gap, and it is written into its docstring.**
-The narrow three-register forms put their destination where the wide forms put
-a source; that was found by a step trace showing `1b22` computing `a2 = a2 + 1`
-and is fixed. The narrow branch/`movi.n` split is *not* settled: two
-instructions in one flash routine decode as `movi.n` and demonstrably branch.
-So a narrow branch out of this tool is a claim to check against a trace, and
-every conclusion in this ADR rests on a wide-form branch or on an observed
-step, never on a narrow one.
+**A step trace is how a disassembler gets debugged.** Two of the narrow
+instruction forms were decoded wrongly at first, and reading more code would
+never have found it -- both readings produce plausible-looking output. What
+found it was the trace disagreeing with the decode: `1b22` was seen to compute
+`a2 = a2 + 1`, which fixes the three-register field order, and `dc54` was seen
+to branch twenty-one bytes forward, which fixes the `movi.n`/branch split (the
+`t` field's top bit selects a branch, the next bit which one, and the rest of
+it joins `r` as the immediate). Every earlier conclusion was rechecked against
+the corrected decode; none of them moved, because they rested on wide-form
+branches.
 
 **A watchpoint on a hot page costs the guest, not the script.** A write
 watchpoint on `wDevCtrl_ptr` fires from a memory-clearing loop in ROM
