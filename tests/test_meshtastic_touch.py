@@ -98,9 +98,11 @@ def typed(tmp_path_factory) -> tuple[Run, dict]:
 
         send_touch(outdir, *SHORT_ICON)         # the same icon puts it away
         # And the OK button is reachable again only once it has gone; tapping
-        # where the keyboard still is presses a key instead.
-        if not wait_for_panel(
-                outdir, lambda f: count_pixels(f, OK_FACE, BLUE) > 500, timeout=180):
+        # where the keyboard still is presses a key instead. Recorded rather
+        # than only acted on, so a failure says which step ran out.
+        seen["dismissed"] = wait_for_panel(
+            outdir, lambda f: count_pixels(f, OK_FACE, BLUE) > 500, timeout=180)
+        if not seen["dismissed"]:
             return
         # Committing makes the firmware restart itself to apply the settings,
         # and it says so on the panel first. The notice is what to wait for:
@@ -110,8 +112,12 @@ def typed(tmp_path_factory) -> tuple[Run, dict]:
         seen["reboot_notice"] = wait_for_panel(
             outdir, lambda f: count_pixels(f, NOTICE, RED) > 200, timeout=90)
 
+    # A ceiling, not a plan: the script stops the run as soon as it has what it
+    # came for. It has to cover every wait below end to end, and under a loaded
+    # suite each of them takes far longer in wall time than in the guest's
+    # (ADR 0040).
     run = run_emulator(tmp_path_factory.mktemp("touch"), firmware=FIRMWARE_MESHTASTIC,
-                       board="tdeck", timeout=460,
+                       board="tdeck", timeout=760,
                        overlays=(f"0xc90000={MESHTASTIC_LITTLEFS}",),
                        extra=("--psram-octal",), script=drive)
     return run, seen
@@ -137,4 +143,6 @@ def test_the_ok_button_commits_and_the_firmware_restarts(typed) -> None:
     apply them, announcing it on the panel. That notice is the whole chain
     working: bound by touch, typed, committed by touch."""
     _, seen = typed
-    assert seen.get("reboot_notice"), "OK did not commit: no restart notice drawn"
+    assert seen.get("dismissed"), (
+        f"the keyboard never went away, so OK was never reachable: {seen}")
+    assert seen.get("reboot_notice"), f"OK did not commit: no restart notice drawn: {seen}"
