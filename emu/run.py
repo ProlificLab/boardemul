@@ -302,6 +302,27 @@ def main(argv: list[str] | None = None) -> int:
         # guest idles. Instruction counting requires the single thread above.
         cmd += ["-icount", "shift=2,sleep=on"]
 
+    # Everything a board provides needs --bus, because without it no board is
+    # built at all: no Python devices, no WiFi MAC, nothing on any bus. A run
+    # like that still boots, and boots plausibly -- it just finds nothing
+    # anywhere and spends a second of timeout per probe. Two investigation runs
+    # were spent on that before it was noticed (ADR 0056), so it is refused.
+    needs_board = {"--air": args.air, "--ble-air": args.ble_air,
+                   "--gps": args.gps, "--at": args.at,
+                   "--wifi-ap": args.wifi_ap}
+    given = [name for name, value in needs_board.items() if value]
+    if given and not args.bus:
+        raise SystemExit(", ".join(given) + " needs --bus: without it no board "
+                         "is built, so nothing would answer")
+
+    access_point: tuple[str, int, int] | None = None
+    if args.wifi_ap:
+        parts = args.wifi_ap.split(",")
+        if not parts[0]:
+            raise SystemExit("--wifi-ap wants a name")
+        access_point = (parts[0],
+                        int(parts[1]) if len(parts) > 1 and parts[1] else 100,
+                        int(parts[2]) if len(parts) > 2 and parts[2] else 0)
     server: BusServer | None = None
     tail = None
     irq: IrqChannel | None = None
@@ -335,14 +356,6 @@ def main(argv: list[str] | None = None) -> int:
         # gained an argument the other did not, that quietly dropped it back to
         # a build with no air -- the radio options did nothing on it and nothing
         # said so (ADR 0052).
-        access_point = None
-        if args.wifi_ap:
-            parts = args.wifi_ap.split(",")
-            if not parts[0]:
-                raise SystemExit("--wifi-ap wants a name")
-            access_point = (parts[0],
-                            int(parts[1]) if len(parts) > 1 and parts[1] else 100,
-                            int(parts[2]) if len(parts) > 2 and parts[2] else 0)
         hw = hw_module.build(args.outdir, air=args.air, ble_air=args.ble_air,
                              position=where, antenna_dbi=args.antenna,
                              exponent=exponent, obstruction_db=args.obstruction,
@@ -359,6 +372,10 @@ def main(argv: list[str] | None = None) -> int:
     print(f"\nqemu    : {qemu}")
     print(f"trace   : {'on (slow)' if args.trace else 'off'}")
     print(f"bus     : {'on' if server else 'off'}")
+    if access_point:
+        print(f"wifi-ap : {access_point[0]!r} every {access_point[1]} ms on "
+              + (f"channel {access_point[2]}" if access_point[2]
+                 else "whichever channel the controller is tuned to"))
     if hw_module.SOC_DEVICES:
         print(f"soc     : {', '.join(hw_module.SOC_DEVICES)}")
     print(f"uart    : {uart}")
