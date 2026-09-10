@@ -103,10 +103,31 @@ whether or not it made anything of the contents.
   status, position, the source mask, and source zero's own register at `+0xd08`,
   whose top two bits the handler clears and puts back.
 - The status mask is a range, not a bit.
-- **It still makes nothing of the frame.** Forty delivered and forty taken,
-  thirty-three scans completed, and no network reported. Everything the driver
-  asks the hardware for is answered; what it will not do is turn the bytes into
-  a result, and that is above this page.
+- **It still makes nothing of the frame, and now it is clear where it stops.**
+  Forty delivered and forty taken, thirty-three scans completed, no network.
+
+  The receive path is not a flash blob after all: it is ROM, and the linker
+  script names it. Tracing the range those names cover, a delivered frame
+  reaches `lmacProcessRxSucData`, `wdevProcessRxSucDataAll` and
+  `wDev_ProcessRxSucData` -- and then `wDev_DiscardFrame`.
+  `ppProcessRxPktHdr` never runs at all, so the frame is thrown away before
+  its header is looked at.
+
+  `wDev_ProcessRxSucData` says why. It reads a byte at offset 8 of the
+  structure it is working on and takes the reject path unless that byte is 64,
+  65, or one of 120 to 127:
+
+      a4 = *(u8 *)(a5 + 8)
+      if ((a4 - 64) < 2)      accept
+      if ((a4 & ~7) == 120)   accept
+      otherwise               discard
+
+  Whether that structure is the buffer this model fills is not established --
+  it is reached through two indirections from driver state -- and settling that
+  is the next thing to do rather than the next thing to assume. If it is the
+  buffer, then there is a header in front of the packet after all, and the
+  earlier attempt at one proved nothing: it was run before the queue was
+  corrected, when every delivery was ending in an assert.
 - (Superseded by the source finding above) **The driver takes two frames and
   then stops recycling.** Delivering
   repeatedly rather than once -- which a single frame at an arbitrary instant
