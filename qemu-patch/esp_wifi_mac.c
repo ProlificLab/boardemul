@@ -137,6 +137,12 @@ OBJECT_DECLARE_SIMPLE_TYPE(EspWifiMac, ESP_WIFI_MAC)
 /* Bit 14: the one the driver's handler routes to lmacProcessRxSucData. */
 #define RX_DONE_STATUS  0x00004000u
 
+/* wDevCtrl_ptr, named by the ROM's linker script, and the byte in the
+ * structure it points at that holds the channel the radio is tuned to. The
+ * ROM's receive path reads the same byte to stamp the header. */
+#define WDEV_CTRL_PTR   0x3FCEF93C
+#define WDEV_CHANNEL    44
+
 /* The part's ordinary DMA descriptor, as esp_i2s_master.c documents it. */
 #define DESC_SIZE_MASK    0xFFFu
 #define DESC_LENGTH_SHIFT 12
@@ -204,6 +210,9 @@ struct EspWifiMac {
      * which of them. BOARDEMUL_WIFI_HEADER, as offset:value pairs. */
     uint32_t header_words[RX_HEADER / 4];
     uint32_t header_set;
+    /* The channel a delivered beacon claims. Zero means "whatever the
+     * controller is tuned to". BOARDEMUL_WIFI_CHANNEL. */
+    unsigned channel;
     bool gated;
     uint32_t status_mask;
     uint32_t queue_mask;
@@ -323,13 +332,56 @@ static void wifi_deliver(void *opaque)
      * of it as `offset:value` pairs -- which turns each remaining guess into
      * a run rather than a rebuild. */
     uint8_t staged[RX_HEADER + sizeof(beacon) + 4] = { 0 };
-    uint32_t fcs = frame_check(beacon, sizeof(beacon));
+    uint8_t frame[sizeof(beacon)];
     uint32_t header[RX_HEADER / 4] = { 0 };
 
-    /* Word 1, bits 8..19: on the accept path the routine copies exactly that
-     * field into the low twelve bits of the word at +44, which is what a
-     * received frame's length is for. */
-    header[1] = ((uint32_t)sizeof(beacon) + 4u) << 8;
+    /* A beacon has to say it is on the channel it arrived on. The driver
+     * compares the two and drops the frame when they differ -- read off a step
+     * trace at 0x420c5998, where the beacon's own channel byte is compared
+     * with the receive channel and an unequal pair returns -1 all the way back
+     * to the buffer being recycled.
+     *
+     * The number comes from wDevCtrl+44, which is where the ROM's own receive
+     * path takes it from when it stamps the channel into the header, so it is
+     * the controller's notion of the channel it is tuned to. Reading driver
+     * memory from a device is a shortcut, and an honest one only because the
+     * alternative is not available: the channel is programmed through the
+     * radio's front-end windows, which this project models in Python, and this
+     * device cannot see them. BOARDEMUL_WIFI_CHANNEL pins it instead. */
+    memcpy(frame, beacon, sizeof(frame));
+    unsigned channel = s->channel;
+    if (!channel) {
+        uint32_t control = 0;
+        address_space_read(&address_space_memory, WDEV_CTRL_PTR,
+                           MEMTXATTRS_UNSPECIFIED, &control, sizeof(control));
+        uint8_t current = 0;
+        if (control) {
+            address_space_read(&address_space_memory, control + WDEV_CHANNEL,
+                               MEMTXATTRS_UNSPECIFIED, &current, sizeof(current));
+        }
+        channel = current & 0x0F;
+    }
+    if (channel >= 1 && channel <= 14) {
+        frame[sizeof(frame) - 1] = (uint8_t)channel;
+    }
+    uint32_t fcs = frame_check(frame, sizeof(frame));
+
+    /* The frame's length, in the two places the stack reads it.
+     *
+     * Word 1, bits 8..19, is the field `wDev_ProcessRxSucData` copies into the
+     * low twelve bits of the word at +44 -- so that field is the length. The
+     * copy only happens on one of its two branches, and the flash routine that
+     * parses the frame reads +44 and drops anything shorter than sixteen
+     * bytes. So on the other branch the hardware must be filling +44 itself,
+     * and this writes both. Found by stepping the flash routine: with +44 left
+     * at zero the frame was recycled unparsed; with the length there it is
+     * read as a beacon, addresses and all.
+     *
+     * The count includes the check sequence, which is what the descriptor's
+     * own length says arrived. */
+    uint32_t length = (uint32_t)sizeof(beacon) + 4u;
+    header[1] = length << 8;
+    header[11] = length & 0xFFFu;
     for (unsigned i = 0; i < RX_HEADER / 4; i++) {
         if (s->header_set & (1u << i)) {
             header[i] = s->header_words[i];
@@ -337,7 +389,7 @@ static void wifi_deliver(void *opaque)
     }
     memcpy(staged, header, sizeof(header));
     staged[RX_HEADER_TAG] = (uint8_t)s->header_tag;
-    memcpy(staged + RX_HEADER, beacon, sizeof(beacon));
+    memcpy(staged + RX_HEADER, frame, sizeof(frame));
     memcpy(staged + RX_HEADER + sizeof(beacon), &fcs, sizeof(fcs));
     address_space_write(&address_space_memory, buffer, MEMTXATTRS_UNSPECIFIED,
                         staged, sizeof(staged));
@@ -505,6 +557,8 @@ static void wifi_realize(DeviceState *dev, Error **errp)
         }
         g_free(dup);
     }
+    const char *pinned = getenv("BOARDEMUL_WIFI_CHANNEL");
+    s->channel = pinned ? (unsigned)strtoul(pinned, NULL, 0) : 0;
     const char *window = getenv("BOARDEMUL_WIFI_TRACE");
     s->trace_window = window ? (unsigned)strtoul(window, NULL, 0) : 120;
     const char *mask = getenv("BOARDEMUL_WIFI_STATUS");
