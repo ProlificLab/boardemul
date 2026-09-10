@@ -45,6 +45,7 @@
 #include "qom/object.h"
 #include <string.h>
 #include "sysemu/reset.h"
+#include "hw/core/cpu.h"
 
 #define TYPE_ESP_WIFI_MAC "esp-wifi-mac"
 OBJECT_DECLARE_SIMPLE_TYPE(EspWifiMac, ESP_WIFI_MAC)
@@ -79,11 +80,12 @@ OBJECT_DECLARE_SIMPLE_TYPE(EspWifiMac, ESP_WIFI_MAC)
  * it and goes round again. So this is a bitmask of sources with work waiting,
  * eleven of them, and one of them is a frame having arrived. Which one is not
  * established, so BOARDEMUL_WIFI_QUEUE sets what is raised. */
-/* The header the hardware writes in front of a received packet. Its size
- * is not established; twelve is the smallest that puts the tested byte
- * clear of the packet, and the packet has to start on a word for the rest
- * of the path to read it. */
-#define RX_HEADER       12
+/* The header the hardware writes in front of a received packet. Forty-eight
+ * bytes, read off the ROM: on one branch the receive path computes
+ * `buffer + 48 + n` and reads the packet there, and before that it reads the
+ * words at +0, +4, +8, +44 and the byte at +47 -- so the packet starts at
+ * forty-eight and five header fields are consulted on the way. */
+#define RX_HEADER       48
 #define RX_HEADER_TAG   8
 #define R_RX_QUEUES     0xca8
 #define RX_QUEUE_MASK   0x7FFu
@@ -106,9 +108,25 @@ OBJECT_DECLARE_SIMPLE_TYPE(EspWifiMac, ESP_WIFI_MAC)
  * So a frame is not announced by the interrupt alone; it is announced here,
  * and the handler puts the line down by acknowledging what it has seen.
  *
- * Which bit means "a frame arrived" is not known. BOARDEMUL_WIFI_STATUS sets
- * what is raised, so it can be narrowed by halves against a plain observable:
- * whether the driver then takes the descriptor back.
+ * Which bit means "a frame arrived" is read off the driver's own handler, not
+ * guessed. The handler (0x4037a9a0, in IRAM) reads this register, ands it with
+ * an enable mask, writes what it read back to +0xc40, and then dispatches on
+ * individual bits to ROM routines whose addresses sit in its literal pool:
+ *
+ *     bits 14 and 24  ->  lmacProcessRxSucData    a frame arrived
+ *     bits 15 and 21  ->  pp_post
+ *     bit 7           ->  lmacPostTxComplete
+ *     bit 19          ->  lmacProcessAllTxTimeout
+ *     bit 8           ->  lmacProcessCollisions
+ *
+ * So raising all thirty-two bits, which this device did first, tells the driver
+ * that a frame arrived AND that a transmission completed AND that everything
+ * timed out AND that the medium collided. It runs every one of those handlers
+ * on state that never happened, and that is the "different path" ADR 0055 saw
+ * it take. One bit is the whole of what a received frame should say.
+ *
+ * BOARDEMUL_WIFI_STATUS still sets what is raised, because bit 24 is the other
+ * candidate and nothing yet says which of the two a real MAC uses.
  */
 #define R_INT_STATUS    0xc3c
 /* And how it is put down. The handler does not write the status back --
@@ -116,6 +134,8 @@ OBJECT_DECLARE_SIMPLE_TYPE(EspWifiMac, ESP_WIFI_MAC)
  * split of a status register and its acknowledgement. Watched, not
  * assumed: with the status raised it read +0xc3c and wrote +0xc40. */
 #define R_INT_CLEAR     0xc40
+/* Bit 14: the one the driver's handler routes to lmacProcessRxSucData. */
+#define RX_DONE_STATUS  0x00004000u
 
 /* The part's ordinary DMA descriptor, as esp_i2s_master.c documents it. */
 #define DESC_SIZE_MASK    0xFFFu
@@ -178,6 +198,12 @@ struct EspWifiMac {
      * handler asking why it was woken, and the register it consults is
      * the one this model has to answer. */
     unsigned trace_left;
+    /* How many accesses to log after the first frame. BOARDEMUL_WIFI_TRACE. */
+    unsigned trace_window;
+    /* Words of the receive header the run has been told to override, and
+     * which of them. BOARDEMUL_WIFI_HEADER, as offset:value pairs. */
+    uint32_t header_words[RX_HEADER / 4];
+    uint32_t header_set;
     bool gated;
     uint32_t status_mask;
     uint32_t queue_mask;
@@ -285,19 +311,31 @@ static void wifi_deliver(void *opaque)
     }
     /* A header, then the packet, then its check sequence.
      *
-     * That there is a header at all is read off wDev_ProcessRxSucData: it
-     * takes a byte at offset 8 of the buffer and discards the frame unless it
-     * is 64, 65, or one of 120 to 127. With the packet at offset zero that
-     * byte is part of the destination address -- 255 for a broadcast -- and
-     * the frame never survives. Following the pointer chain that routine works
-     * on lands on one of the ring's own buffers, which is what makes it the
-     * buffer rather than some structure beside it.
+     * The header is forty-eight bytes, and that is read off the ROM rather
+     * than chosen: on the branch at 0x40041231 the receive path computes
+     * `buffer + 48 + n` and reads a halfword there, so the packet starts at
+     * forty-eight. Before it, the same routine reads word 0, word 1, word 2
+     * and the words at +44 and +47, so the header has at least twelve words
+     * and five of them are looked at.
      *
-     * What the rest of the header holds is not established, so it is zero and
-     * BOARDEMUL_WIFI_TAG sets the byte that is. */
+     * What each one carries is only partly established, so the model writes
+     * what the code makes plain and BOARDEMUL_WIFI_HEADER overrides any word
+     * of it as `offset:value` pairs -- which turns each remaining guess into
+     * a run rather than a rebuild. */
     uint8_t staged[RX_HEADER + sizeof(beacon) + 4] = { 0 };
     uint32_t fcs = frame_check(beacon, sizeof(beacon));
+    uint32_t header[RX_HEADER / 4] = { 0 };
 
+    /* Word 1, bits 8..19: on the accept path the routine copies exactly that
+     * field into the low twelve bits of the word at +44, which is what a
+     * received frame's length is for. */
+    header[1] = ((uint32_t)sizeof(beacon) + 4u) << 8;
+    for (unsigned i = 0; i < RX_HEADER / 4; i++) {
+        if (s->header_set & (1u << i)) {
+            header[i] = s->header_words[i];
+        }
+    }
+    memcpy(staged, header, sizeof(header));
     staged[RX_HEADER_TAG] = (uint8_t)s->header_tag;
     memcpy(staged + RX_HEADER, beacon, sizeof(beacon));
     memcpy(staged + RX_HEADER + sizeof(beacon), &fcs, sizeof(fcs));
@@ -321,13 +359,33 @@ static void wifi_deliver(void *opaque)
     s->regs[R_INT_STATUS / 4] = s->status_mask;
     s->regs[R_RX_LAST / 4] = (uint32_t)desc;
     s->regs[R_RX_QUEUES / 4] = s->queue_mask & RX_QUEUE_MASK;
-    s->trace_left = s->deliveries <= 1 ? 120 : 0;
+    s->trace_left = s->deliveries <= 1 ? s->trace_window : 0;
     wifi_raise(s, 1);
     /* Again after a gap. It has to be long enough for the driver to hand the
      * descriptor back -- at a tenth of a second it ran the ring dry after two
      * frames -- and short enough to keep landing inside a scan's dwell on each
      * channel. BOARDEMUL_WIFI_GAP sets it, in milliseconds. */
     timer_mod_ns(s->hatch, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + s->gap_ns);
+}
+
+/* Which code is doing the asking. A driver that reads a register once has been
+ * told something; a driver that reads it a thousand times from the same
+ * instruction is in a loop waiting for an answer it is not getting, and the
+ * two are indistinguishable without the program counter (ADR 0019). */
+static void wifi_trace(EspWifiMac *s, const char *what, hwaddr offset,
+                       uint32_t value)
+{
+    if (!s->trace_left) {
+        return;
+    }
+    s->trace_left--;
+    uint64_t pc = 0;
+    if (current_cpu) {
+        pc = CPU_GET_CLASS(current_cpu)->get_pc(current_cpu);
+    }
+    qemu_log_mask(LOG_UNIMP, "esp-wifi-mac: after the frame, %s +0x%03x "
+                  "= 0x%08x from pc 0x%08" PRIx64 "%c", what,
+                  (unsigned)offset, value, pc, 10);
 }
 
 static uint64_t wifi_read(void *opaque, hwaddr offset, unsigned size)
@@ -338,11 +396,7 @@ static uint64_t wifi_read(void *opaque, hwaddr offset, unsigned size)
     if (s->gated && offset == R_MAC_RESET) {
         value |= MAC_RESET_ACK;
     }
-    if (s->trace_left) {
-        s->trace_left--;
-        qemu_log_mask(LOG_UNIMP, "esp-wifi-mac: after the frame, rd +0x%03x "
-                      "= 0x%08x%c", (unsigned)offset, value, 10);
-    }
+    wifi_trace(s, "rd", offset, value);
     return value;
 }
 
@@ -353,6 +407,10 @@ static void wifi_write(void *opaque, hwaddr offset, uint64_t value, unsigned siz
     if (offset >= PAGE_SIZE) {
         return;
     }
+    /* Traced before the special cases return, because the two registers with
+     * their own behaviour are the two most worth watching -- and they were the
+     * two the trace could not see, which cost a run. */
+    wifi_trace(s, "wr", offset, (uint32_t)value);
     if (offset == R_RX_COMMAND) {
         s->regs[offset / 4] = (uint32_t)value & ~RX_COMMAND_GO;
         return;
@@ -368,11 +426,6 @@ static void wifi_write(void *opaque, hwaddr offset, uint64_t value, unsigned siz
         return;
     }
     s->regs[offset / 4] = (uint32_t)value;
-    if (s->trace_left) {
-        s->trace_left--;
-        qemu_log_mask(LOG_UNIMP, "esp-wifi-mac: after the frame, wr +0x%03x "
-                      "= 0x%08x%c", (unsigned)offset, (uint32_t)value, 10);
-    }
     if (offset == R_RX_RING && value) {
         s->ring = (uint32_t)value;
         qemu_log_mask(LOG_UNIMP, "esp-wifi-mac: the driver handed over a "
@@ -429,8 +482,33 @@ static void wifi_realize(DeviceState *dev, Error **errp)
     s->gap_ns = (gap ? (int64_t)strtoll(gap, NULL, 0) : 500) * 1000000LL;
     const char *many = getenv("BOARDEMUL_WIFI_REPEAT");
     s->repeat = many ? (unsigned)strtoul(many, NULL, 0) : 1;
+    /* offset:value pairs, comma separated, offsets in bytes within the
+     * header. Parsed here rather than per frame so a malformed value is
+     * reported once. */
+    const char *words = getenv("BOARDEMUL_WIFI_HEADER");
+    if (words) {
+        char *dup = g_strdup(words);
+        for (char *tok = strtok(dup, ","); tok; tok = strtok(NULL, ",")) {
+            char *colon = strchr(tok, ':');
+            if (!colon) {
+                continue;
+            }
+            *colon = 0;
+            unsigned long at = strtoul(tok, NULL, 0);
+            if (at % 4 || at >= RX_HEADER) {
+                error_report("esp-wifi-mac: header offset %lu is not a word "
+                             "inside the header", at);
+                continue;
+            }
+            s->header_words[at / 4] = (uint32_t)strtoul(colon + 1, NULL, 0);
+            s->header_set |= 1u << (at / 4);
+        }
+        g_free(dup);
+    }
+    const char *window = getenv("BOARDEMUL_WIFI_TRACE");
+    s->trace_window = window ? (unsigned)strtoul(window, NULL, 0) : 120;
     const char *mask = getenv("BOARDEMUL_WIFI_STATUS");
-    s->status_mask = mask ? (uint32_t)strtoul(mask, NULL, 0) : 0xFFFFFFFFu;
+    s->status_mask = mask ? (uint32_t)strtoul(mask, NULL, 0) : RX_DONE_STATUS;
     s->hatch = timer_new_ns(QEMU_CLOCK_VIRTUAL, wifi_deliver, s);
     qemu_register_reset(wifi_reset, s);
     if (after) {

@@ -1,6 +1,9 @@
 # ADR 0055 — A frame the WiFi driver accepts
 
 **Status:** Accepted — 2026-09-09. Takes down most of the wall ADR 0054 named.
+Its last two sections are corrected by ADR 0056: the receive path there was
+read off translated blocks rather than executed ones, and what stops the
+frame is not driver state.
 
 ## Context
 
