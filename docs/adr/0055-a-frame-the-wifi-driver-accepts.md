@@ -88,9 +88,19 @@ whether or not it made anything of the contents.
   for nothing else. So what remains is in the bytes themselves, and the two
   fields not yet supplied are where to start.
 - The status mask is a range, not a bit.
-- One frame is delivered, once. A scan sweeps channels and would want a beacon
-  on the right one at the right moment, which needs the air the radio and
-  Bluetooth each have.
+- **The driver takes two frames and then stops recycling.** Delivering
+  repeatedly rather than once -- which a single frame at an arbitrary instant
+  never was a fair test of -- the first two go into the same descriptor, so it
+  is handed back between them, and after that the ring stays empty however long
+  the gap. Two are consumed and then nothing. A driver that keeps its buffers
+  is a driver that did not pass the packet on, which is the same question as
+  the bytes and not a separate one.
+- Appending the check sequence every frame on the air carries made no
+  difference: the driver reads the longer length back correctly and still
+  reports nothing. So the check is accepted and is not what is missing.
+- A beacon on one channel, from a model that cannot see which channel the scan
+  is dwelling on, is still not what a scan listens to. That wants the air the
+  radio and Bluetooth each have.
 
 ## Alternatives rejected
 

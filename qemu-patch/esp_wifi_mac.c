@@ -131,6 +131,24 @@ static const uint8_t beacon[] = {
     0x03, 0x01, 0x01,                               /* on channel one */
 };
 
+/* Every frame on the air ends with a check sequence over its own bytes, and a
+ * receiver that validates one will throw away a frame that has none. The
+ * polynomial is the ordinary reflected CRC-32; it is written out here rather
+ * than pulled in, because it is nine lines and this file has no other
+ * dependency. */
+static uint32_t frame_check(const uint8_t *data, size_t length)
+{
+    uint32_t crc = 0xFFFFFFFFu;
+
+    for (size_t i = 0; i < length; i++) {
+        crc ^= data[i];
+        for (int bit = 0; bit < 8; bit++) {
+            crc = (crc >> 1) ^ (0xEDB88320u & -(crc & 1));
+        }
+    }
+    return ~crc;
+}
+
 struct EspWifiMac {
     DeviceState parent_obj;
     MemoryRegion iomem;
@@ -154,6 +172,9 @@ struct EspWifiMac {
     uint32_t ring;              /* what the driver handed us */
     hwaddr delivered_to;        /* the descriptor a frame went into */
     unsigned deliveries;
+    unsigned taken;
+    unsigned repeat;
+    int64_t gap_ns;
 };
 
 static void wifi_raise(EspWifiMac *s, int level)
@@ -209,8 +230,23 @@ static void wifi_deliver(void *opaque)
     uint32_t word = 0;
     hwaddr desc;
 
+    /* One frame at an arbitrary moment is a weak test of anything: a driver
+     * only collects beacons while a scan is listening, and it hops channels
+     * several times a second. So this keeps putting them on until told to
+     * stop, and counts how many were taken. */
     if (s->delivered_to) {
-        wifi_check_taken(s);
+        uint32_t previous[3] = { 0 };
+        if (address_space_read(&address_space_memory, s->delivered_to,
+                               MEMTXATTRS_UNSPECIFIED, previous,
+                               sizeof(previous)) == MEMTX_OK
+            && (previous[0] & DESC_OWNER)) {
+            s->taken++;
+        }
+        s->delivered_to = 0;
+    }
+    if (s->deliveries >= s->repeat) {
+        qemu_log_mask(LOG_UNIMP, "esp-wifi-mac: put %u frame(s) on; the driver "
+                      "took %u%c", s->deliveries, s->taken, 10);
         wifi_raise(s, 0);
         return;
     }
@@ -222,7 +258,9 @@ static void wifi_deliver(void *opaque)
     desc = wifi_free_descriptor(s, &word);
     if (!desc) {
         qemu_log_mask(LOG_UNIMP, "esp-wifi-mac: the ring at 0x%08x has no "
-                      "descriptor the hardware owns%c", s->ring, 10);
+                      "descriptor the hardware owns after %u frame(s); waiting%c",
+                      s->ring, s->deliveries, 10);
+        timer_mod_ns(s->hatch, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + s->gap_ns);
         return;
     }
 
@@ -232,28 +270,40 @@ static void wifi_deliver(void *opaque)
     if (!buffer) {
         return;
     }
+    /* The packet and then its check sequence, which is what a radio would have
+     * put in the buffer. */
+    uint8_t staged[sizeof(beacon) + 4];
+    uint32_t fcs = frame_check(beacon, sizeof(beacon));
+
+    memcpy(staged, beacon, sizeof(beacon));
+    memcpy(staged + sizeof(beacon), &fcs, sizeof(fcs));
     address_space_write(&address_space_memory, buffer, MEMTXATTRS_UNSPECIFIED,
-                        beacon, sizeof(beacon));
+                        staged, sizeof(staged));
     /* Keep the size the driver gave the buffer; say how much arrived, mark it
      * the end of the frame, and hand it back by clearing the owner bit. */
     uint32_t filled = (word & DESC_SIZE_MASK)
-                    | ((uint32_t)sizeof(beacon) << DESC_LENGTH_SHIFT)
+                    | ((uint32_t)sizeof(staged) << DESC_LENGTH_SHIFT)
                     | DESC_EOF;
     address_space_write(&address_space_memory, desc, MEMTXATTRS_UNSPECIFIED,
                         &filled, sizeof(filled));
     s->delivered_to = desc;
     s->deliveries++;
+    if (s->deliveries <= 2) {
     qemu_log_mask(LOG_UNIMP, "esp-wifi-mac: put %u byte(s) into the buffer at "
                   "0x%08x of descriptor 0x%08llx, word 0x%08x -> 0x%08x, and "
-                  "raised interrupt %d%c", (unsigned)sizeof(beacon), buffer,
+                  "raised interrupt %d%c", (unsigned)sizeof(staged), buffer,
                   (unsigned long long)desc, word, filled, s->irq_source, 10);
+    }
     s->regs[R_INT_STATUS / 4] = s->status_mask;
     s->regs[R_RX_LAST / 4] = (uint32_t)desc;
-    s->regs[R_RX_LENGTH / 4] = (uint32_t)sizeof(beacon) & RX_LENGTH_MASK;
-    s->trace_left = 120;
+    s->regs[R_RX_LENGTH / 4] = (uint32_t)sizeof(staged) & RX_LENGTH_MASK;
+    s->trace_left = s->deliveries <= 1 ? 120 : 0;
     wifi_raise(s, 1);
-    /* Look again shortly: the answer is whether the driver re-armed it. */
-    timer_mod_ns(s->hatch, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + 200000000LL);
+    /* Again after a gap. It has to be long enough for the driver to hand the
+     * descriptor back -- at a tenth of a second it ran the ring dry after two
+     * frames -- and short enough to keep landing inside a scan's dwell on each
+     * channel. BOARDEMUL_WIFI_GAP sets it, in milliseconds. */
+    timer_mod_ns(s->hatch, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + s->gap_ns);
 }
 
 static uint64_t wifi_read(void *opaque, hwaddr offset, unsigned size)
@@ -347,6 +397,10 @@ static void wifi_realize(DeviceState *dev, Error **errp)
         s->irq_line = qdev_get_gpio_in(DEVICE(intc), s->irq_source);
     }
     s->gated = g_strcmp0(getenv("BOARDEMUL_PHY_GATES"), "0") != 0;
+    const char *gap = getenv("BOARDEMUL_WIFI_GAP");
+    s->gap_ns = (gap ? (int64_t)strtoll(gap, NULL, 0) : 500) * 1000000LL;
+    const char *many = getenv("BOARDEMUL_WIFI_REPEAT");
+    s->repeat = many ? (unsigned)strtoul(many, NULL, 0) : 1;
     const char *mask = getenv("BOARDEMUL_WIFI_STATUS");
     s->status_mask = mask ? (uint32_t)strtoul(mask, NULL, 0) : 0xFFFFFFFFu;
     s->hatch = timer_new_ns(QEMU_CLOCK_VIRTUAL, wifi_deliver, s);
