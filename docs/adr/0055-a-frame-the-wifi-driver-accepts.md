@@ -138,8 +138,27 @@ whether or not it made anything of the contents.
   than a single field, and this model does not know it yet.
 
   `BOARDEMUL_WIFI_TAG` sets the tested byte and the header is twelve bytes of
-  zero around it. Neither number is established; they are somewhere to start
-  from, and the routine that rejects the frame is where the answer is written.
+  zero around it. Neither number is established.
+
+  **And the header is not what stops it.** Reading the whole of that routine
+  rather than a window of it, the byte at offset 8 leads to two more tests, and
+  neither is on the frame: a byte at offset 48 of the driver's own state, and
+  bit 3 of the word at offset 52. Sampled twenty-four times across
+  thirty-six seconds of continuous scanning, that byte is **always zero** and
+  that bit is **always clear**. The branch taken when the buffer's byte 47 is 0
+  or 245 -- the one that looked like the reject and is in fact the other path
+  -- tests the same byte at offset 48 and wants it to equal one.
+
+  So both ways through are shut, and shut on state in the driver's own RAM
+  rather than on anything the hardware provides or the frame contains. A device
+  model cannot set that and should not: it is the driver saying whether it
+  wants a frame. Which means the model's side of receive is done -- a frame is
+  delivered, announced, and carried all the way into the ROM receive path --
+  and what remains is either a path this firmware uses for scan results that
+  has not been found, or a state it only enters under conditions a scanning
+  station never reaches. That is a question about the firmware, not about this
+  model, and it is where the next attempt should start rather than on the
+  header.
 - (Superseded by the source finding above) **The driver takes two frames and
   then stops recycling.** Delivering
   repeatedly rather than once -- which a single frame at an arbitrary instant
