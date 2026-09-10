@@ -34,15 +34,24 @@ bought, in one session:
 384 KB, loaded at 0x40000000 -- so every question about ROM code is answerable
 offline, with no run at all. Two tools now do that:
 
-- `rom_symbols.py` resolves all 682 named ROM symbols to the code they run.
-  Each named address is a twelve-byte trampoline with its literal in front of
-  it, so the linker script's address is never where the code is; a breakpoint
-  or a trace filter on the named address catches the trampoline and nothing
-  else.
-- `disas_rom.py` decodes the loads, stores and branches, and prints the bytes
-  of anything it does not know rather than inventing a mnemonic. It was
+- `tools/rom_symbols.py` resolves all 682 named ROM symbols to the code they
+  run. Each named address is a twelve-byte trampoline with its literal in
+  front of it, so the linker script's address is never where the code is; a
+  breakpoint or a trace filter on the named address catches the trampoline and
+  nothing else.
+- `tools/disas_rom.py` decodes the loads, stores and branches, and prints the
+  bytes of anything it does not know rather than inventing a mnemonic. It was
   validated against the one sequence ADR 0055 had already verified byte by
   byte, and it agrees instruction for instruction.
+- `tools/rom_overrides.py` reads the run of `l32r`/`l32r`/`s32i.n` in flash
+  that fills the ROM's own globals in, and names all thirty-four of them:
+  `wDevCtrl_ptr`, `g_scan`, `g_ic_ptr`, `g_chm`, `if_ctrl_ptr` and the rest,
+  each with the address of the structure the driver put there. That is how
+  `wDevCtrl` was confirmed to be 0x3fc9a62c without a run.
+
+These live in `tools/` rather than `logs/dbg/` because they are not about
+WiFi: any question about ROM code, in any subsystem, is now cheaper to answer
+than it was this morning.
 
 **The finding.** The driver's WiFi interrupt handler is in IRAM at 0x4037a9a0,
 and it is fifteen instructions long: read `+0xc3c`, and it with an enable mask,
@@ -135,10 +144,29 @@ from the code that uses it:
 
 **Costs, accepted**
 
-- **A scan still finds no network.** The frame reaches the queue and the scan
-  reports nothing, so what remains is in the flash 802.11 stack: the beacon's
-  own bytes, or a field of the header still wrong. That is a smaller and much
-  better-lit question than the one this ADR started with.
+- **A scan still finds no network, and where it stops is now a named
+  instruction.** Past `ppEnqueueRxq` the frame is dequeued and parsed: with a
+  breakpoint on each and the hot ones retired, `ppRxPkt`,
+  `ppDequeueRxq_Locked` and `ppRxProtoProc` all run, and `pp_hdrsize` returns
+  24 -- the right 802.11 header length for a three-address management frame,
+  so the beacon is being read correctly as a beacon. `ppRxPkt` then calls into
+  flash, and the flash routine at 0x421216ec is where the frame ends: it bumps
+  `g_hmac_cnt`, tests a flag word, fails a comparison, and hands the buffer to
+  `ic_ebuf_recycle_rx` and `ppRecycleRxPkt`.
+
+  It is not a timing window. Two thousand frames twenty milliseconds apart,
+  1339 of them taken across twenty-seven scans, and not one network reported.
+  Whatever the test is, this frame fails it every time -- which makes it a
+  question about the beacon's bytes or a header field, and answerable by
+  reading one flash routine.
+
+- **Flash routines can now be named.** `pp_wdev_funcs` is a table of 140
+  function pointers, read off a running guest, and the ROM's call sites give
+  the offsets: +420 `pm_on_data_rx`, +460 `wDev_DiscardFrame`, +464
+  `wdev_csi_len_align`, +488 `ic_interface_enabled`, +504 a flash address.
+  Where an entry points into flash, that is a name for a flash routine -- and
+  entry +0 is the interrupt handler this ADR is about, which is how the
+  handler was confirmed to be the right one.
 
 - **`ppProcessRxPktHdr` never fires, and that proves nothing.** The driver
   installs its own function pointers over the ROM's during initialisation --
@@ -162,6 +190,15 @@ Python devices, no WiFi MAC, no frames. The guest still boots, and boots
 timeout per probe, and reports guest timestamps seven times larger than a
 normal run for the same work. Two runs were spent before that was noticed, and
 both looked like results.
+
+**The disassembler has one known gap, and it is written into its docstring.**
+The narrow three-register forms put their destination where the wide forms put
+a source; that was found by a step trace showing `1b22` computing `a2 = a2 + 1`
+and is fixed. The narrow branch/`movi.n` split is *not* settled: two
+instructions in one flash routine decode as `movi.n` and demonstrably branch.
+So a narrow branch out of this tool is a claim to check against a trace, and
+every conclusion in this ADR rests on a wide-form branch or on an observed
+step, never on a narrow one.
 
 **A watchpoint on a hot page costs the guest, not the script.** A write
 watchpoint on `wDevCtrl_ptr` fires from a memory-clearing loop in ROM
