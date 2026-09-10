@@ -89,10 +89,26 @@ whether or not it made anything of the contents.
   lowest set bit, hand its index to two handlers, clear it, go round. Eleven
   sources with work waiting, one of which is a frame having arrived.
 
-  Raising all eleven changes nothing, so the source was never the whole of it
-  either. `BOARDEMUL_WIFI_QUEUE` sets what is raised.
+  **Which source is settled, and it explains the stall.** The other handler
+  (`0x420cec18`) refuses an index of five or more outright, and for the rest
+  indexes a table of forty-byte entries whose first word must not be zero --
+  it asserts and spins if it is. Read on a running guest, only entry zero is
+  filled in, with a pointer into internal RAM. So the driver has configured
+  exactly one queue, source **0**, and every mask tried before this one asked
+  it to service queues it had never set up.
+
+  With that corrected the driver stops stalling: forty frames put on, forty
+  taken, the ring turning over throughout, where before it took two and stopped
+  recycling. The whole path is then visible and the model answers all of it --
+  status, position, the source mask, and source zero's own register at `+0xd08`,
+  whose top two bits the handler clears and puts back.
 - The status mask is a range, not a bit.
-- **The driver takes two frames and then stops recycling.** Delivering
+- **It still makes nothing of the frame.** Forty delivered and forty taken,
+  thirty-three scans completed, and no network reported. Everything the driver
+  asks the hardware for is answered; what it will not do is turn the bytes into
+  a result, and that is above this page.
+- (Superseded by the source finding above) **The driver takes two frames and
+  then stops recycling.** Delivering
   repeatedly rather than once -- which a single frame at an arbitrary instant
   never was a fair test of -- the first two go into the same descriptor, so it
   is handed back between them, and after that the ring stays empty however long

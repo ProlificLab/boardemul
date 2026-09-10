@@ -404,7 +404,7 @@ static void wifi_realize(DeviceState *dev, Error **errp)
     }
     s->gated = g_strcmp0(getenv("BOARDEMUL_PHY_GATES"), "0") != 0;
     const char *queues = getenv("BOARDEMUL_WIFI_QUEUE");
-    s->queue_mask = queues ? (uint32_t)strtoul(queues, NULL, 0) : 0;
+    s->queue_mask = queues ? (uint32_t)strtoul(queues, NULL, 0) : 1;
     const char *gap = getenv("BOARDEMUL_WIFI_GAP");
     s->gap_ns = (gap ? (int64_t)strtoll(gap, NULL, 0) : 500) * 1000000LL;
     const char *many = getenv("BOARDEMUL_WIFI_REPEAT");
