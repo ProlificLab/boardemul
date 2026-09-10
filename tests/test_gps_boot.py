@@ -28,6 +28,9 @@ FIRMWARE = REPO_ROOT / "firmware" / "T-Deck_UnitTest_250620.bin"
 WHERE = "51.5074,-0.1278,35"
 SUCCESS = "L76K GNSS init succeeded"
 FAILURE = "Get L76K timeout!"
+# The other way it can give up: it commands silence first and waits for the
+# line to go quiet. Both are terminal, so the run stops on either.
+NO_QUIET = "Wait L76K stop NMEA timeout!"
 
 pytestmark = [
     pytest.mark.slow,
@@ -42,7 +45,8 @@ def _past_the_gps_stage(uart: str, frames: list) -> bool:
     the marker is the first thing it reaches afterwards -- the same one the
     other vendor tests wait for.
     """
-    return (SUCCESS in uart or FAILURE in uart) and "ADC_CALI" in uart
+    verdict = SUCCESS in uart or FAILURE in uart or NO_QUIET in uart
+    return verdict and "ADC_CALI" in uart
 
 
 @pytest.fixture(scope="module")
@@ -57,6 +61,8 @@ def test_the_firmware_finds_the_module(booted: Run) -> None:
     """Its own words. Without the model this line is the timeout instead."""
     assert SUCCESS in booted.uart, booted.uart[-1500:]
     assert FAILURE not in booted.uart, booted.uart[-1500:]
+    assert NO_QUIET not in booted.uart, (
+        "the module would not go quiet when told to: " + booted.uart[-1500:])
 
 
 def test_it_goes_on_to_configure_the_module_it_found(booted: Run) -> None:

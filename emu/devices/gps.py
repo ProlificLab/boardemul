@@ -88,6 +88,16 @@ class L76K(SerialDevice):
         # different time each time it is run cannot be compared with itself.
         self.epoch = 1_767_225_600.0 if epoch is None else epoch  # 2026-01-01Z
         self.streaming = {"gga": True, "rmc": True}
+        # Nothing is said until the firmware has spoken. A real module streams
+        # from power-on, and this one cannot: it has no way to see the guest's
+        # clock, so a fix a second on the host's is a flood on a guest running
+        # slower -- and the firmware's first act is to command silence and wait
+        # for the line to go quiet. Fed a backlog it cannot drain in time, it
+        # gives up with "Wait L76K stop NMEA timeout!", which is what a loaded
+        # suite produced. A module that has not started yet is indistinguishable
+        # from one that stops promptly, and what actually tells the firmware
+        # there is something on the line is the answer to its query.
+        self.heard_from_the_guest = False
         self.commands: list[str] = []
         self.sentences = 0
         self._buffer = b""
@@ -99,6 +109,7 @@ class L76K(SerialDevice):
     def receive(self, data: bytes) -> bytes:
         """Commands arrive as whole NMEA lines, so answer them line by line."""
         self._buffer += data
+        self.heard_from_the_guest = True
         answer = b""
         while b"\n" in self._buffer:
             line, _, self._buffer = self._buffer.partition(b"\n")
@@ -138,7 +149,7 @@ class L76K(SerialDevice):
     # -- what it says on its own -----------------------------------------
 
     def poll(self) -> bytes:
-        if not any(self.streaming.values()):
+        if not self.heard_from_the_guest or not any(self.streaming.values()):
             return b""
         now = time.monotonic() - self._started
         if now < self._next_fix:

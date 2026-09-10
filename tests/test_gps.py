@@ -29,10 +29,19 @@ def lines(data: bytes) -> list[str]:
     return [line for line in data.decode("ascii").split("\r\n") if line]
 
 
-@pytest.fixture
-def module() -> L76K:
+def placed() -> L76K:
     # Somewhere with a sign on both axes, so a mistake in either shows up.
     return L76K(latitude=51.5074, longitude=-0.1278, altitude_m=35.0)
+
+
+@pytest.fixture
+def module() -> L76K:
+    """A module the firmware has already spoken to, which is the state it is
+    in for all but the first moment of a run."""
+    part = placed()
+    part.receive(STOP)
+    part.receive(START)
+    return part
 
 
 def test_it_answers_the_question_the_firmware_waits_for(module) -> None:
@@ -41,6 +50,17 @@ def test_it_answers_the_question_the_firmware_waits_for(module) -> None:
     reply = module.receive(QUERY).decode("ascii")
     assert reply.startswith("$" + IDENTITY.split(",SW=")[0]), reply
     assert "$GPTXT,01,01,02" in reply, reply
+
+
+def test_it_says_nothing_until_it_is_spoken_to() -> None:
+    """A module that has not been addressed stays quiet. It cannot see the
+    guest's clock, so a fix a second on the host's would be a flood on a guest
+    running slower -- and the firmware's first act is to command silence and
+    wait for the line to go quiet, which a backlog it cannot drain turns into
+    "Wait L76K stop NMEA timeout!" (ADR 0052)."""
+    fresh = placed()
+    fresh._next_fix = 0.0
+    assert fresh.poll() == b""
 
 
 def test_being_told_to_stop_makes_it_stop(module) -> None:
@@ -100,7 +120,9 @@ def test_it_says_it_has_a_fix(module) -> None:
 def test_two_runs_of_the_same_scenario_report_the_same_time(module) -> None:
     """The clock is a stated instant, not the host's: a run that reported a
     different time each time could not be compared with itself."""
-    other = L76K(latitude=51.5074, longitude=-0.1278, altitude_m=35.0)
+    other = placed()
+    other.receive(STOP)
+    other.receive(START)
     module._next_fix = other._next_fix = 0.0
     module._started = other._started = 0.0
     assert lines(module.poll())[0].split(",")[1] == lines(other.poll())[0].split(",")[1]

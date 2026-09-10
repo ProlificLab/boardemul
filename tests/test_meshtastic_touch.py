@@ -48,10 +48,42 @@ SHORT_FIELD = (140, 106, 218, 125)      # its text area, white until typed into
 OK_BUTTON = (141, 207)
 OK_FACE = (117, 190, 167, 225)
 NOTICE = (100, 70, 300, 140)            # where the firmware draws its restart notice
+# Tapping the body of a field binds nothing (ADR 0030), so it is somewhere to
+# touch that resets the interface's inactivity timer and changes nothing else.
+FIELD_BODY = (179, 115)
+# Every pixel of the short-name field. Typed text darkens some of them; a
+# blanked screen darkens all of them, and counting ink alone cannot tell those
+# apart -- which is how a run that had gone dark once read as having typed.
+FIELD_PIXELS = (SHORT_FIELD[2] - SHORT_FIELD[0]) * (SHORT_FIELD[3] - SHORT_FIELD[1])
 
 BLUE = lambda r, g, b: b > 150 and r < 110 and g < 140        # noqa: E731
 WHITE = lambda r, g, b: r > 230 and g > 230 and b > 230       # noqa: E731
 RED = lambda r, g, b: r > 150 and g < 90 and b < 90           # noqa: E731
+
+
+def _typed_into(frame: Path) -> bool:
+    """Ink in the field, and the field not simply dark all over."""
+    ink = dark_pixels(frame, SHORT_FIELD)
+    return 0 < ink < FIELD_PIXELS * 0.6
+
+
+def _wait_awake(outdir: Path, predicate, timeout: float) -> bool:
+    """Wait for the panel, keeping the interface awake while waiting.
+
+    It blanks after thirty seconds of its own time with no input, and these
+    waits are long: the run that found this had typed successfully and then
+    watched the screen go dark while it waited for the keyboard to be put
+    away. Touching a field body between looks resets that timer and presses
+    nothing.
+    """
+    deadline = time.monotonic() + timeout
+    while True:
+        left = deadline - time.monotonic()
+        if left <= 0:
+            return False
+        if wait_for_panel(outdir, predicate, timeout=min(10.0, left)):
+            return True
+        send_touch(outdir, *FIELD_BODY, hold=0.2)
 
 
 def _is_setup_dialog(frame: Path) -> bool:
@@ -70,7 +102,10 @@ def typed(tmp_path_factory) -> tuple[Run, dict]:
 
     def drive(outdir: Path) -> None:
         frame = outdir / "frames" / "latest.png"
-        seen["dialog"] = wait_for_panel(outdir, _is_setup_dialog, timeout=320)
+        # Booting to the dialog is the longest wait here and the one that
+        # varies most with what else the host is doing, so it gets most of
+        # the run's ceiling rather than half of it.
+        seen["dialog"] = wait_for_panel(outdir, _is_setup_dialog, timeout=480)
         if not seen["dialog"]:
             return
         seen["ink_before"] = dark_pixels(frame, SHORT_FIELD)
@@ -84,7 +119,7 @@ def typed(tmp_path_factory) -> tuple[Run, dict]:
         # for a number of seconds is what keeps this from failing on a loaded
         # host, where six seconds of wall time can be almost no guest time at
         # all -- which is how it failed (ADR 0040).
-        seen["keyboard"] = wait_for_panel(
+        seen["keyboard"] = _wait_awake(
             outdir, lambda f: count_pixels(f, OK_FACE, BLUE) < 100, timeout=180)
         if not seen["keyboard"]:
             return
@@ -93,14 +128,14 @@ def typed(tmp_path_factory) -> tuple[Run, dict]:
             time.sleep(2.5)
         # Bounded, not assumed: if nothing was typed this falls through with
         # the field still empty and the assertion says so.
-        wait_for_panel(outdir, lambda f: dark_pixels(f, SHORT_FIELD) > 0, timeout=90)
+        _wait_awake(outdir, _typed_into, timeout=90)
         seen["ink_after"] = dark_pixels(frame, SHORT_FIELD)
 
         send_touch(outdir, *SHORT_ICON)         # the same icon puts it away
         # And the OK button is reachable again only once it has gone; tapping
         # where the keyboard still is presses a key instead. Recorded rather
         # than only acted on, so a failure says which step ran out.
-        seen["dismissed"] = wait_for_panel(
+        seen["dismissed"] = _wait_awake(
             outdir, lambda f: count_pixels(f, OK_FACE, BLUE) > 500, timeout=180)
         if not seen["dismissed"]:
             return
@@ -136,6 +171,10 @@ def test_a_tap_on_the_icon_binds_the_keyboard_to_the_field(typed) -> None:
     _, seen = typed
     assert seen.get("ink_before") == 0, "the field was not empty to begin with"
     assert seen.get("ink_after", 0) > 0, "nothing was typed into the field"
+    # A blanked screen darkens every pixel of the field, so counting ink alone
+    # cannot tell typed text from the interface having gone to sleep.
+    assert seen["ink_after"] < FIELD_PIXELS * 0.6, (
+        f"the whole field is dark, which is a blanked screen and not typing: {seen}")
 
 
 def test_the_ok_button_commits_and_the_firmware_restarts(typed) -> None:
