@@ -79,6 +79,12 @@ OBJECT_DECLARE_SIMPLE_TYPE(EspWifiMac, ESP_WIFI_MAC)
  * it and goes round again. So this is a bitmask of sources with work waiting,
  * eleven of them, and one of them is a frame having arrived. Which one is not
  * established, so BOARDEMUL_WIFI_QUEUE sets what is raised. */
+/* The header the hardware writes in front of a received packet. Its size
+ * is not established; twelve is the smallest that puts the tested byte
+ * clear of the packet, and the packet has to start on a word for the rest
+ * of the path to read it. */
+#define RX_HEADER       12
+#define RX_HEADER_TAG   8
 #define R_RX_QUEUES     0xca8
 #define RX_QUEUE_MASK   0x7FFu
 /* This page is not blank paper. Before this device existed it was served by
@@ -175,6 +181,7 @@ struct EspWifiMac {
     bool gated;
     uint32_t status_mask;
     uint32_t queue_mask;
+    uint32_t header_tag;
     uint32_t ring;              /* what the driver handed us */
     hwaddr delivered_to;        /* the descriptor a frame went into */
     unsigned deliveries;
@@ -276,13 +283,24 @@ static void wifi_deliver(void *opaque)
     if (!buffer) {
         return;
     }
-    /* The packet and then its check sequence, which is what a radio would have
-     * put in the buffer. */
-    uint8_t staged[sizeof(beacon) + 4];
+    /* A header, then the packet, then its check sequence.
+     *
+     * That there is a header at all is read off wDev_ProcessRxSucData: it
+     * takes a byte at offset 8 of the buffer and discards the frame unless it
+     * is 64, 65, or one of 120 to 127. With the packet at offset zero that
+     * byte is part of the destination address -- 255 for a broadcast -- and
+     * the frame never survives. Following the pointer chain that routine works
+     * on lands on one of the ring's own buffers, which is what makes it the
+     * buffer rather than some structure beside it.
+     *
+     * What the rest of the header holds is not established, so it is zero and
+     * BOARDEMUL_WIFI_TAG sets the byte that is. */
+    uint8_t staged[RX_HEADER + sizeof(beacon) + 4] = { 0 };
     uint32_t fcs = frame_check(beacon, sizeof(beacon));
 
-    memcpy(staged, beacon, sizeof(beacon));
-    memcpy(staged + sizeof(beacon), &fcs, sizeof(fcs));
+    staged[RX_HEADER_TAG] = (uint8_t)s->header_tag;
+    memcpy(staged + RX_HEADER, beacon, sizeof(beacon));
+    memcpy(staged + RX_HEADER + sizeof(beacon), &fcs, sizeof(fcs));
     address_space_write(&address_space_memory, buffer, MEMTXATTRS_UNSPECIFIED,
                         staged, sizeof(staged));
     /* Keep the size the driver gave the buffer; say how much arrived, mark it
@@ -403,6 +421,8 @@ static void wifi_realize(DeviceState *dev, Error **errp)
         s->irq_line = qdev_get_gpio_in(DEVICE(intc), s->irq_source);
     }
     s->gated = g_strcmp0(getenv("BOARDEMUL_PHY_GATES"), "0") != 0;
+    const char *tag = getenv("BOARDEMUL_WIFI_TAG");
+    s->header_tag = tag ? (uint32_t)strtoul(tag, NULL, 0) : 64;
     const char *queues = getenv("BOARDEMUL_WIFI_QUEUE");
     s->queue_mask = queues ? (uint32_t)strtoul(queues, NULL, 0) : 1;
     const char *gap = getenv("BOARDEMUL_WIFI_GAP");

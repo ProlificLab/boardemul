@@ -122,12 +122,24 @@ whether or not it made anything of the contents.
       if ((a4 & ~7) == 120)   accept
       otherwise               discard
 
-  Whether that structure is the buffer this model fills is not established --
-  it is reached through two indirections from driver state -- and settling that
-  is the next thing to do rather than the next thing to assume. If it is the
-  buffer, then there is a header in front of the packet after all, and the
-  earlier attempt at one proved nothing: it was run before the queue was
-  corrected, when every delivery was ending in an assert.
+  **It is the buffer.** Following that pointer chain on a running guest lands
+  on one of the ring's own buffers, holding the packet this model wrote --
+  bytes four onward match it exactly, the first four being the allocator's
+  poison reused as a free-list link. And the byte at offset 8 reads 255,
+  because with the packet at offset zero that byte is part of a broadcast
+  address.
+
+  So there is a header in front of the packet, and the earlier attempt at one
+  proved nothing: it ran before the queue was corrected, when every delivery
+  ended in an assert. Putting one there with the tested byte set is not enough
+  either -- the frame still does not reach `ppProcessRxPktHdr` -- and reading
+  on says why that was optimistic: the byte at offset 8 is only consulted when
+  the byte at offset 47 is neither 0 nor 245, so the header has a shape rather
+  than a single field, and this model does not know it yet.
+
+  `BOARDEMUL_WIFI_TAG` sets the tested byte and the header is twelve bytes of
+  zero around it. Neither number is established; they are somewhere to start
+  from, and the routine that rejects the frame is where the answer is written.
 - (Superseded by the source finding above) **The driver takes two frames and
   then stops recycling.** Delivering
   repeatedly rather than once -- which a single frame at an arbitrary instant
