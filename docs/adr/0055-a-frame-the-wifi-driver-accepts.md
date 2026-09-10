@@ -78,15 +78,19 @@ whether or not it made anything of the contents.
   One of them is a field accessor -- given a number it returns one of three
   things -- and resolving its literals says where those things live. Not in the
   buffer, which is what a first reading of it suggested: they are registers in
-  this same page. The frame's **length is the low eleven bits of `+0xca8`**,
-  bits 16..23 of the same register are a second field, and the low four of
-  `+0xcb0` are a third.
+  this same page. The low eleven bits of `+0xca8`, bits 16..23 of the same
+  register, and the low four of `+0xcb0`.
 
-  Reading zero for the length is why the driver first took the frame and made
-  nothing of it. Told the length, it reads it back as the fifty-six bytes that
-  were delivered, checks `+0xcf0`, and discards the frame anyway -- and asks
-  for nothing else. So what remains is in the bytes themselves, and the two
-  fields not yet supplied are where to start.
+  **The eleven bits are a mask, not a length.** That is what reading the
+  accessor's caller settles, and it is worth saying plainly because this ADR
+  said "length" first and a run appeared to confirm it -- feed the register a
+  length, and the driver reads a length back. It was reading back what it had
+  been given. `0x420cecc4` treats the value as a set of sources: take the
+  lowest set bit, hand its index to two handlers, clear it, go round. Eleven
+  sources with work waiting, one of which is a frame having arrived.
+
+  Raising all eleven changes nothing, so the source was never the whole of it
+  either. `BOARDEMUL_WIFI_QUEUE` sets what is raised.
 - The status mask is a range, not a bit.
 - **The driver takes two frames and then stops recycling.** Delivering
   repeatedly rather than once -- which a single frame at an arbitrary instant

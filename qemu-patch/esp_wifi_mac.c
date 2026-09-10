@@ -70,12 +70,17 @@ OBJECT_DECLARE_SIMPLE_TYPE(EspWifiMac, ESP_WIFI_MAC)
 /* How big the frame was. Not in the buffer: the receive path reaches it
  * through a little accessor that selects a field by number, and the
  * fields it selects are the low eleven bits here, bits 16..23 of the same
- * register, and the low four of +0xcb0. Reading zero for the length is why
- * the driver first took the frame and made nothing of it; told the length,
- * it reads it, checks +0xcf0, and still discards -- so what is left is in
- * the bytes, not in this page. */
-#define R_RX_LENGTH     0xca8
-#define RX_LENGTH_MASK  0x7FFu
+ * register, and the low four of +0xcb0.
+ *
+ * The low eleven bits are NOT a length, which is what a first reading of the
+ * accessor suggested and what feeding it a length and reading it back again
+ * appeared to confirm. Its caller (0x420cecc4) treats the value as a mask: it
+ * takes the lowest set bit, passes that bit's index to two handlers, clears
+ * it and goes round again. So this is a bitmask of sources with work waiting,
+ * eleven of them, and one of them is a frame having arrived. Which one is not
+ * established, so BOARDEMUL_WIFI_QUEUE sets what is raised. */
+#define R_RX_QUEUES     0xca8
+#define RX_QUEUE_MASK   0x7FFu
 /* This page is not blank paper. Before this device existed it was served by
  * the board's PhyGates model, which answers the waits the firmware makes
  * during bring-up -- each one read off a disassembled polling loop, never
@@ -169,6 +174,7 @@ struct EspWifiMac {
     unsigned trace_left;
     bool gated;
     uint32_t status_mask;
+    uint32_t queue_mask;
     uint32_t ring;              /* what the driver handed us */
     hwaddr delivered_to;        /* the descriptor a frame went into */
     unsigned deliveries;
@@ -296,7 +302,7 @@ static void wifi_deliver(void *opaque)
     }
     s->regs[R_INT_STATUS / 4] = s->status_mask;
     s->regs[R_RX_LAST / 4] = (uint32_t)desc;
-    s->regs[R_RX_LENGTH / 4] = (uint32_t)sizeof(staged) & RX_LENGTH_MASK;
+    s->regs[R_RX_QUEUES / 4] = s->queue_mask & RX_QUEUE_MASK;
     s->trace_left = s->deliveries <= 1 ? 120 : 0;
     wifi_raise(s, 1);
     /* Again after a gap. It has to be long enough for the driver to hand the
@@ -397,6 +403,8 @@ static void wifi_realize(DeviceState *dev, Error **errp)
         s->irq_line = qdev_get_gpio_in(DEVICE(intc), s->irq_source);
     }
     s->gated = g_strcmp0(getenv("BOARDEMUL_PHY_GATES"), "0") != 0;
+    const char *queues = getenv("BOARDEMUL_WIFI_QUEUE");
+    s->queue_mask = queues ? (uint32_t)strtoul(queues, NULL, 0) : 0;
     const char *gap = getenv("BOARDEMUL_WIFI_GAP");
     s->gap_ns = (gap ? (int64_t)strtoll(gap, NULL, 0) : 500) * 1000000LL;
     const char *many = getenv("BOARDEMUL_WIFI_REPEAT");
