@@ -138,11 +138,15 @@ OBJECT_DECLARE_SIMPLE_TYPE(EspWifiMac, ESP_WIFI_MAC)
  * without even reaching `lmacTxFrame`. That is the whole of why the station
  * could never associate.
  *
- * Eight slots is as far down as the array can be followed without running into
- * a register this file already names (+0xcb0 is the first), and only slot zero
- * has ever been seen in use. */
+ * Only slot zero has ever been seen in use, so only slot zero is modelled.
+ * The array plainly continues downwards -- eight would fit before running into
+ * a register this file already names -- but every extra slot is a register
+ * this model would start reinterpreting on the strength of a pattern rather
+ * than an observation, and a write that happened to set both top bits would
+ * then fake a transmission that never happened. One slot is what was
+ * measured. */
 #define R_TX_SLOT0      0xd08
-#define TX_SLOTS        8
+#define TX_SLOTS        1
 #define TX_ARMED        0xC0000000u
 /* Which slots have finished. The driver's transmit-complete handler asks for
  * exactly one thing after acknowledging the interrupt: it calls the little
@@ -652,7 +656,7 @@ static void wifi_write(void *opaque, hwaddr offset, uint64_t value, unsigned siz
         s->regs[offset / 4] = (uint32_t)value & ~RX_COMMAND_GO;
         return;
     }
-    if (offset == R_TX_DONE_ACK) {
+    if (offset == R_TX_DONE_ACK && s->beacon_ms) {
         /* Write one to clear, on the register beside it. A pending set that
          * never empties is a handler that never stops -- the same lesson the
          * interrupt status taught. */
@@ -670,7 +674,16 @@ static void wifi_write(void *opaque, hwaddr offset, uint64_t value, unsigned siz
         }
         return;
     }
-    int slot = wifi_tx_slot(offset);
+    /* Completing transmissions is modelled only for a run that has asked for
+     * an access point. This file's rule is that with nothing configured the
+     * device is the trace window it replaced, byte for byte, and the rule
+     * earned itself again here: switching completion on unconditionally broke
+     * the two-node mesh test, deterministically and in the same place every
+     * time -- Meshtastic's second node brings its station up, arms a slot, and
+     * a transmit-complete interrupt it had never received before leaves it
+     * unable to finish its run. Nothing in the mesh has any use for a
+     * transmit that completes, so nothing in the mesh is given one. */
+    int slot = s->beacon_ms ? wifi_tx_slot(offset) : -1;
     if (slot >= 0 && ((uint32_t)value & TX_ARMED) == TX_ARMED
         && (s->regs[offset / 4] & TX_ARMED) != TX_ARMED) {
         /* Armed now, by this write. Requiring the transition rather than the

@@ -68,7 +68,28 @@ receive path was found by (ADR 0056). Each step is a run:
    microseconds by default -- about a short management frame at the lowest
    rate. The real number is not established and nothing yet depends on it.
 
-4. **Do not synthesise replies yet.** The model completes transmissions; it
+4. **Only for a run that asked for an access point, and only slot zero.**
+   Both restrictions were earned rather than chosen.
+
+   Switching completion on unconditionally broke the two-node mesh test --
+   deterministically, in the same place, in the same 300 seconds: Meshtastic's
+   second node brings its station up, arms a slot, and a transmit-complete
+   interrupt it had never received before leaves it unable to finish its run.
+   Nothing in a LoRa mesh has any use for a WiFi transmit that completes, so
+   nothing in it is given one. That restores this file's own rule -- with
+   nothing configured the device is the trace window it replaced, byte for
+   byte -- which is the second time that rule has caught something (ADR 0054
+   was the first).
+
+   And eight slots was a generalisation from one observation. The array
+   plainly continues downwards, but every extra slot is a register this model
+   would reinterpret on the strength of a pattern, where a write that happened
+   to set both top bits would fake a transmission that never happened. One
+   slot is what was measured. (Narrowing it did *not* fix the mesh test, so
+   the two restrictions are independent, and only the first was the
+   regression.)
+
+5. **Do not synthesise replies yet.** The model completes transmissions; it
    does not read the frames or answer them. That is the next piece and it is
    sized below rather than started.
 
@@ -105,10 +126,12 @@ receive path was found by (ADR 0056). Each step is a run:
   so is a breakpoint on `lmacEndFrameExchangeSequence`, which had not fired at
   the point this was written.
 
-- **Eight slots is a generalisation from one.** Only slot zero has ever been
-  seen in use. Eight is as far down as the array can be followed without
-  colliding with a register this file already names (`+0xcb0` is the first),
-  and a write to an unobserved slot is treated the same way.
+- **A firmware that brings WiFi up without wanting a network is disturbed by
+  a completing transmit.** That is what the mesh regression says, and it is
+  not fully explained -- only avoided, by not offering completion to a run
+  that asked for no access point. Why a transmit-complete interrupt should
+  stop a Meshtastic node finishing its run is unknown and would be worth
+  knowing before this is ever made unconditional.
 
 ## What connecting would take
 
