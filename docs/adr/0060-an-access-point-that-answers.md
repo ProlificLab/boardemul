@@ -73,25 +73,56 @@ stopped.
 
 **Costs, accepted**
 
-- **The station still does not connect, and the reason is now exact.** Its
-  LMAC transmit queue reads busy in **fifty-four samples out of fifty-four**
-  across two minutes of connect attempts, so `ppTxProtoProc` abandons every
-  send and the station never gets as far as authentication. The four probe
-  requests all happen in the first twelve seconds, before the queue seizes.
+- **The station still does not connect, and what it never does is
+  authenticate.** Over two hundred seconds, twenty scans and ten connect
+  attempts, every frame it transmits is a probe request: the device logs the
+  first frame of each subtype it sees, and subtype four is the only one that
+  ever appears. No authentication frame, no association request. So the
+  authentication and association answers in this ADR are **written but not
+  exercised** -- they answer a question the station never asks.
 
-  So the authentication and association answers in this ADR are **written but
-  not exercised**. They are the answer to a question the station cannot yet
-  ask.
+  The firmware's own verdict agrees and is more specific than before: the
+  first attempt fails with `Connecting Failed AP not found`, and the nine
+  after it time out with no reason at all. So the network is found, the
+  connect begins, and it ends without a frame on the air.
 
-- **What seizes the queue is now known to be outside this page.** Everything
-  the driver reads after a transmission is answered -- the completed-slot mask,
-  its acknowledgement, the status and the position -- and it reads nothing
-  else. The queue's own state byte is set to 1 by `lmacTxFrame` and cleared
-  only by `lmacEndFrameExchangeSequence`, whose first path requires that byte
-  to be **6** before it will clear it. Nothing in ROM writes 6 there. So the
-  driver's transmit state machine has a step between "handed to the MAC" and
-  "finished" that this model does not satisfy, and finding it is the next
-  piece of work: it is a state machine in the flash driver, not a register.
+- **Three earlier claims about why were wrong, and they were wrong because of
+  the instruments.** They are written out because each one cost a run:
+
+  - "`ppTxProtoProc` abandons every send." Never measured. The address taken
+    for the abandon branch, 0x4003d809, is the instruction *after* the call to
+    `lmacIsIdle` -- `beqz a10, ...` -- so it is reached on every test whatever
+    the answer. It fires six times while the queue reads idle.
+
+  - "The station transmits four times in two hundred seconds." That was a
+    logging cap of four, not a count. `lmacTxFrame` runs about every two
+    hundred milliseconds for the whole run. The log now reports the first
+    frame of every subtype and a running total, so a cap can never again be
+    read as a measurement.
+
+  - "Nothing ever clears the queue state byte, so the queue seizes." The byte
+    reads zero at every one of six transmit breakpoints, and the driver goes
+    on transmitting for the whole run, so it is not seized. A write
+    watchpoint on that byte is what said otherwise, three times: QEMU stops
+    before the store and continuing re-executes it, so one store reads as
+    hundreds of writes from a single program counter. Breakpoints and polls
+    agree with each other and disagree with the watchpoint; the watchpoint is
+    the one that is wrong.
+
+- **What the ROM does with that byte is now known exactly, and it is a dead
+  end rather than the blocker.** Every byte store to offset 18 in the ROM was
+  found by decoding the image -- twenty-four sites, eight of them in the WiFi
+  code -- and the only values ROM ever writes there are 0, 1 and 3.
+  `lmacEndFrameExchangeSequence` clears it only when it already reads 5 or 6,
+  and nothing in the ROM ever writes 5 or 6. Those two states belong to the
+  flash driver. The routine itself, and all four of its stores, run **not
+  once** in a hundred and fifty seconds.
+
+- **The transmit array is one slot wide, and that is measured.** The obvious
+  reading -- five slots descending from 0xd08 in eight-byte steps, as this
+  family's MAC is usually described -- was tried: the frames the station sent
+  fell from dozens to one, because a write to one of the lower offsets is not
+  an arming and treating it as one clears bits the driver needs.
 
 - **Reading the frame means reading driver memory**, through the ROM's LMAC
   queue table at 0x3fcef308. That is the same shortcut as reading `wDevCtrl+44`

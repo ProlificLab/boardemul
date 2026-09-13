@@ -146,6 +146,11 @@ OBJECT_DECLARE_SIMPLE_TYPE(EspWifiMac, ESP_WIFI_MAC)
  * then fake a transmission that never happened. One slot is what was
  * measured. */
 #define R_TX_SLOT0      0xd08
+/* One. The array does run downwards in eight-byte steps, but honouring five
+ * of them cut the frames the station sent from dozens to one: the offsets
+ * below the first are not all slots, and treating a write to one of them as
+ * an arming clears bits in a register the driver is relying on. Measured,
+ * not assumed -- the wider guess was tried and made it worse. */
 #define TX_SLOTS        1
 #define TX_ARMED        0xC0000000u
 /* Which slots have finished. The driver's transmit-complete handler asks for
@@ -392,6 +397,11 @@ struct EspWifiMac {
     size_t pending_len;
     uint16_t sequence;
     unsigned answers;
+    /* One bit per management subtype the station has sent. A fixed cap on
+     * the transmit log read as "the station only ever sent four frames",
+     * which was a cap and not a measurement, and it sent the reasoning
+     * that followed it wrong. Every new kind of frame is reported. */
+    uint16_t kinds;
     /* The channel a delivered beacon claims. Zero means "whatever the
      * controller is tuned to". BOARDEMUL_WIFI_CHANNEL, or the property. */
     uint32_t channel;
@@ -615,7 +625,8 @@ static void wifi_deliver(void *opaque)
      * descriptor, which is the only thing the model can see. */
     if (!s->repeat && s->deliveries % 100 == 0) {
         qemu_log_mask(LOG_UNIMP, "esp-wifi-mac: %u beacon(s) put on the air, "
-                      "the driver took %u%c", s->deliveries, s->taken, 10);
+                      "the driver took %u, and it has sent %u frame(s)%c",
+                      s->deliveries, s->taken, s->transmits, 10);
     }
     if (s->deliveries <= 2) {
     qemu_log_mask(LOG_UNIMP, "esp-wifi-mac: put %u byte(s) into the buffer at "
@@ -803,7 +814,10 @@ static void wifi_tx_complete(void *opaque)
         }
         s->pending_len = reply;
         s->answers++;
-        if (s->answers <= 8) {
+        unsigned kind = (unsigned)(request[0] >> 4) & 0xFu;
+        bool fresh = !(s->kinds & (1u << kind));
+        s->kinds |= (uint16_t)(1u << kind);
+        if (s->answers <= 8 || fresh) {
             qemu_log_mask(LOG_UNIMP, "esp-wifi-mac: the station sent a 0x%02x "
                           "from %02x:%02x:%02x:%02x:%02x:%02x -- answering with "
                           "a 0x%02x of %u byte(s)%c", request[0],
@@ -876,10 +890,10 @@ static void wifi_write(void *opaque, hwaddr offset, uint64_t value, unsigned siz
         s->regs[offset / 4] = (uint32_t)value;
         s->tx_pending |= 1u << slot;
         s->transmits++;
-        if (s->transmits <= 4) {
+        if (s->transmits <= 4 || s->transmits % 100 == 0) {
             qemu_log_mask(LOG_UNIMP, "esp-wifi-mac: the driver transmitted on "
-                          "slot %d -- control 0x%08x, parameters 0x%08x%c",
-                          slot, (uint32_t)value,
+                          "slot %d (%u so far) -- control 0x%08x, parameters 0x%08x%c",
+                          slot, s->transmits, (uint32_t)value,
                           s->regs[(R_TX_SLOT0 - 4 - slot * 8) / 4], 10);
         }
         timer_mod_ns(s->tx_timer,
