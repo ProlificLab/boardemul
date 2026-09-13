@@ -103,21 +103,12 @@ and the model reads the same byte.
   all, so `--wifi-ap` there is accepted, warned about, and ignored -- said out
   loud rather than silent, which is ADR 0052's lesson.
 
-- **Nothing associates, and nothing is transmitted -- measured, not assumed.**
-  Breakpoints on eight of the ROM's transmit routines -- `lmacTxFrame`,
-  `lmacSetTxFrame`, `ppTxProtoProc`, `ppProcessTxQ`, `ppGetTxframe`,
-  `lmacPostTxComplete`, and the two lowest, `hal_mac_tx_set_ppdu` and
-  `mac_tx_set_plcp0` -- fire **not once** in six minutes across two runs with
-  the station up, scanning, and finding the network. The same is true from the
-  register side: over twenty thousand traced accesses to this page, the only
-  internal-RAM address ever written is the receive ring at `+0x088`, cycling
-  through its four descriptors.
-
-  So this firmware's scan is passive, and a transmit model has nothing to
-  answer yet. What would give it something is a network the firmware *wants*:
-  Arduino's `WiFiMulti` only tries to join an access point on its own list, and
-  ours is not on it. Advertising a name it asks for is the way in, and that
-  name has to be found in the image or read off the run.
+- **Nothing transmits while it only scans -- and that is because a scan is
+  passive, not because transmit is unreachable.** Breakpoints on eight of the
+  ROM's transmit routines fire not once while the station merely scans. But
+  given the network the firmware actually wants, it does transmit: see ADR
+  0058. This bullet's original claim -- that nothing is transmitted, full stop
+  -- was measured on the wrong stimulus and is corrected there.
 
 - Reading `wDevCtrl+44` is a device reaching into driver memory. It is right
   about the channel and wrong in principle, and it is written down as such.
