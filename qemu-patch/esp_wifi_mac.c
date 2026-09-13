@@ -117,6 +117,52 @@ OBJECT_DECLARE_SIMPLE_TYPE(EspWifiMac, ESP_WIFI_MAC)
  */
 #define R_MAC_RESET     0xd14
 #define MAC_RESET_ACK   0x00000001u
+/* The transmit slots. Each is two words -- parameters at `0xd04 - slot*8` and
+ * control at `0xd08 - slot*8` -- and the array runs *downwards*, which is the
+ * same shape the receive side's per-source registers have (ADR 0055).
+ *
+ * Read off the ROM and then watched, in this order. `lmacTxFrame`'s last two
+ * instructions are a read-modify-write of the control word ORing in
+ * 0xc0000000, and its address is built as `(0x0c0067a1 - slot) << 3`, which is
+ * 0x60033d08 - slot*8 exactly. A trace of a whole boot then shows the sequence
+ * once and only once:
+ *
+ *     +0xd04 <- 0x0000000a   lmacSetTxFrame    the slot's parameters
+ *     +0xd08 <- 0x006b9528   mac_tx_set_plcp0  the PLCP header
+ *     +0xd04 <- 0x1200000a   lmacTxFrame       rate and backoff merged in
+ *     +0xd08 <- 0xc06b9528   lmacTxFrame       the top two bits: go
+ *
+ * and then nothing, ever again. Those two bits are what a real MAC clears when
+ * the frame has gone; nothing cleared them here, so the queue stayed busy,
+ * `lmacIsIdle` said so, and every later `ppTxProtoProc` abandoned its send
+ * without even reaching `lmacTxFrame`. That is the whole of why the station
+ * could never associate.
+ *
+ * Eight slots is as far down as the array can be followed without running into
+ * a register this file already names (+0xcb0 is the first), and only slot zero
+ * has ever been seen in use. */
+#define R_TX_SLOT0      0xd08
+#define TX_SLOTS        8
+#define TX_ARMED        0xC0000000u
+/* Which slots have finished. The driver's transmit-complete handler asks for
+ * exactly one thing after acknowledging the interrupt: it calls the little
+ * field accessor at 0x420d4fe8 with selector 2, which reads the low four bits
+ * of this register. Watched, not guessed -- with the interrupt raised and this
+ * left at zero the handler read it, found nothing, and never ended the frame
+ * exchange, so the queue stayed busy exactly as before.
+ *
+ * Four bits beside an eleven-bit mask of receive sources at +0xca8 reads as
+ * the same thing for transmit: a mask of slots with a completion waiting. */
+#define R_TX_DONE_SLOTS 0xcb0
+#define TX_DONE_MASK    0xFu
+/* And how the driver says it has dealt with them. Found the same way, one
+ * answer at a time: with the mask left at zero the handler read it and
+ * stopped; with the completed slot in it, the handler read the mask, then read
+ * this register -- which nothing had ever touched before -- and wrote the same
+ * slot back. That is the ordinary split of a pending set and its
+ * acknowledgement, the same shape as the interrupt status at +0xc3c and its
+ * acknowledgement at +0xc40 a few registers along. */
+#define R_TX_DONE_ACK   0xcac
 /* Why the handler was woken. Found by raising the interrupt with nothing to
  * say and watching what it went and read: it reads this, gets nothing, and
  * returns -- then comes straight back, because the line is still asserted.
@@ -151,6 +197,8 @@ OBJECT_DECLARE_SIMPLE_TYPE(EspWifiMac, ESP_WIFI_MAC)
 #define R_INT_CLEAR     0xc40
 /* Bit 14: the one the driver's handler routes to lmacProcessRxSucData. */
 #define RX_DONE_STATUS  0x00004000u
+/* And bit 7, which the same handler routes to lmacPostTxComplete. */
+#define TX_DONE_STATUS  0x00000080u
 
 /* wDevCtrl_ptr, named by the ROM's linker script, and the byte in the
  * structure it points at that holds the channel the radio is tuned to. The
@@ -274,10 +322,17 @@ struct EspWifiMac {
     unsigned trace_left;
     /* How many accesses to log after the first frame. BOARDEMUL_WIFI_TRACE. */
     unsigned trace_window;
+    bool trace_from_start;
     /* Words of the receive header the run has been told to override, and
      * which of them. BOARDEMUL_WIFI_HEADER, as offset:value pairs. */
     uint32_t header_words[RX_HEADER / 4];
     uint32_t header_set;
+    /* The transmit slots armed and not yet completed, and the timer that
+     * completes them. A real MAC takes a frame's air time to send it. */
+    QEMUTimer *tx_timer;
+    uint32_t tx_pending;
+    unsigned transmits;
+    int64_t tx_delay_ns;
     /* The channel a delivered beacon claims. Zero means "whatever the
      * controller is tuned to". BOARDEMUL_WIFI_CHANNEL, or the property. */
     uint32_t channel;
@@ -503,7 +558,7 @@ static void wifi_deliver(void *opaque)
     /* Armed once, on the first frame that actually goes on, and then left to
      * run out. Reassigning it per delivery -- which this did -- switches the
      * trace off again a beacon later, and nine accesses is not a trace. */
-    if (s->deliveries == 1) {
+    if (s->deliveries == 1 && !s->trace_from_start) {
         s->trace_left = s->trace_window;
     }
     wifi_raise(s, 1);
@@ -546,6 +601,42 @@ static uint64_t wifi_read(void *opaque, hwaddr offset, unsigned size)
     return value;
 }
 
+/* Which transmit slot a register offset belongs to, or -1. The array runs
+ * downwards from R_TX_SLOT0 in eight-byte steps. */
+static int wifi_tx_slot(hwaddr offset)
+{
+    if (offset > R_TX_SLOT0 || ((R_TX_SLOT0 - offset) % 8) != 0) {
+        return -1;
+    }
+    unsigned slot = (R_TX_SLOT0 - offset) / 8;
+    return slot < TX_SLOTS ? (int)slot : -1;
+}
+
+/* The frame has gone. A real MAC clears the two bits the driver set to arm the
+ * slot and raises its transmit-complete source; the driver's handler routes
+ * that bit to `lmacPostTxComplete`, which is a thunk for `pp_post(23)`, and
+ * ppTask then ends the frame exchange and marks the queue idle again. Without
+ * this the first frame is the last one. */
+static void wifi_tx_complete(void *opaque)
+{
+    EspWifiMac *s = opaque;
+
+    if (!s->tx_pending) {
+        return;
+    }
+    for (unsigned slot = 0; slot < TX_SLOTS; slot++) {
+        if (s->tx_pending & (1u << slot)) {
+            s->regs[(R_TX_SLOT0 - slot * 8) / 4] &= ~TX_ARMED;
+        }
+    }
+    s->regs[R_TX_DONE_SLOTS / 4] =
+        (s->regs[R_TX_DONE_SLOTS / 4] & ~TX_DONE_MASK)
+        | (s->tx_pending & TX_DONE_MASK);
+    s->tx_pending = 0;
+    s->regs[R_INT_STATUS / 4] |= TX_DONE_STATUS;
+    wifi_raise(s, 1);
+}
+
 static void wifi_write(void *opaque, hwaddr offset, uint64_t value, unsigned size)
 {
     EspWifiMac *s = opaque;
@@ -561,6 +652,14 @@ static void wifi_write(void *opaque, hwaddr offset, uint64_t value, unsigned siz
         s->regs[offset / 4] = (uint32_t)value & ~RX_COMMAND_GO;
         return;
     }
+    if (offset == R_TX_DONE_ACK) {
+        /* Write one to clear, on the register beside it. A pending set that
+         * never empties is a handler that never stops -- the same lesson the
+         * interrupt status taught. */
+        s->regs[R_TX_DONE_SLOTS / 4] &= ~((uint32_t)value & TX_DONE_MASK);
+        s->regs[offset / 4] = (uint32_t)value;
+        return;
+    }
     if (offset == R_INT_CLEAR) {
         /* What the handler has dealt with. The line goes down when nothing is
          * left; a status that never clears is a handler that never stops. */
@@ -569,6 +668,25 @@ static void wifi_write(void *opaque, hwaddr offset, uint64_t value, unsigned siz
         if (!s->regs[R_INT_STATUS / 4]) {
             wifi_raise(s, 0);
         }
+        return;
+    }
+    int slot = wifi_tx_slot(offset);
+    if (slot >= 0 && ((uint32_t)value & TX_ARMED) == TX_ARMED
+        && (s->regs[offset / 4] & TX_ARMED) != TX_ARMED) {
+        /* Armed now, by this write. Requiring the transition rather than the
+         * value keeps a driver that reads the register and puts it back from
+         * looking like a fresh frame. */
+        s->regs[offset / 4] = (uint32_t)value;
+        s->tx_pending |= 1u << slot;
+        s->transmits++;
+        if (s->transmits <= 4) {
+            qemu_log_mask(LOG_UNIMP, "esp-wifi-mac: the driver transmitted on "
+                          "slot %d -- control 0x%08x, parameters 0x%08x%c",
+                          slot, (uint32_t)value,
+                          s->regs[(R_TX_SLOT0 - 4 - slot * 8) / 4], 10);
+        }
+        timer_mod_ns(s->tx_timer,
+                     qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + s->tx_delay_ns);
         return;
     }
     s->regs[offset / 4] = (uint32_t)value;
@@ -602,6 +720,7 @@ static void wifi_reset(void *opaque)
     EspWifiMac *s = opaque;
     memset(s->regs, 0, sizeof(s->regs));
     s->ring = 0;
+    s->tx_pending = 0;
     s->delivered_to = 0;
     wifi_raise(s, 0);
 }
@@ -659,10 +778,24 @@ static void wifi_realize(DeviceState *dev, Error **errp)
     if (pinned) {
         s->channel = (uint32_t)strtoul(pinned, NULL, 0);
     }
+    /* Normally the trace window opens on the first frame delivered, which is
+     * after the station is up. BOARDEMUL_WIFI_TRACE_AT opens it at once
+     * instead, for the questions that are about what the driver does before
+     * it can hear anything -- the transmit path among them. */
+    s->trace_from_start = getenv("BOARDEMUL_WIFI_TRACE_AT") != NULL;
     const char *window = getenv("BOARDEMUL_WIFI_TRACE");
     s->trace_window = window ? (unsigned)strtoul(window, NULL, 0) : 120;
+    if (s->trace_from_start) {
+        s->trace_left = s->trace_window;
+    }
     const char *mask = getenv("BOARDEMUL_WIFI_STATUS");
     s->status_mask = mask ? (uint32_t)strtoul(mask, NULL, 0) : RX_DONE_STATUS;
+    /* How long a frame takes to leave. A short management frame at the lowest
+     * rate is a few hundred microseconds of air; the exact number is not
+     * established, so BOARDEMUL_WIFI_TX_US sets it. */
+    const char *air = getenv("BOARDEMUL_WIFI_TX_US");
+    s->tx_delay_ns = (air ? (int64_t)strtoll(air, NULL, 0) : 300) * 1000LL;
+    s->tx_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, wifi_tx_complete, s);
     s->hatch = timer_new_ns(QEMU_CLOCK_VIRTUAL, wifi_deliver, s);
     qemu_register_reset(wifi_reset, s);
     if (after || s->beacon_ms) {

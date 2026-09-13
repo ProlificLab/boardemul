@@ -1,6 +1,10 @@
 # ADR 0058 — The firmware tries to connect, and where it stops
 
 **Status:** Accepted — 2026-09-13. Continues ADR 0057; corrects its last cost.
+**Corrected the same day by ADR 0059:** the claim below that `lmacTxFrame`
+never runs is an artefact of attaching a minute into the boot. It runs six
+times at nine and a half seconds, and the queue is busy afterwards because
+nothing completed those six frames -- which is what ADR 0059 models.
 
 ## Context
 
