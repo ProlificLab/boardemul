@@ -233,7 +233,7 @@ def build(outdir: Path, air: str | None = None, ble_air: str | None = None,
           antenna_dbi: float = 0.0, exponent: float = 2.0,
           obstruction_db: float = 0.0,
           gps: tuple[float, float, float] | None = None,
-          wifi_ap: tuple[str, int, int] | None = None) -> Board:
+          wifi_ap: tuple[str, int, int, bool] | None = None) -> Board:
     outdir = Path(outdir)
     panel = St7789Panel(outdir / "frames")
     gpio = GpioClient(outdir / "gpio.sock")
@@ -302,6 +302,7 @@ def build(outdir: Path, air: str | None = None, ble_air: str | None = None,
         # scanning station has to hear to find a network (ADR 0057).
         f"esp-wifi-mac,base=0x{WIFI_MAC_BASE:x},irq={IRQ_WIFI_MAC}"
         + (f",ssid={wifi_ap[0]},beacon-ms={wifi_ap[1]},channel={wifi_ap[2]}"
+           f",wpa2={'on' if wifi_ap[3] else 'off'}"
            if wifi_ap else ""),
         f"esp-ble-core,base=0x{BLE_CORE_BASE:x},irq={IRQ_RWBLE}"
         + (f",air={ble_air},airname={outdir.name}" if ble_air else ""),

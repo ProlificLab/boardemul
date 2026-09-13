@@ -257,6 +257,10 @@ def main(argv: list[str] | None = None) -> int:
                          "it beacons in milliseconds (100 by default), and the "
                          "channel it claims (by default whichever the "
                          "controller is tuned to)")
+    ap.add_argument("--wifi-wpa2", action="store_true",
+                    help="the access point has a passphrase: it advertises "
+                         "WPA2-PSK, which is what a station that was given "
+                         "one looks for")
     ap.add_argument("--ble-air", default=None, metavar="DIR",
                     help="share a directory so this board's Bluetooth can be "
                          "heard by others; a different band from --air, so a "
@@ -315,14 +319,18 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit(", ".join(given) + " needs --bus: without it no board "
                          "is built, so nothing would answer")
 
-    access_point: tuple[str, int, int] | None = None
+    access_point: tuple[str, int, int, bool] | None = None
     if args.wifi_ap:
         parts = args.wifi_ap.split(",")
         if not parts[0]:
             raise SystemExit("--wifi-ap wants a name")
         access_point = (parts[0],
                         int(parts[1]) if len(parts) > 1 and parts[1] else 100,
-                        int(parts[2]) if len(parts) > 2 and parts[2] else 0)
+                        int(parts[2]) if len(parts) > 2 and parts[2] else 0,
+                        bool(args.wifi_wpa2))
+    elif args.wifi_wpa2:
+        raise SystemExit("--wifi-wpa2 says how the access point is secured; "
+                         "--wifi-ap says there is one")
     server: BusServer | None = None
     tail = None
     irq: IrqChannel | None = None
@@ -375,7 +383,8 @@ def main(argv: list[str] | None = None) -> int:
     if access_point:
         print(f"wifi-ap : {access_point[0]!r} every {access_point[1]} ms on "
               + (f"channel {access_point[2]}" if access_point[2]
-                 else "whichever channel the controller is tuned to"))
+                 else "whichever channel the controller is tuned to")
+              + (", WPA2-PSK" if access_point[3] else ", open"))
     if hw_module.SOC_DEVICES:
         print(f"soc     : {', '.join(hw_module.SOC_DEVICES)}")
     print(f"uart    : {uart}")

@@ -88,6 +88,21 @@ OBJECT_DECLARE_SIMPLE_TYPE(EspWifiMac, ESP_WIFI_MAC)
 #define RX_HEADER       48
 #define RX_HEADER_TAG   8
 #define R_RX_QUEUES     0xca8
+/* Whether the MAC is running at all. ic_mac_deinit (ROM, 0x4003c5fc) spins
+ * while bits 13 and 14 are set and then ORs 0x00ff1000 in; ic_mac_init
+ * (0x4003c5e0) ANDs with 0xff00efff, which clears exactly those. So the eight
+ * bits at 16..23 and bit 12 set is the MAC held, and nothing is received then. */
+#define R_MAC_HOLD      0xca0
+#define MAC_HELD        0x00ff1000u
+/* And whether it is listening. The driver keeps 0x45 in this register and
+ * toggles bit 8 on top of it: off before it reconfigures the MAC, on after.
+ * Read off the trace rather than the code -- the same flash routine
+ * (0x420d4792) writes 0x45 and 0x155 by turns around every channel change.
+ * A frame delivered before the bit is first set is the run that never heard
+ * anything: it landed between the ring being handed over and the interrupt
+ * being routed, and was never serviced. */
+#define R_RX_ENABLE     0x0d8
+#define RX_ENABLED      0x00000100u
 #define RX_QUEUE_MASK   0x7FFu
 /* This page is not blank paper. Before this device existed it was served by
  * the board's PhyGates model, which answers the waits the firmware makes
@@ -162,10 +177,11 @@ OBJECT_DECLARE_SIMPLE_TYPE(EspWifiMac, ESP_WIFI_MAC)
  * The address is locally administered (bit 1 of the first byte), because a
  * model must not put a real vendor's address on the air.
  */
-#define BEACON_MAX      96
+#define BEACON_MAX      128
 #define SSID_MAX        32
 
-static size_t build_beacon(uint8_t *out, const char *ssid, unsigned channel)
+static size_t build_beacon(uint8_t *out, const char *ssid, unsigned channel,
+                           bool wpa2)
 {
     size_t len = strlen(ssid);
     size_t at = 0;
@@ -199,6 +215,24 @@ static size_t build_beacon(uint8_t *out, const char *ssid, unsigned channel)
     out[at++] = 0x03;                                   /* and its channel */
     out[at++] = 0x01;
     out[at++] = (uint8_t)(channel ? channel : 1);
+    if (wpa2) {
+        /* A network with a passphrase says so twice: the privacy bit in its
+         * capabilities, and an RSN element naming WPA2-PSK with CCMP for both
+         * ciphers. A station given a passphrase filters the open networks out
+         * of its connect-time scan, so without these the firmware's own
+         * network is "not found" even while every scan lists it. */
+        out[34] |= 0x10;
+        static const uint8_t rsn[] = {
+            0x30, 0x14,                                 /* RSN, twenty bytes */
+            0x01, 0x00,                                 /* version 1 */
+            0x00, 0x0F, 0xAC, 0x04,                     /* group: CCMP */
+            0x01, 0x00, 0x00, 0x0F, 0xAC, 0x04,         /* one pairwise: CCMP */
+            0x01, 0x00, 0x00, 0x0F, 0xAC, 0x02,         /* one key kind: PSK */
+            0x00, 0x00,                                 /* no capabilities */
+        };
+        memcpy(out + at, rsn, sizeof(rsn));
+        at += sizeof(rsn);
+    }
     return at;
 }
 
@@ -250,6 +284,7 @@ struct EspWifiMac {
     /* The access point this device puts in the air, if any. */
     char *ssid;
     uint32_t beacon_ms;
+    bool wpa2;
     bool gated;
     uint32_t status_mask;
     uint32_t queue_mask;
@@ -327,6 +362,18 @@ static void wifi_deliver(void *opaque)
         timer_mod_ns(s->hatch, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + s->gap_ns);
         return;
     }
+    /* Nothing is heard while the MAC is held. ic_mac_deinit waits for the
+     * two busy bits to drop and then sets these eight-plus-one bits;
+     * ic_mac_init clears them, and the driver brackets every channel change
+     * with the pair -- both read off the ROM, literals and all. A frame
+     * delivered while held was the run that never heard anything: it landed
+     * during bring-up, its interrupt was acknowledged unread, and with all
+     * four descriptors filled and none ever re-armed the ring was dead. */
+    if ((s->regs[R_MAC_HOLD / 4] & MAC_HELD)
+        || !(s->regs[R_RX_ENABLE / 4] & RX_ENABLED)) {
+        timer_mod_ns(s->hatch, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + s->gap_ns);
+        return;
+    }
     desc = wifi_free_descriptor(s, &word);
     if (!desc) {
         qemu_log_mask(LOG_UNIMP, "esp-wifi-mac: the ring at 0x%08x has no "
@@ -389,7 +436,7 @@ static void wifi_deliver(void *opaque)
         }
     }
     size_t frame_len = build_beacon(frame, s->ssid ? s->ssid : "BoardEmul",
-                                    channel);
+                                    channel, s->wpa2);
     uint32_t fcs = frame_check(frame, frame_len);
 
     /* The frame's length, in the two places the stack reads it.
@@ -648,6 +695,7 @@ static Property wifi_props[] = {
     DEFINE_PROP_STRING("ssid", EspWifiMac, ssid),
     DEFINE_PROP_UINT32("beacon-ms", EspWifiMac, beacon_ms, 0),
     DEFINE_PROP_UINT32("channel", EspWifiMac, channel, 0),
+    DEFINE_PROP_BOOL("wpa2", EspWifiMac, wpa2, false),
     DEFINE_PROP_END_OF_LIST(),
 };
 
