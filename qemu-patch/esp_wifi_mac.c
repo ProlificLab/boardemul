@@ -159,6 +159,30 @@ OBJECT_DECLARE_SIMPLE_TYPE(EspWifiMac, ESP_WIFI_MAC)
  * the same thing for transmit: a mask of slots with a completion waiting. */
 #define R_TX_DONE_SLOTS 0xcb0
 #define TX_DONE_MASK    0xFu
+/* The ROM's LMAC transmit queue table: forty-byte entries indexed by slot,
+ * from the literal `lmacIsIdle` and `lmacTxFrame` both load (0x4003b030).
+ * `lmacTxFrame` stores the buffer it was given into word 0 of the entry, so
+ * that is where the frame being transmitted can be found.
+ *
+ * Reading it is the same shortcut as reading `wDevCtrl+44` for the channel,
+ * and called out for the same reason: a real MAC fetches the frame by DMA
+ * from wherever the driver pointed it, and this is where the driver pointed
+ * it -- but a device reaching into driver memory is a device relying on
+ * something no wire carries. */
+#define LMAC_QUEUES       0x3FCEF308
+#define LMAC_QUEUE_STRIDE 40
+/* Inside the buffer: the frame's own bytes, and its header and body lengths
+ * as halfwords. Dumped rather than assumed -- at the store in `lmacTxFrame`
+ * the buffer reads `+16: 88 95 cb 3f  18 00 23 00`, and following that pointer
+ * lands on `40 00 ... 00 0d "xinyuandianzi"`: a probe request for the network
+ * the firmware is looking for, twenty-four bytes of header and thirty-five of
+ * body. Only the first octet and the sender's address are needed to answer
+ * one, so nothing here depends on the lengths being right. */
+#define EB_FRAME          16
+#define EB_HEAD_LEN       20
+#define EB_BODY_LEN       22
+/* The most of a frame this device ever reads or writes. */
+#define FRAME_MAX         BEACON_MAX
 /* And how the driver says it has dealt with them. Found the same way, one
  * answer at a time: with the mask left at zero the handler read it and
  * stopped; with the completed slot in it, the handler read the mask, then read
@@ -232,8 +256,34 @@ OBJECT_DECLARE_SIMPLE_TYPE(EspWifiMac, ESP_WIFI_MAC)
 #define BEACON_MAX      128
 #define SSID_MAX        32
 
-static size_t build_beacon(uint8_t *out, const char *ssid, unsigned channel,
-                           bool wpa2)
+/* The access point's own address, and the one every frame from it carries.
+ * Locally administered, so no real vendor's address goes on the air. */
+static const uint8_t ap_address[6] = { 0x02, 0x00, 0x00, 0x00, 0x00, 0x01 };
+static const uint8_t everyone[6] = { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };
+
+/* A management frame's twenty-four byte header. `kind` is the whole first
+ * octet: the subtype in its top nibble and the type in the two bits below,
+ * which for management frames are zero -- 0x80 a beacon, 0x50 a probe
+ * response, 0xb0 an authentication, 0x10 an association response. */
+static size_t build_header(uint8_t *out, uint8_t kind, const uint8_t *to,
+                           uint16_t sequence)
+{
+    out[0] = kind;
+    out[1] = 0x00;
+    out[2] = 0x00;                                      /* duration */
+    out[3] = 0x00;
+    memcpy(out + 4, to, 6);                             /* who it is for */
+    memcpy(out + 10, ap_address, 6);                    /* from us */
+    memcpy(out + 16, ap_address, 6);                    /* our network */
+    out[22] = (uint8_t)(sequence << 4);
+    out[23] = (uint8_t)(sequence >> 4);
+    return 24;
+}
+
+/* What a beacon and a probe response say, which is the same thing: the fixed
+ * fields and then the elements a scanning station reads. */
+static size_t build_body(uint8_t *out, const char *ssid, unsigned channel,
+                         bool wpa2)
 {
     size_t len = strlen(ssid);
     size_t at = 0;
@@ -241,19 +291,16 @@ static size_t build_beacon(uint8_t *out, const char *ssid, unsigned channel,
     if (len > SSID_MAX) {
         len = SSID_MAX;
     }
-    static const uint8_t head[] = {
-        0x80, 0x00,                                     /* a beacon */
-        0x00, 0x00,                                     /* duration */
-        0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,             /* to everyone */
-        0x02, 0x00, 0x00, 0x00, 0x00, 0x01,             /* from us */
-        0x02, 0x00, 0x00, 0x00, 0x00, 0x01,             /* our network */
-        0x00, 0x00,                                     /* sequence */
-        0, 0, 0, 0, 0, 0, 0, 0,                         /* timestamp */
-        0x64, 0x00,                                     /* every 100 */
-        0x01, 0x00,                                     /* an infrastructure one */
-    };
-    memcpy(out, head, sizeof(head));
-    at = sizeof(head);
+    memset(out, 0, 8);                                  /* timestamp */
+    at = 8;
+    out[at++] = 0x64;                                   /* every 100 */
+    out[at++] = 0x00;
+    /* An infrastructure network, and one with a passphrase says so here as
+     * well as in its RSN element: a station given one filters the open
+     * networks out of its connect-time scan, so without the privacy bit the
+     * firmware's own network is "not found" even while every scan lists it. */
+    out[at++] = wpa2 ? 0x11 : 0x01;
+    out[at++] = 0x00;
     out[at++] = 0x00;                                   /* the name */
     out[at++] = (uint8_t)len;
     memcpy(out + at, ssid, len);
@@ -268,12 +315,6 @@ static size_t build_beacon(uint8_t *out, const char *ssid, unsigned channel,
     out[at++] = 0x01;
     out[at++] = (uint8_t)(channel ? channel : 1);
     if (wpa2) {
-        /* A network with a passphrase says so twice: the privacy bit in its
-         * capabilities, and an RSN element naming WPA2-PSK with CCMP for both
-         * ciphers. A station given a passphrase filters the open networks out
-         * of its connect-time scan, so without these the firmware's own
-         * network is "not found" even while every scan lists it. */
-        out[34] |= 0x10;
         static const uint8_t rsn[] = {
             0x30, 0x14,                                 /* RSN, twenty bytes */
             0x01, 0x00,                                 /* version 1 */
@@ -286,6 +327,13 @@ static size_t build_beacon(uint8_t *out, const char *ssid, unsigned channel,
         at += sizeof(rsn);
     }
     return at;
+}
+
+static size_t build_beacon(uint8_t *out, const char *ssid, unsigned channel,
+                           bool wpa2)
+{
+    size_t at = build_header(out, 0x80, everyone, 0);
+    return at + build_body(out + at, ssid, channel, wpa2);
 }
 
 /* Every frame on the air ends with a check sequence over its own bytes, and a
@@ -337,6 +385,13 @@ struct EspWifiMac {
     uint32_t tx_pending;
     unsigned transmits;
     int64_t tx_delay_ns;
+    /* A frame to put on next, when the station has sent something that wants
+     * answering. It goes out through the same path as a beacon, so it waits
+     * for the same conditions: a free descriptor and a MAC that is listening. */
+    uint8_t pending[FRAME_MAX];
+    size_t pending_len;
+    uint16_t sequence;
+    unsigned answers;
     /* The channel a delivered beacon claims. Zero means "whatever the
      * controller is tuned to". BOARDEMUL_WIFI_CHANNEL, or the property. */
     uint32_t channel;
@@ -383,6 +438,24 @@ static hwaddr wifi_free_descriptor(EspWifiMac *s, uint32_t *word_out)
         at = desc[2];
     }
     return 0;
+}
+
+/* The channel the controller is tuned to, or the one a run pinned. */
+static unsigned wifi_channel(EspWifiMac *s)
+{
+    if (s->channel) {
+        return s->channel;
+    }
+    uint32_t control = 0;
+    uint8_t current = 0;
+    address_space_read(&address_space_memory, WDEV_CTRL_PTR,
+                       MEMTXATTRS_UNSPECIFIED, &control, sizeof(control));
+    if (control) {
+        address_space_read(&address_space_memory, control + WDEV_CHANNEL,
+                           MEMTXATTRS_UNSPECIFIED, &current, sizeof(current));
+    }
+    unsigned channel = current & 0x0F;
+    return (channel >= 1 && channel <= 14) ? channel : 1;
 }
 
 static void wifi_deliver(void *opaque)
@@ -461,8 +534,8 @@ static void wifi_deliver(void *opaque)
      * what the code makes plain and BOARDEMUL_WIFI_HEADER overrides any word
      * of it as `offset:value` pairs -- which turns each remaining guess into
      * a run rather than a rebuild. */
-    uint8_t staged[RX_HEADER + BEACON_MAX + 4] = { 0 };
-    uint8_t frame[BEACON_MAX];
+    uint8_t staged[RX_HEADER + FRAME_MAX + 4] = { 0 };
+    uint8_t frame[FRAME_MAX];
     uint32_t header[RX_HEADER / 4] = { 0 };
 
     /* A beacon has to say it is on the channel it arrived on. The driver
@@ -479,23 +552,17 @@ static void wifi_deliver(void *opaque)
      * radio's front-end windows, which this project models in Python, and this
      * device cannot see them. BOARDEMUL_WIFI_CHANNEL, or the channel property,
      * pins it instead. */
-    unsigned channel = s->channel;
-    if (!channel) {
-        uint32_t control = 0;
-        address_space_read(&address_space_memory, WDEV_CTRL_PTR,
-                           MEMTXATTRS_UNSPECIFIED, &control, sizeof(control));
-        uint8_t current = 0;
-        if (control) {
-            address_space_read(&address_space_memory, control + WDEV_CHANNEL,
-                               MEMTXATTRS_UNSPECIFIED, &current, sizeof(current));
-        }
-        channel = current & 0x0F;
-        if (channel < 1 || channel > 14) {
-            channel = 1;
-        }
+    /* An answer the station is waiting for goes first; a beacon is what there
+     * is to say when nothing was asked. */
+    size_t frame_len;
+    if (s->pending_len) {
+        memcpy(frame, s->pending, s->pending_len);
+        frame_len = s->pending_len;
+        s->pending_len = 0;
+    } else {
+        frame_len = build_beacon(frame, s->ssid ? s->ssid : "BoardEmul",
+                                 wifi_channel(s), s->wpa2);
     }
-    size_t frame_len = build_beacon(frame, s->ssid ? s->ssid : "BoardEmul",
-                                    channel, s->wpa2);
     uint32_t fcs = frame_check(frame, frame_len);
 
     /* The frame's length, in the two places the stack reads it.
@@ -605,6 +672,95 @@ static uint64_t wifi_read(void *opaque, hwaddr offset, unsigned size)
     return value;
 }
 
+/* The frame a transmit slot was armed with, out of the queue entry. */
+static size_t wifi_read_tx_frame(unsigned slot, uint8_t *out, size_t max)
+{
+    uint32_t buffer = 0, at = 0;
+    uint16_t head = 0, body = 0;
+
+    address_space_read(&address_space_memory,
+                       LMAC_QUEUES + slot * LMAC_QUEUE_STRIDE,
+                       MEMTXATTRS_UNSPECIFIED, &buffer, sizeof(buffer));
+    if (!buffer) {
+        return 0;
+    }
+    address_space_read(&address_space_memory, buffer + EB_FRAME,
+                       MEMTXATTRS_UNSPECIFIED, &at, sizeof(at));
+    address_space_read(&address_space_memory, buffer + EB_HEAD_LEN,
+                       MEMTXATTRS_UNSPECIFIED, &head, sizeof(head));
+    address_space_read(&address_space_memory, buffer + EB_BODY_LEN,
+                       MEMTXATTRS_UNSPECIFIED, &body, sizeof(body));
+    size_t length = (size_t)head + body;
+    if (!at || length < 24 || length > max) {
+        /* The header is all that is read from it, so a length that does not
+         * look right is no reason to give up on the frame. */
+        length = 24;
+    }
+    if (address_space_read(&address_space_memory, at, MEMTXATTRS_UNSPECIFIED,
+                           out, length) != MEMTX_OK) {
+        return 0;
+    }
+    return length;
+}
+
+/* What to send back, if anything. The three frames a joining station waits
+ * for an answer to are a probe request, an authentication and an association
+ * request, and each answer is the shortest one that accepts:
+ *
+ *   probe request       -> a probe response, which says what a beacon says
+ *   authentication      -> open system, transaction two, success
+ *   association request -> accepted, with an association identifier
+ *
+ * The subtype comes out of the request's first octet, and the reply is
+ * addressed to whoever sent it. Frames that are neither management nor
+ * addressed to this access point are not answered. */
+static size_t wifi_build_reply(EspWifiMac *s, const uint8_t *request,
+                               size_t length, uint8_t *out)
+{
+    if (length < 24 || (request[0] & 0x0C) != 0) {
+        return 0;
+    }
+    const uint8_t *to = request + 4;                    /* the request's addr1 */
+    if (memcmp(to, ap_address, 6) != 0 && memcmp(to, everyone, 6) != 0) {
+        return 0;
+    }
+    const uint8_t *station = request + 10;              /* and its addr2 */
+    size_t at;
+
+    switch (request[0] & 0xF0) {
+    case 0x40:                                          /* probe request */
+        at = build_header(out, 0x50, station, s->sequence++);
+        return at + build_body(out + at, s->ssid ? s->ssid : "BoardEmul",
+                               wifi_channel(s), s->wpa2);
+    case 0xB0:                                          /* authentication */
+        at = build_header(out, 0xB0, station, s->sequence++);
+        out[at++] = 0x00;                               /* open system */
+        out[at++] = 0x00;
+        out[at++] = 0x02;                               /* transaction two */
+        out[at++] = 0x00;
+        out[at++] = 0x00;                               /* success */
+        out[at++] = 0x00;
+        return at;
+    case 0x00:                                          /* association */
+        at = build_header(out, 0x10, station, s->sequence++);
+        out[at++] = s->wpa2 ? 0x11 : 0x01;              /* the same capability */
+        out[at++] = 0x00;
+        out[at++] = 0x00;                               /* success */
+        out[at++] = 0x00;
+        out[at++] = 0x01;                               /* identifier one */
+        out[at++] = 0xC0;
+        out[at++] = 0x01;                               /* the rates it may use */
+        out[at++] = 0x04;
+        out[at++] = 0x82;
+        out[at++] = 0x84;
+        out[at++] = 0x8B;
+        out[at++] = 0x96;
+        return at;
+    default:
+        return 0;
+    }
+}
+
 /* Which transmit slot a register offset belongs to, or -1. The array runs
  * downwards from R_TX_SLOT0 in eight-byte steps. */
 static int wifi_tx_slot(hwaddr offset)
@@ -629,9 +785,37 @@ static void wifi_tx_complete(void *opaque)
         return;
     }
     for (unsigned slot = 0; slot < TX_SLOTS; slot++) {
-        if (s->tx_pending & (1u << slot)) {
-            s->regs[(R_TX_SLOT0 - slot * 8) / 4] &= ~TX_ARMED;
+        if (!(s->tx_pending & (1u << slot))) {
+            continue;
         }
+        s->regs[(R_TX_SLOT0 - slot * 8) / 4] &= ~TX_ARMED;
+        /* The frame has left; if it wanted an answer, that is what an access
+         * point is for. Only one waits at a time: the station sends one frame
+         * and waits for its reply before sending the next. */
+        uint8_t request[FRAME_MAX];
+        size_t length = wifi_read_tx_frame(slot, request, sizeof(request));
+        if (!length || s->pending_len) {
+            continue;
+        }
+        size_t reply = wifi_build_reply(s, request, length, s->pending);
+        if (!reply) {
+            continue;
+        }
+        s->pending_len = reply;
+        s->answers++;
+        if (s->answers <= 8) {
+            qemu_log_mask(LOG_UNIMP, "esp-wifi-mac: the station sent a 0x%02x "
+                          "from %02x:%02x:%02x:%02x:%02x:%02x -- answering with "
+                          "a 0x%02x of %u byte(s)%c", request[0],
+                          request[10], request[11], request[12], request[13],
+                          request[14], request[15], s->pending[0],
+                          (unsigned)reply, 10);
+        }
+        /* Put it on soon, but not in the same instant as the
+         * transmit-complete interrupt: on the air the frame leaves, and the
+         * answer comes back after it. */
+        timer_mod_ns(s->hatch,
+                     qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + s->tx_delay_ns);
     }
     s->regs[R_TX_DONE_SLOTS / 4] =
         (s->regs[R_TX_DONE_SLOTS / 4] & ~TX_DONE_MASK)
@@ -734,6 +918,7 @@ static void wifi_reset(void *opaque)
     memset(s->regs, 0, sizeof(s->regs));
     s->ring = 0;
     s->tx_pending = 0;
+    s->pending_len = 0;
     s->delivered_to = 0;
     wifi_raise(s, 0);
 }

@@ -76,6 +76,26 @@ def test_a_scan_hears_the_beacon(scanned: Run) -> None:
         f"all {scans} scan(s) reported nothing: {scanned.uart[-1500:]}")
 
 
+def test_the_station_transmits_and_the_access_point_answers(scanned: Run) -> None:
+    """A scan is not only listening: the station sends probe requests, and this
+    access point reads them and replies.
+
+    Both halves are worth asserting because both were missing. Nothing used to
+    complete a transmission, so the station's first frame seized its queue and
+    it never sent another (ADR 0059); and nothing read what it sent, so there
+    was nothing to reply to (ADR 0060). A probe request is subtype 4 -- a first
+    octet of 0x40 -- and a probe response is subtype 5, 0x50.
+    """
+    log = next(iter(scanned.outdir.glob("*.qemu.log")), None)
+    assert log is not None, "no QEMU log for this run"
+    said = log.read_text(errors="replace")
+    assert "the driver transmitted on slot" in said, (
+        "the station never transmitted: " + said[-1500:])
+    assert re.search(r"the station sent a 0x40 from ([0-9a-f]{2}:){5}[0-9a-f]{2}"
+                     r" -- answering with a 0x50", said), (
+        "no probe request was read and answered: " + said[-1500:])
+
+
 def test_the_driver_took_almost_every_beacon(scanned: Run) -> None:
     """And the model's side of it, from the run's own log. A beacon put on the
     air is a descriptor the driver has to consume and re-arm, and a run where

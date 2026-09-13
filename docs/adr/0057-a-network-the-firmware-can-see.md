@@ -103,8 +103,9 @@ and the model reads the same byte.
   all, so `--wifi-ap` there is accepted, warned about, and ignored -- said out
   loud rather than silent, which is ADR 0052's lesson.
 
-- **Nothing transmits while it only scans -- and that is because a scan is
-  passive, not because transmit is unreachable.** Breakpoints on eight of the
+- **Nothing transmits while it only scans.** (Corrected by ADR 0060: the scan
+  is *active* -- the station sends probe requests. This was measured on a run
+  whose transmit queue had already seized, so the probes had stopped.) Breakpoints on eight of the
   ROM's transmit routines fire not once while the station merely scans. But
   given the network the firmware actually wants, it does transmit: see ADR
   0058. This bullet's original claim -- that nothing is transmitted, full stop
