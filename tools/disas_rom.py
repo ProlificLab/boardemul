@@ -97,7 +97,14 @@ def decode(pc: int, blob: bytes, at: int) -> tuple[str, int]:
                     imm12 -= 1 << 12
                 return "%s a%d, 0x%08x" % (BZ[m], b1 & 0xF, pc + 4 + imm12), size
             if n == 2:
-                return "%s a%d, %d, 0x%08x" % (BI0[m], b1 & 0xF, b1 >> 4,
+                # The r field is an index into B4CONST, not the constant. It
+                # happens to be the constant for indices one to eight, which is
+                # why this read correctly for years and then said a branch
+                # compared against 13 -- a value B4CONST cannot express. The
+                # two it was really comparing against were 64 and 128: a probe
+                # request and a beacon (ADR 0062).
+                return "%s a%d, %d, 0x%08x" % (BI0[m], b1 & 0xF,
+                                               B4CONST[b1 >> 4],
                                                pc + 4 + signed8(b2)), size
             if m == 0:
                 return "entry a%d, %d" % (b1 & 0xF, ((b1 >> 4) | (b2 << 4)) * 8), size

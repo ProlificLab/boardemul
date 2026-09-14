@@ -150,29 +150,65 @@ afterwards delivers a frame that physically arrived before the gate shut.
   when its fourth argument is **one**; anything else goes to the discard
   function pointer at `wDevCtrl+460`. This reply arrives with a 1 and a 4.
 
-  Both numbers are traceable. The first comes from `wDev_ProcessRxSucData`
-  +463, which sets it to **1 unconditionally** on the path this frame takes,
-  while three sibling paths -- +476, +489 and +545 -- set it to 0, and those
-  are the ones whose frames get indicated. Which path a frame takes is decided
-  by the frame-control tests at +344, +350 and +417 and, before them, by the
-  byte at **offset 47 of the forty-eight byte receive header** (+53:
-  `l8ui a12, a5, 47; beqz a12, +173`). This model writes zero there, as a side
-  effect of putting the length in the low twelve bits of that word, and zero
-  takes the branch that ends in the discard. ADR 0057 recorded that this byte
-  "selects a branch" and that 0 and 245 are the two values the code accepts;
-  it is now clear which branch and what it costs.
+  **Corrected, 2026-09-14, same day.** The first draft of this bullet said the
+  path was chosen by byte 47 of the receive header and that 245 was worth
+  trying there. That was wrong twice over, and the second error is the
+  interesting one.
 
-  The fourth argument is `wDev_ProcessRxSucData`'s own second argument. It is
-  **not** the queue mask this device publishes at `+0xca8`, which is already
-  1: the driver's IRAM caller (0x4037bdd9, dispatching through
-  `pp_wdev_funcs[125]`) takes it from a table byte indexed by state of its
-  own.
+  Byte 47 cannot matter: the two instructions that read it are
 
-  So the next move is that header byte, and it is a one-line change rather
-  than another investigation. It is not made here because changing which
-  receive path every frame takes is not a change to make at the end of a
-  session that has already corrected itself three times, on a model whose
-  scan works.
+      beqz a12, 0x40041231          ; 0 goes there
+      movi a3, -245 ; add a3, a12, a3
+      beqz a3, 0x40041231           ; and so does 245
+
+  -- both accepted values jump to the *same* address, and every other value
+  goes down a channel-state-information path that ends in the same discard.
+  On the path this model takes, byte 47 is read once and decides nothing.
+
+  **The claim came from a defect in `tools/disas_rom.py`.** A BI0 branch's
+  four-bit field is an *index* into `B4CONST`, not the constant, and the
+  decoder was printing the raw index. Indices one to eight are their own
+  value, so it read correctly for every constant this project had looked at
+  until now -- and then printed a branch comparing against "13", which
+  `B4CONST` cannot express. The two branches were really `bnei a9, 64` and
+  `bnei a9, 128`: a probe request and a beacon. Fixed, with the reason beside
+  it, because a disassembler that is right about small numbers and quietly
+  wrong about large ones is worse than one that is wrong about both.
+
+  **What actually decides it is the second argument**, and that is now
+  measured on both sides. `wDev_IndicateFrame` passes a frame to the stack
+  when that argument is **1** and discards it otherwise, and the same
+  instrument caught both cases on the same firmware:
+
+  | frame | descriptor | second argument | outcome |
+  | --- | --- | --- | --- |
+  | beacon | 0x3fcb6b0c | **1** | passed to the stack |
+  | authentication reply | 0x3fcb6b18 | **4** | `wDev_DiscardFrame` |
+
+  So beacons are not saved by being beacons -- they take the same management
+  path and reach the same flag -- they are saved by that gate. Which also
+  explains a number that never quite fitted: with beacons ten a second enough
+  of them draw a 1 for a scan to find the network, fourteen scans in nineteen
+  and never all of them, while an authentication reply comes once per connect
+  attempt and gets one throw of the same dice.
+
+  **A model change aimed at that was tried and reverted.** The device kept
+  whichever descriptor the driver had freed most recently; making it prefer
+  the lowest-addressed one instead -- on the theory that the beacon's 1 came
+  from landing in 0x3fcb6b0c -- made it strictly worse: twelve scans out of
+  twelve found nothing, and the station never got as far as authenticating.
+  So the argument is **not** a function of which descriptor the frame lands
+  in, and the two-point correlation above was a coincidence. Reverted, and
+  the scan verified back at eleven scans with nothing missed.
+
+  **The next step is therefore in the driver, not the header.** The argument
+  is assembled by the driver's own IRAM caller: at 0x4037bdd6 it reads a byte
+  from a table, indexed by a four-bit value it stashed at 0x4037aa84+170 from
+  the result of a dispatched call, and passes it as the second argument
+  through `pp_wdev_funcs[125]` at 0x4037bdd9. A step trace of *that* caller,
+  on a frame that draws a 1 and a frame that draws a 4, says what the device
+  would have to do differently. `tools/trace_rx_frame.py` reaches it by
+  breaking at 0x4037bda0 instead of the ROM entry.
 
 - **Two ADR 0061 statements are corrected.** The status word is not "outside
   this device's page" any more, and it was never a plausible cause; and
