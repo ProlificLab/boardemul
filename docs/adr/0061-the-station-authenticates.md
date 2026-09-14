@@ -1,7 +1,8 @@
 # ADR 0061 — The station authenticates
 
 **Status:** Accepted — 2026-09-14. Corrects ADR 0060's account of why the
-station did not connect.
+station did not connect. Its suspect for the association failure
+-- the per-slot status word -- is cleared by ADR 0062.
 
 ## Context
 
@@ -121,17 +122,18 @@ that said "busy in 54 of 54 samples" started after it. Both were right.
   which its own source sets only on reasons 202 and 203 -- an authentication
   or association *failure*, not a timeout. The answer is well-formed by the
   standard, so what the driver objects to is something else, and the
-  suspect is the per-slot status word: it lives at `+0x1320`, outside this
-  device's page, and reads as zero. Zero is success for a broadcast probe
-  request; for a unicast authentication the same handler may well read other
-  bits of it -- an acknowledgement, a retry count -- and zero may not mean
-  what it means for a probe. Finding out is a step trace of that handler on
-  the authentication's completion, which is the next piece of work.
+  suspect is the per-slot status word at `+0x1320`, outside this device's
+  page, which reads as zero.
+
+  (ADR 0062: that suspect is wrong. Bits 12..15 of that word index a six-entry
+  jump table in `lmacProcessTxComplete`, and **zero is `lmacProcessTxSuccess`**
+  -- so the unmodelled window returning zero was already telling the driver the
+  friendliest possible thing. The device owns the word now, and it changed
+  nothing.)
 
 - **The per-slot status register is not modelled**, only known to exist and
-  to be read. The device's page is four kilobytes and the register is in the
-  next one; modelling it means widening the device, which this ADR does not
-  do until what the driver reads from it is known.
+  to be read. (Done in ADR 0062: the device claims both pages and writes the
+  result per slot.)
 
 - The busy bits are raised for the model's own completion delay, three
   hundred microseconds by default, not for a computed air time. The driver

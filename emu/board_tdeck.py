@@ -156,7 +156,10 @@ UNMODELLED = {
     # claimed: the fork's catch-all serves the hardware RNG at 0x6003507C, and
     # shadowing it with a trace window starves the bootloader of entropy and
     # stops the boot at "entry" (ADR 0008, amended).
-    "wifi_mac1": 0x60034000,
+    # 0x60034000 is NOT here any more: the WiFi MAC device claims it, because
+    # the per-slot transmit result the driver reads after every frame is at
+    # 0x60034320 and was being served -- as a zero that happens to mean
+    # success -- by this window (ADR 0062).
     "wifi_mac3": 0x60036000,
     "wifi_mac4": 0x60037000,
     "bt": 0x60011000,

@@ -50,8 +50,12 @@
 #define TYPE_ESP_WIFI_MAC "esp-wifi-mac"
 OBJECT_DECLARE_SIMPLE_TYPE(EspWifiMac, ESP_WIFI_MAC)
 
-#define PAGE_SIZE       0x1000
-#define REG_COUNT       (PAGE_SIZE / 4)
+/* Two pages, not one. The transmit result the flash driver reads after every
+ * frame is at +0x1320, in the page above the register block, so a device that
+ * claims only the first page leaves the last word of its own transmit path to
+ * an unmodelled window. See R_TX_RESULT0. */
+#define REG_SPAN        0x2000
+#define REG_COUNT       (REG_SPAN / 4)
 /* Where the driver puts the receive ring, read off a run (ADR 0054). */
 #define R_RX_RING       0x088
 /* And the command beside it. Having taken a descriptor back, the driver
@@ -205,6 +209,41 @@ OBJECT_DECLARE_SIMPLE_TYPE(EspWifiMac, ESP_WIFI_MAC)
  * acknowledgement, the same shape as the interrupt status at +0xc3c and its
  * acknowledgement at +0xc40 a few registers along. */
 #define R_TX_DONE_ACK   0xcac
+/* What the frame did. One seventy-six byte block per slot, counting *down*
+ * from slot 0, and the driver reads bits 12..15 of the first word: the flash
+ * `lmacProcessTxComplete` jumps through a six-entry table on them --
+ *
+ *     0  lmacProcessTxSuccess      4  lmacProcessTxError
+ *     1  lmacProcessTxRtsError     5  lmacProcessAckTimeout
+ *     2  lmacProcessCtsTimeout     3  an assert that aborts the firmware
+ *
+ * read off the table at 0x3c18cbc0 and the function names the driver carries
+ * for its own asserts. So zero is success -- which is what an unmodelled
+ * window was already returning, by accident. This device says it on purpose,
+ * per slot, at the moment the frame completes. The remaining fields are left
+ * at zero: bits 16..23 are the only others the success path is handed, and it
+ * does not read them. */
+#define R_TX_RESULT0      0x1320
+#define TX_RESULT_STRIDE  76
+#define TX_RESULT_SUCCESS 0x00000000u
+/* A hatch, not hardware: somewhere in this device's span the driver never
+ * touches, used to hand a debugger a trigger. With BOARDEMUL_WIFI_MARK set
+ * to a subtype, the device writes that subtype here when the station sends
+ * one, and holds *that* answer back for a while so a debugger polling the cell
+ * has time to arm a breakpoint before the frame lands. That turns a step trace
+ * of one chosen received frame from a breakpoint on every frame -- which slows
+ * the guest fifty-fold, so it never reaches an authentication at all -- into a
+ * single stop at the right one.
+ *
+ * The hold is a delay and not a handshake because a debugger cannot release
+ * one: QEMU puts gdb's memory writes through `address_space_write_rom`, which
+ * reaches memory-backed regions only, so a write to a device register from a
+ * debugger is accepted and silently dropped. Reads are fine, which is why the
+ * cell is polled rather than cleared.
+ *
+ * Off unless the variable is set, and the cell is inert either way. */
+#define R_PROBE_GATE      0x1ff8
+#define PROBE_HOLD_MS     500
 /* Why the handler was woken. Found by raising the interrupt with nothing to
  * say and watching what it went and read: it reads this, gets nothing, and
  * returns -- then comes straight back, because the line is still asserted.
@@ -319,15 +358,28 @@ static size_t build_body(uint8_t *out, const char *ssid, unsigned channel,
     out[at++] = (uint8_t)len;
     memcpy(out + at, ssid, len);
     at += len;
+    /* An ordinary 2.4 GHz g network's rate set: the four b rates as basic,
+     * four more on top, and the rest in the extended element below. Four b
+     * rates and nothing else described a pure 802.11b access point, which is
+     * not a thing that carries an RSN element -- no such network exists to be
+     * connected to, so a station's phy-mode and rate negotiation has never had
+     * to cope with one. */
     out[at++] = 0x01;                                   /* the rates it offers */
-    out[at++] = 0x04;
-    out[at++] = 0x82;
+    out[at++] = 0x08;
+    out[at++] = 0x82;                                   /* 1, 2, 5.5, 11 basic */
     out[at++] = 0x84;
     out[at++] = 0x8B;
     out[at++] = 0x96;
+    out[at++] = 0x0C;                                   /* 6, 9, 12, 18 */
+    out[at++] = 0x12;
+    out[at++] = 0x18;
+    out[at++] = 0x24;
     out[at++] = 0x03;                                   /* and its channel */
     out[at++] = 0x01;
     out[at++] = (uint8_t)(channel ? channel : 1);
+    out[at++] = 0x2A;                                   /* it is an ERP network */
+    out[at++] = 0x01;
+    out[at++] = 0x00;                                   /* nothing non-ERP here */
     if (wpa2) {
         static const uint8_t rsn[] = {
             0x30, 0x14,                                 /* RSN, twenty bytes */
@@ -340,6 +392,12 @@ static size_t build_body(uint8_t *out, const char *ssid, unsigned channel,
         memcpy(out + at, rsn, sizeof(rsn));
         at += sizeof(rsn);
     }
+    out[at++] = 0x32;                                   /* 24, 36, 48, 54 */
+    out[at++] = 0x04;
+    out[at++] = 0x30;
+    out[at++] = 0x48;
+    out[at++] = 0x60;
+    out[at++] = 0x6C;
     return at;
 }
 
@@ -422,6 +480,8 @@ struct EspWifiMac {
     uint32_t status_mask;
     uint32_t queue_mask;
     uint32_t header_tag;
+    uint32_t mark_kind;
+    int64_t mark_at;
     uint32_t ring;              /* what the driver handed us */
     hwaddr delivered_to;        /* the descriptor a frame went into */
     unsigned deliveries;
@@ -429,6 +489,18 @@ struct EspWifiMac {
     unsigned repeat;
     int64_t gap_ns;
 };
+
+/* How long to wait before trying to put the staged frame on again. An answer
+ * is already in flight on the air, so it waits its own air time and no more;
+ * a beacon has nothing to be late for and waits for the next beacon. Getting
+ * this wrong on two of the three gates below delayed an authentication reply
+ * by a whole beacon period -- a full second on a run with beacons turned
+ * down, which is an eternity for a frame the standard answers in
+ * microseconds. */
+static int64_t wifi_retry_ns(EspWifiMac *s)
+{
+    return s->pending_len ? s->tx_delay_ns : s->gap_ns;
+}
 
 static void wifi_raise(EspWifiMac *s, int level)
 {
@@ -510,7 +582,8 @@ static void wifi_deliver(void *opaque)
             qemu_log_mask(LOG_UNIMP, "esp-wifi-mac: no receive ring handed "
                           "over yet; waiting%c", 10);
         }
-        timer_mod_ns(s->hatch, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + s->gap_ns);
+        timer_mod_ns(s->hatch,
+                     qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + wifi_retry_ns(s));
         return;
     }
     /* Nothing is heard while the MAC is held. ic_mac_deinit waits for the
@@ -520,25 +593,40 @@ static void wifi_deliver(void *opaque)
      * delivered while held was the run that never heard anything: it landed
      * during bring-up, its interrupt was acknowledged unread, and with all
      * four descriptors filled and none ever re-armed the ring was dead. */
-    if ((s->regs[R_MAC_HOLD / 4] & MAC_HELD)
-        || !(s->regs[R_RX_ENABLE / 4] & RX_ENABLED)) {
-        /* A beacon can wait for the next one. An answer cannot: the driver
-         * switches its receiver off for a moment right after it sends an
-         * authentication, to reprogram its filters, and an answer that
-         * waited a whole beacon gap behind that arrived a hundred
-         * milliseconds after the station had given up on it. On the air
-         * the reply is already in flight; it lands as soon as the
-         * receiver is back. */
-        int64_t retry = s->pending_len ? s->tx_delay_ns : s->gap_ns;
-        timer_mod_ns(s->hatch, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + retry);
+    /* An answer is exempt, and that is about when the frame arrived rather
+     * than about being in a hurry. On the air the reply leaves the access
+     * point ten microseconds after the station's frame, while the station is
+     * still listening for it -- it is in the receiver before the driver can
+     * do anything else. What the driver does *next* is switch the receiver
+     * off for a hundred milliseconds to reprogram its address filters, and
+     * holding the answer behind that gate delivers a frame that physically
+     * arrived before the gate closed a tenth of a second after it opened
+     * again. A free descriptor is still required, below: that is the one
+     * resource a real MAC genuinely cannot do without. */
+    if (!s->pending_len
+        && ((s->regs[R_MAC_HOLD / 4] & MAC_HELD)
+            || !(s->regs[R_RX_ENABLE / 4] & RX_ENABLED))) {
+        timer_mod_ns(s->hatch,
+                     qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + wifi_retry_ns(s));
         return;
+    }
+    if (s->mark_kind && s->pending_len && s->regs[R_PROBE_GATE / 4]
+        && s->pending[0] == (uint8_t)s->mark_kind) {
+        int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+        if (now - s->mark_at < PROBE_HOLD_MS * 1000000LL) {
+            timer_mod_ns(s->hatch, now + s->tx_delay_ns);
+            return;
+        }
+        /* Held long enough; let it go and rearm for the next one. */
+        s->regs[R_PROBE_GATE / 4] = 0;
     }
     desc = wifi_free_descriptor(s, &word);
     if (!desc) {
         qemu_log_mask(LOG_UNIMP, "esp-wifi-mac: the ring at 0x%08x has no "
                       "descriptor the hardware owns after %u frame(s); waiting%c",
                       s->ring, s->deliveries, 10);
-        timer_mod_ns(s->hatch, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + s->gap_ns);
+        timer_mod_ns(s->hatch,
+                     qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + wifi_retry_ns(s));
         return;
     }
 
@@ -703,7 +791,7 @@ static void wifi_trace(EspWifiMac *s, const char *what, hwaddr offset,
 static uint64_t wifi_read(void *opaque, hwaddr offset, unsigned size)
 {
     EspWifiMac *s = opaque;
-    uint32_t value = offset < PAGE_SIZE ? s->regs[offset / 4] : 0;
+    uint32_t value = offset < REG_SPAN ? s->regs[offset / 4] : 0;
 
     if (s->gated && offset == R_MAC_RESET) {
         value |= MAC_RESET_ACK;
@@ -881,6 +969,12 @@ static void wifi_tx_complete(void *opaque)
         timer_mod_ns(s->hatch,
                      qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + s->tx_delay_ns);
     }
+    for (unsigned slot = 0; slot < TX_SLOTS; slot++) {
+        if (s->tx_pending & (1u << slot)) {
+            s->regs[(R_TX_RESULT0 - slot * TX_RESULT_STRIDE) / 4] =
+                TX_RESULT_SUCCESS;
+        }
+    }
     s->regs[R_TX_DONE_SLOTS / 4] =
         (s->regs[R_TX_DONE_SLOTS / 4] & ~TX_DONE_MASK)
         | (s->tx_pending & TX_DONE_MASK);
@@ -893,7 +987,7 @@ static void wifi_write(void *opaque, hwaddr offset, uint64_t value, unsigned siz
 {
     EspWifiMac *s = opaque;
 
-    if (offset >= PAGE_SIZE) {
+    if (offset >= REG_SPAN) {
         return;
     }
     /* Traced before the special cases return, because the two registers with
@@ -942,6 +1036,10 @@ static void wifi_write(void *opaque, hwaddr offset, uint64_t value, unsigned siz
         s->transmits++;
         uint8_t head[24] = { 0 };
         size_t got = wifi_read_tx_frame(slot, head, sizeof(head));
+        if (s->mark_kind && got && head[0] == (uint8_t)s->mark_kind) {
+            s->regs[R_PROBE_GATE / 4] = head[0];
+            s->mark_at = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+        }
         /* Every one, with the guest's clock beside it, so the log can be set
          * against the firmware's own timestamps. A cap here was once read as
          * a count, and a thousand lines is a price worth paying to never do
@@ -1009,6 +1107,8 @@ static void wifi_realize(DeviceState *dev, Error **errp)
         s->irq_line = qdev_get_gpio_in(DEVICE(intc), s->irq_source);
     }
     s->gated = g_strcmp0(getenv("BOARDEMUL_PHY_GATES"), "0") != 0;
+    const char *mark = getenv("BOARDEMUL_WIFI_MARK");
+    s->mark_kind = mark ? (uint32_t)strtoul(mark, NULL, 0) : 0;
     const char *tag = getenv("BOARDEMUL_WIFI_TAG");
     s->header_tag = tag ? (uint32_t)strtoul(tag, NULL, 0) : 64;
     const char *queues = getenv("BOARDEMUL_WIFI_QUEUE");
@@ -1080,7 +1180,7 @@ static void wifi_realize(DeviceState *dev, Error **errp)
     }
 
     memory_region_init_io(&s->iomem, OBJECT(s), &wifi_ops, s,
-                          TYPE_ESP_WIFI_MAC, PAGE_SIZE);
+                          TYPE_ESP_WIFI_MAC, REG_SPAN);
     memory_region_add_subregion_overlap(get_system_memory(), s->base,
                                         &s->iomem, s->priority);
 }
