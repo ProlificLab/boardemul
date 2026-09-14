@@ -94,6 +94,15 @@ OBJECT_DECLARE_SIMPLE_TYPE(EspWifiMac, ESP_WIFI_MAC)
  * bits at 16..23 and bit 12 set is the MAC held, and nothing is received then. */
 #define R_MAC_HOLD      0xca0
 #define MAC_HELD        0x00ff1000u
+/* And two bits the driver waits on before it holds the MAC: ic_mac_deinit
+ * (0x4003c5fc) spins on `+0xca0 & 0x6000` until both are clear, holds, and
+ * spins on them again. A real MAC raises them while a frame is on the air,
+ * so the driver never changes channel under a transmission. Without them the
+ * hold lands before the frame has left, and the frame that the last channel
+ * of a scan was sent on is never completed: its queue stays busy, and every
+ * send after it -- every later scan's probes, the authentication -- is
+ * abandoned unsent. */
+#define MAC_BUSY        0x00006000u
 /* And whether it is listening. The driver keeps 0x45 in this register and
  * toggles bit 8 on top of it: off before it reconfigures the MAC, on after.
  * Read off the trace rather than the code -- the same flash routine
@@ -513,7 +522,15 @@ static void wifi_deliver(void *opaque)
      * four descriptors filled and none ever re-armed the ring was dead. */
     if ((s->regs[R_MAC_HOLD / 4] & MAC_HELD)
         || !(s->regs[R_RX_ENABLE / 4] & RX_ENABLED)) {
-        timer_mod_ns(s->hatch, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + s->gap_ns);
+        /* A beacon can wait for the next one. An answer cannot: the driver
+         * switches its receiver off for a moment right after it sends an
+         * authentication, to reprogram its filters, and an answer that
+         * waited a whole beacon gap behind that arrived a hundred
+         * milliseconds after the station had given up on it. On the air
+         * the reply is already in flight; it lands as soon as the
+         * receiver is back. */
+        int64_t retry = s->pending_len ? s->tx_delay_ns : s->gap_ns;
+        timer_mod_ns(s->hatch, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + retry);
         return;
     }
     desc = wifi_free_descriptor(s, &word);
@@ -569,6 +586,10 @@ static void wifi_deliver(void *opaque)
         memcpy(frame, s->pending, s->pending_len);
         frame_len = s->pending_len;
         s->pending_len = 0;
+        qemu_log_mask(LOG_UNIMP, "esp-wifi-mac: at %u ms the answer, a 0x%02x "
+                      "of %u byte(s), went on the air%c",
+                      (unsigned)(qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) / 1000000),
+                      frame[0], (unsigned)frame_len, 10);
     } else {
         frame_len = build_beacon(frame, s->ssid ? s->ssid : "BoardEmul",
                                  wifi_channel(s), s->wpa2);
@@ -634,7 +655,15 @@ static void wifi_deliver(void *opaque)
                   "raised interrupt %d%c", (unsigned)staged_len, buffer,
                   (unsigned long long)desc, word, filled, s->irq_source, 10);
     }
-    s->regs[R_INT_STATUS / 4] = s->status_mask;
+    /* Raised, not assigned. Assigning it wiped a transmit completion that
+     * had been raised and not yet read, whenever a beacon landed in between:
+     * the driver then never learned that frame had left, its queue stayed
+     * busy for the rest of the run, and every send after it -- every later
+     * scan's probe requests, the authentication itself -- was abandoned
+     * unsent. A race with a hundred-millisecond beacon, which is why the
+     * number of frames a run managed before it stuck varied from one to
+     * twenty-four. */
+    s->regs[R_INT_STATUS / 4] |= s->status_mask;
     s->regs[R_RX_LAST / 4] = (uint32_t)desc;
     s->regs[R_RX_QUEUES / 4] = s->queue_mask & RX_QUEUE_MASK;
     /* Armed once, on the first frame that actually goes on, and then left to
@@ -678,6 +707,12 @@ static uint64_t wifi_read(void *opaque, hwaddr offset, unsigned size)
 
     if (s->gated && offset == R_MAC_RESET) {
         value |= MAC_RESET_ACK;
+    }
+    /* Busy from the moment a slot is armed until its completion fires. Not
+     * stored, so the driver's own hold bits in the same register are
+     * untouched. */
+    if (offset == R_MAC_HOLD && s->tx_pending) {
+        value |= MAC_BUSY;
     }
     wifi_trace(s, "rd", offset, value);
     return value;
@@ -793,6 +828,9 @@ static void wifi_tx_complete(void *opaque)
     EspWifiMac *s = opaque;
 
     if (!s->tx_pending) {
+        qemu_log_mask(LOG_UNIMP, "esp-wifi-mac: at %u ms a completion fired "
+                      "with nothing pending%c",
+                      (unsigned)(qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) / 1000000), 10);
         return;
     }
     for (unsigned slot = 0; slot < TX_SLOTS; slot++) {
@@ -817,6 +855,18 @@ static void wifi_tx_complete(void *opaque)
         unsigned kind = (unsigned)(request[0] >> 4) & 0xFu;
         bool fresh = !(s->kinds & (1u << kind));
         s->kinds |= (uint16_t)(1u << kind);
+        if (fresh && kind != 4 && length > 24) {
+            /* The body of the first frame of each kind after the probe
+             * request, so what the station asked is on record: an
+             * authentication's algorithm, an association's capability. */
+            char body[3 * 24 + 1] = "";
+            size_t n = length - 24 < 24 ? length - 24 : 24;
+            for (size_t i = 0; i < n; i++) {
+                snprintf(body + 3 * i, 4, "%02x ", request[24 + i]);
+            }
+            qemu_log_mask(LOG_UNIMP, "esp-wifi-mac: the 0x%02x of %u byte(s) "
+                          "began %s%c", request[0], (unsigned)length, body, 10);
+        }
         if (s->answers <= 8 || fresh) {
             qemu_log_mask(LOG_UNIMP, "esp-wifi-mac: the station sent a 0x%02x "
                           "from %02x:%02x:%02x:%02x:%02x:%02x -- answering with "
@@ -890,12 +940,20 @@ static void wifi_write(void *opaque, hwaddr offset, uint64_t value, unsigned siz
         s->regs[offset / 4] = (uint32_t)value;
         s->tx_pending |= 1u << slot;
         s->transmits++;
-        if (s->transmits <= 4 || s->transmits % 100 == 0) {
-            qemu_log_mask(LOG_UNIMP, "esp-wifi-mac: the driver transmitted on "
-                          "slot %d (%u so far) -- control 0x%08x, parameters 0x%08x%c",
-                          slot, s->transmits, (uint32_t)value,
-                          s->regs[(R_TX_SLOT0 - 4 - slot * 8) / 4], 10);
-        }
+        uint8_t head[24] = { 0 };
+        size_t got = wifi_read_tx_frame(slot, head, sizeof(head));
+        /* Every one, with the guest's clock beside it, so the log can be set
+         * against the firmware's own timestamps. A cap here was once read as
+         * a count, and a thousand lines is a price worth paying to never do
+         * that again. */
+        qemu_log_mask(LOG_UNIMP, "esp-wifi-mac: at %u ms the driver transmitted "
+                      "on slot %d (%u so far) a 0x%02x to %02x:%02x:%02x:%02x:%02x:%02x "
+                      "-- control 0x%08x, parameters 0x%08x%c",
+                      (unsigned)(qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) / 1000000),
+                      slot, s->transmits, got ? head[0] : 0xFFu,
+                      head[4], head[5], head[6], head[7], head[8], head[9],
+                      (uint32_t)value,
+                      s->regs[(R_TX_SLOT0 - 4 - slot * 8) / 4], 10);
         timer_mod_ns(s->tx_timer,
                      qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + s->tx_delay_ns);
         return;

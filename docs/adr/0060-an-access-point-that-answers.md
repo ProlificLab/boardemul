@@ -1,6 +1,6 @@
 # ADR 0060 — An access point that answers
 
-**Status:** Accepted — 2026-09-13. Builds on ADR 0059.
+**Status:** Accepted — 2026-09-13. Builds on ADR 0059. Its account of why the station does not connect is corrected by ADR 0061.
 
 ## Context
 
@@ -85,6 +85,12 @@ stopped.
   first attempt fails with `Connecting Failed AP not found`, and the nine
   after it time out with no reason at all. So the network is found, the
   connect begins, and it ends without a frame on the air.
+
+  (ADR 0061: this was measured on runs whose transmit queue had already
+  stuck, on a race in this device -- a beacon delivery wiping a pending
+  transmit completion. With that fixed the station transmits for the whole
+  run and does authenticate. "Every frame it transmits is a probe request"
+  was true of those runs and is not true of the station.)
 
 - **Three earlier claims about why were wrong, and they were wrong because of
   the instruments.** They are written out because each one cost a run:
