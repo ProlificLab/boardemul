@@ -109,8 +109,11 @@ def test_the_driver_took_almost_every_beacon(scanned: Run) -> None:
     assert log is not None, "no QEMU log for this run"
     said = log.read_text(errors="replace")
     assert "the driver handed over a receive ring" in said, said[-1500:]
-    counts = re.findall(r"(\d+) beacon\(s\) put on the air, the driver took (\d+)",
+    # "frame(s)" rather than "beacon(s)": the peer answers probes and runs a
+    # handshake as well as beaconing, so the device counts what it put on the
+    # air rather than assuming all of it was beacons (ADR 0064).
+    counts = re.findall(r"(\d+) frame\(s\) put on the air, the driver took (\d+)",
                         said)
     assert counts, "the device never reported how it was getting on: " + said[-1500:]
     put, taken = (int(n) for n in counts[-1])
-    assert taken > put * 0.9, f"the driver took {taken} of {put} beacon(s)"
+    assert taken > put * 0.9, f"the driver took {taken} of {put} frame(s)"

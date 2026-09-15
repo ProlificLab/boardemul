@@ -261,6 +261,10 @@ def main(argv: list[str] | None = None) -> int:
                     help="the access point has a passphrase: it advertises "
                          "WPA2-PSK, which is what a station that was given "
                          "one looks for")
+    ap.add_argument("--wifi-pass", default=None, metavar="PASSPHRASE",
+                    help="the passphrase of a WPA2 network, which the four-way "
+                         "handshake derives its keys from together with the "
+                         "name; required with --wifi-wpa2")
     ap.add_argument("--ble-air", default=None, metavar="DIR",
                     help="share a directory so this board's Bluetooth can be "
                          "heard by others; a different band from --air, so a "
@@ -319,15 +323,24 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit(", ".join(given) + " needs --bus: without it no board "
                          "is built, so nothing would answer")
 
-    access_point: tuple[str, int, int, bool] | None = None
+    access_point: tuple[str, int, int, bool, str] | None = None
     if args.wifi_ap:
         parts = args.wifi_ap.split(",")
         if not parts[0]:
             raise SystemExit("--wifi-ap wants a name")
+        if args.wifi_pass and not args.wifi_wpa2:
+            raise SystemExit("--wifi-pass is the passphrase of a secured "
+                             "network; --wifi-wpa2 says it is secured")
+        if args.wifi_wpa2 and not args.wifi_pass:
+            raise SystemExit("--wifi-wpa2 needs --wifi-pass: the four-way "
+                             "handshake derives its keys from the passphrase "
+                             "and the network name, and a station that cannot "
+                             "complete it disconnects a second after "
+                             "associating")
         access_point = (parts[0],
                         int(parts[1]) if len(parts) > 1 and parts[1] else 100,
                         int(parts[2]) if len(parts) > 2 and parts[2] else 0,
-                        bool(args.wifi_wpa2))
+                        bool(args.wifi_wpa2), args.wifi_pass or "")
     elif args.wifi_wpa2:
         raise SystemExit("--wifi-wpa2 says how the access point is secured; "
                          "--wifi-ap says there is one")

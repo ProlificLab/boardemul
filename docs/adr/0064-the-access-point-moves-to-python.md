@@ -70,26 +70,33 @@ not do.
    WiFi test in this suite depends on, and ADR 0063 already found the scan
    sensitive enough to notice which filesystem a test writes to.
 
-5. **The channel travels in the request**, which retires the shortcut ADR 0057
-   took. The device read `wDevCtrl+44` out of driver memory because the beacon
-   it was building needed to claim the channel it arrived on. The beacon is
-   built in Python now, and the channel is a field.
+5. **The channel travels in the request.** The beacon is built in Python now
+   and has to claim the channel it arrived on, so the channel is a field.
+
+   This does **not** retire the shortcut ADR 0057 took, which an earlier draft
+   of this page claimed: the device still reads `wDevCtrl+44` out of driver
+   memory to fill that field. What changes is that there is now one reader
+   rather than a reader per beacon, and that the clean version -- the channel
+   coming from the Python radio windows, whose encoding is still undecoded --
+   would now need no change on this side at all.
 
 ## Consequences
 
 **Good**
 
-- The C device gets smaller, which is the direction ADR 0001 asks for. The
-  beacon and body builders, the reply builder and the frame check sequence all
-  leave it.
+- The C device gets smaller, which is the direction ADR 0001 asks for: the
+  beacon builder, the body builder and the reply builder leave it, about a
+  hundred and seventy lines. The frame check sequence stays -- computing it is
+  the radio's job, and the peer would only have to hand it back.
 
 - Python gets SHA1, HMAC and PBKDF2 for nothing, and a test tier that runs in
   milliseconds (ADR 0012) for the cipher it does have to write -- published
   vectors, in the fast suite, rather than a guest boot per check.
 
-- One of the two documented reaches into driver memory goes away. The other,
-  reading the transmitted frame out of the buffer the driver pointed at, stays
-  and is now the device's only one.
+- Both reaches into driver memory are still there -- the channel out of
+  `wDevCtrl+44` and the transmitted frame out of the buffer the driver pointed
+  at -- but they are now the device's only two reasons to look, and each has
+  exactly one reader.
 
 **Costs, accepted**
 
@@ -106,7 +113,40 @@ not do.
 - **A staged move, with a window where behaviour must not change.** The peer
   moves before the handshake is written, so there is a commit whose only job is
   that the scan and the association still work with the frames coming from
-  somewhere else. The existing slow tests are what says so.
+  somewhere else. The existing slow tests are what says so, and they earned
+  it: the move looked like a regression for a while and was three separate
+  things, only one of which was the move.
+
+  The first was this page's own doing. Requiring `--wifi-pass` alongside
+  `--wifi-wpa2` -- right, because a handshake cannot be run without it -- made
+  the association test exit at start-up, which reads exactly like a station
+  that never authenticated.
+
+  The second was an accounting artefact. The device tracked one delivered
+  descriptor and asked at the next delivery whether the driver had handed it
+  back; once deliveries could follow each other three hundred microseconds
+  apart that reported eighty-seven per cent taken on a run whose every scan
+  heard a beacon. It keeps the outstanding ones and asks again.
+
+- **The delivery policy had to be measured, and two choices interact.** An
+  answer skipping the receive gate is what makes it prompt, and a station
+  turns its receiver off for about a hundred milliseconds right after it
+  authenticates, so an answer that waits for the gate misses the window and no
+  association follows. But an answer that skips the gate also takes a delivery
+  the beacon schedule was going to use, and the receiver is off three quarters
+  of the time, so beacons starve and no scan hears anything. Neither choice
+  works alone; both together do. One run each, nothing else changed:
+
+  | answers prompt | beacon follows | silent scans | associations |
+  | --- | --- | --- | --- |
+  | yes | no | 33 of 35 | 0 |
+  | no | yes | 10 of 14 | 0 |
+  | no | no | 24 of 26 | 0 |
+  | **yes** | **yes** | **0 of 5** | **2** |
+
+  Both are switchable, because a run-to-run spread this wide is not something
+  to take a single measurement of: the same settings gave 1444 beacons in one
+  run and 795 in the next.
 
 - **Writing AES is a correctness risk this project cannot test away entirely.**
   Published vectors say the primitive is right. They do not say the cipher is

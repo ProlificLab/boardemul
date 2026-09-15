@@ -1,0 +1,355 @@
+#!/usr/bin/env python3
+"""An access point: what is on the air, and what to say back.
+
+The radio is a C device in QEMU because it walks descriptor chains in guest
+memory. Everything about what a frame *is* lives here instead (ADR 0064),
+which is where ADR 0006 says peripheral behaviour belongs and where the
+standard library's hashing is.
+
+The device drives this over a socket, synchronously:
+
+    request   type:u16  channel:u16  length:u16  frame[length]
+    reply     length:u16            frame[length]
+
+Type 1 says the guest transmitted the frame that follows; type 2 is a tick on
+the guest's clock. Either can be answered with a frame to put on the air, or
+with nothing. The device keeps the schedule so that the beacon rate stays on
+the guest's clock rather than the host's, which every WiFi test in this suite
+depends on.
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+import socket
+import struct
+import threading
+import time
+from dataclasses import dataclass, field
+from pathlib import Path
+
+from emu import wpa2
+
+log = logging.getLogger("wifi")
+
+REQ_TX = 1
+REQ_TICK = 2
+HEAD = struct.Struct("<HHH")
+
+# 802.11 subtypes, as the first octet of a frame carries them.
+PROBE_REQUEST = 0x40
+PROBE_RESPONSE = 0x50
+BEACON = 0x80
+AUTH = 0xB0
+ASSOC_REQUEST = 0x00
+ASSOC_RESPONSE = 0x10
+DISASSOC = 0xA0
+DEAUTH = 0xC0
+DATA = 0x08
+
+SSID_MAX = 32
+BROADCAST = b"\xff" * 6
+# This access point's own address. Locally administered, so it cannot collide
+# with a real one, and stable so a scan result stays valid across a retry.
+AP_ADDRESS = bytes.fromhex("020000000001")
+
+# A WPA2-PSK network: CCMP for both the group and the pair, one key kind, and
+# no capabilities. The station's own element has to agree with this one, and
+# the third handshake message sends it back so the station can check it did.
+RSN_ELEMENT = bytes.fromhex(
+    "3014"                  # element 48, twenty bytes
+    "0100"                  # version 1
+    "000fac04"              # group cipher: CCMP
+    "0100" "000fac04"       # one pairwise cipher: CCMP
+    "0100" "000fac02"       # one key kind: PSK
+    "0000")                 # no capabilities
+
+
+def header(kind: int, to: bytes, sequence: int, frm: bytes = AP_ADDRESS,
+           bssid: bytes = AP_ADDRESS) -> bytes:
+    """Twenty-four bytes of management header.
+
+    The sequence control field carries the number in its top twelve bits and a
+    fragment number in the bottom four, which is always zero here.
+    """
+    return (bytes([kind, 0x00, 0x00, 0x00]) + to + frm + bssid
+            + ((sequence & 0xFFF) << 4).to_bytes(2, "little"))
+
+
+@dataclass
+class Network:
+    """The network this access point advertises."""
+    ssid: str = "BoardEmul"
+    channel: int = 1
+    wpa2: bool = False
+    passphrase: str = ""
+
+    def body(self, channel: int) -> bytes:
+        """The fixed fields and elements a beacon and a probe response share.
+
+        Ordinary 2.4 GHz g: the four b rates as basic and four more on top,
+        the rest in the extended element, and an ERP element to say so. Four b
+        rates and nothing else described a network that does not exist, which
+        no station's rate negotiation has ever had to cope with (ADR 0062).
+        """
+        name = self.ssid.encode()[:SSID_MAX]
+        # Privacy is set for a network with a passphrase: a station given one
+        # filters the open networks out of its connect-time scan, so without
+        # this bit its own network is "not found" while every scan lists it.
+        capability = 0x0011 if self.wpa2 else 0x0001
+        out = bytearray()
+        out += bytes(8)                                 # timestamp
+        out += (100).to_bytes(2, "little")              # beacon interval
+        out += capability.to_bytes(2, "little")
+        out += bytes([0x00, len(name)]) + name          # the name
+        out += bytes([0x01, 0x08, 0x82, 0x84, 0x8B, 0x96, 0x0C, 0x12, 0x18, 0x24])
+        out += bytes([0x03, 0x01, channel or self.channel])
+        out += bytes([0x2A, 0x01, 0x00])                # an ERP network
+        if self.wpa2:
+            out += RSN_ELEMENT
+        out += bytes([0x32, 0x04, 0x30, 0x48, 0x60, 0x6C])
+        return bytes(out)
+
+
+@dataclass
+class Station:
+    """One station, and how far it has got with us."""
+    address: bytes
+    authenticated: bool = False
+    associated: bool = False
+    shake: wpa2.Handshake | None = None
+    # Message one is sent on a tick rather than in reply to the association
+    # request, because a real access point does not answer a frame twice.
+    owes_first: bool = False
+
+
+class AccessPoint:
+    """Answers what the station sends, and beacons between times."""
+
+    def __init__(self, network: Network):
+        self.network = network
+        self.sequence = 0
+        self.stations: dict[bytes, Station] = {}
+        self.master = (wpa2.pmk(network.passphrase, network.ssid)
+                       if network.wpa2 and network.passphrase else b"")
+        self.counts: dict[str, int] = {}
+        self.channel = network.channel
+
+    def _next(self) -> int:
+        self.sequence = (self.sequence + 1) & 0xFFF
+        return self.sequence
+
+    def _count(self, what: str) -> None:
+        self.counts[what] = self.counts.get(what, 0) + 1
+
+    # ---------------------------------------------------------------- ticks
+
+    def tick(self, channel: int) -> bytes | None:
+        """What to put on the air when nothing was asked.
+
+        A handshake that owes its first message gets it here: the association
+        response has already gone, and this is the next thing the station is
+        waiting for.
+        """
+        self.channel = channel or self.channel
+        for station in self.stations.values():
+            if station.owes_first and station.shake is not None:
+                station.owes_first = False
+                self._count("eapol 1")
+                return self.data(station.address, station.shake.first())
+        self._count("beacon")
+        return header(BEACON, BROADCAST, self._next()) + self.network.body(channel)
+
+    # --------------------------------------------------------------- frames
+
+    def data(self, to: bytes, payload: bytes) -> bytes:
+        """An EAPOL payload in a data frame, with the LLC header in front.
+
+        From the access point to the station, so From-DS is set and the
+        addressing is destination, BSSID, source. Unencrypted: the handshake
+        runs before there is a key to encrypt it with, and its own integrity
+        code is what protects it.
+        """
+        fc = bytes([DATA, 0x02])        # data, From-DS
+        head = (fc + b"\x00\x00" + to + AP_ADDRESS + AP_ADDRESS
+                + ((self._next() & 0xFFF) << 4).to_bytes(2, "little"))
+        llc = bytes.fromhex("aaaa03000000888e")
+        return head + llc + payload
+
+    def take(self, frame: bytes, channel: int) -> bytes | None:
+        """A frame the guest transmitted. What to send back, or nothing."""
+        self.channel = channel or self.channel
+        if len(frame) < 24:
+            return None
+        kind = frame[0] & 0xFC
+        to, station_address = frame[4:10], frame[10:16]
+        if (frame[0] & 0x0C) == 0x08:
+            return self._data(frame)
+        if (frame[0] & 0x0C) != 0:
+            return None                 # control frames are not ours to answer
+        if to != AP_ADDRESS and to != BROADCAST:
+            return None
+        station = self.stations.setdefault(station_address,
+                                           Station(station_address))
+        if kind == PROBE_REQUEST:
+            self._count("probe")
+            return (header(PROBE_RESPONSE, station_address, self._next())
+                    + self.network.body(channel))
+        if kind == AUTH:
+            return self._auth(station)
+        if kind == ASSOC_REQUEST:
+            return self._assoc(station)
+        if kind in (DISASSOC, DEAUTH):
+            self._count("disassoc" if kind == DISASSOC else "deauth")
+            self.stations.pop(station_address, None)
+            return None
+        return None
+
+    def _auth(self, station: Station) -> bytes:
+        """Open System, transaction two, success."""
+        self._count("auth")
+        station.authenticated = True
+        station.associated = False
+        station.shake = None
+        return (header(AUTH, station.address, self._next())
+                + bytes([0x00, 0x00, 0x02, 0x00, 0x00, 0x00]))
+
+    def _assoc(self, station: Station) -> bytes:
+        """Accepted, with association identifier one.
+
+        And, on a protected network, the handshake starts: its first message
+        goes out on the next tick rather than now, because one frame gets one
+        reply.
+        """
+        self._count("assoc")
+        station.associated = True
+        if self.master:
+            station.shake = wpa2.Handshake(
+                master=self.master, ap=AP_ADDRESS, station=station.address,
+                rsn_element=RSN_ELEMENT)
+            station.owes_first = True
+        return (header(ASSOC_RESPONSE, station.address, self._next())
+                + bytes([0x11 if self.network.wpa2 else 0x01, 0x00,
+                         0x00, 0x00, 0x01, 0xC0,
+                         0x01, 0x04, 0x82, 0x84, 0x8B, 0x96]))
+
+    def _data(self, frame: bytes) -> bytes | None:
+        """A data frame from the station. Only EAPOL is understood so far."""
+        station = self.stations.get(frame[10:16])
+        if station is None or station.shake is None:
+            return None
+        body = frame[24:]
+        if body[:8] != bytes.fromhex("aaaa03000000888e"):
+            return None
+        reply = station.shake.take(body[8:])
+        self._count("eapol %d" % (2 if not station.shake.done else 4))
+        if station.shake.done:
+            self._count("handshake done")
+            log.info("the station %s completed the four-way handshake",
+                     station.address.hex(":"))
+        if reply is None:
+            return None
+        self._count("eapol 3")
+        return self.data(station.address, reply)
+
+
+class FrameChannel:
+    """The socket the device asks down. One connection, one peer, one thread."""
+
+    def __init__(self, path: str | Path, point: AccessPoint):
+        self.path = str(path)
+        self.point = point
+        self._listener: socket.socket | None = None
+        self._conn: socket.socket | None = None
+        self._stop = threading.Event()
+        self.gaps: list[float] = []
+        self.service: list[float] = []
+        self._last: float | None = None
+
+    def start(self) -> None:
+        if os.path.exists(self.path):
+            os.unlink(self.path)
+        self._listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self._listener.bind(self.path)
+        self._listener.listen(1)
+        threading.Thread(target=self._serve, name="wifi-ap", daemon=True).start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        for sock in (self._conn, self._listener):
+            if sock is not None:
+                try:
+                    sock.close()
+                except OSError:
+                    pass
+        if os.path.exists(self.path):
+            try:
+                os.unlink(self.path)
+            except OSError:
+                pass
+
+    def _recv(self, conn: socket.socket, want: int) -> bytes | None:
+        out = b""
+        while len(out) < want:
+            chunk = conn.recv(want - len(out))
+            if not chunk:
+                return None
+            out += chunk
+        return out
+
+    def _serve(self) -> None:
+        try:
+            conn, _ = self._listener.accept()
+        except OSError:
+            return
+        self._conn = conn
+        log.info("the access point's frame channel is connected")
+        try:
+            while not self._stop.is_set():
+                head = self._recv(conn, HEAD.size)
+                if head is None:
+                    break
+                started = time.monotonic()
+                kind, channel, length = HEAD.unpack(head)
+                frame = self._recv(conn, length) if length else b""
+                if length and frame is None:
+                    break
+                try:
+                    if kind == REQ_TX:
+                        out = self.point.take(frame, channel)
+                    elif kind == REQ_TICK:
+                        out = self.point.tick(channel)
+                    else:
+                        out = None
+                except Exception:
+                    # A peer that raises must not take the guest down with it:
+                    # say nothing, log it, and let the run carry on so the
+                    # failure shows up as silence on the air rather than a
+                    # dead emulator.
+                    log.exception("the access point raised; answering nothing")
+                    out = None
+                conn.sendall(len(out or b"").to_bytes(2, "little") + (out or b""))
+                # How long the device waits on us, against how often it asks.
+                # A round trip happens inside a QEMU timer callback, so time
+                # spent here is time the guest is stopped and the beacon
+                # period grows by.
+                now = time.monotonic()
+                if self._last is not None:
+                    self.gaps.append(now - self._last)
+                self.service.append(now - started)
+                self._last = now
+        except OSError:
+            pass
+        finally:
+            if self.gaps:
+                log.info("the device asked %d time(s), every %.1f ms on average "
+                         "(worst %.0f ms); this side took %.2f ms on average "
+                         "(worst %.0f ms)",
+                         len(self.service), 1000 * sum(self.gaps) / len(self.gaps),
+                         1000 * max(self.gaps),
+                         1000 * sum(self.service) / len(self.service),
+                         1000 * max(self.service))
+            log.info("the frame channel closed after %s",
+                     ", ".join(f"{v} {k}" for k, v in
+                               sorted(self.point.counts.items())) or "nothing")

@@ -36,6 +36,7 @@
 #include "qemu/timer.h"
 #include "qemu/main-loop.h"
 #include "qemu/log.h"
+#include "qemu/cutils.h"
 #include "hw/qdev-properties.h"
 #include "hw/qdev-core.h"
 #include "hw/irq.h"
@@ -46,6 +47,9 @@
 #include <string.h>
 #include "sysemu/reset.h"
 #include "hw/core/cpu.h"
+
+#include <sys/socket.h>
+#include <sys/un.h>
 
 #define TYPE_ESP_WIFI_MAC "esp-wifi-mac"
 OBJECT_DECLARE_SIMPLE_TYPE(EspWifiMac, ESP_WIFI_MAC)
@@ -200,7 +204,6 @@ OBJECT_DECLARE_SIMPLE_TYPE(EspWifiMac, ESP_WIFI_MAC)
 #define EB_HEAD_LEN       20
 #define EB_BODY_LEN       22
 /* The most of a frame this device ever reads or writes. */
-#define FRAME_MAX         BEACON_MAX
 /* And how the driver says it has dealt with them. Found the same way, one
  * answer at a time: with the mask left at zero the handler read it and
  * stopped; with the completed slot in it, the handler read the mask, then read
@@ -244,6 +247,20 @@ OBJECT_DECLARE_SIMPLE_TYPE(EspWifiMac, ESP_WIFI_MAC)
  * Off unless the variable is set, and the cell is inert either way. */
 #define R_PROBE_GATE      0x1ff8
 #define PROBE_HOLD_MS     500
+
+/* The frame channel (ADR 0064). This device is the radio and the driver's view
+ * of it; what is on the air is somebody else's business, and that somebody is
+ * a Python peer on a socket. Synchronous request and reply, which is the shape
+ * the bus bridge already establishes:
+ *
+ *     request   type:u16  channel:u16  length:u16  frame[length]
+ *     reply     length:u16            frame[length]
+ *
+ * A reply of zero length means nothing to say. Two request types: the guest
+ * transmitted this frame, and a tick -- because the schedule belongs to the
+ * guest's clock and only the content belongs to the peer. */
+#define FRAME_TX          1u
+#define FRAME_TICK        2u
 /* Why the handler was woken. Found by raising the interrupt with nothing to
  * say and watching what it went and read: it reads this, gets nothing, and
  * returns -- then comes straight back, because the line is still asserted.
@@ -297,116 +314,11 @@ OBJECT_DECLARE_SIMPLE_TYPE(EspWifiMac, ESP_WIFI_MAC)
 /* How far to follow a chain before deciding it is not one. */
 #define DESC_MAX          16
 
-/* A beacon, built rather than stored, because an access point's name is a
- * variable-length element in the middle of it and everything after moves.
- * The fields are the ones a scanning station reads: who it is from, what it
- * is called, what rates it offers, and which channel it is on -- the last of
- * which the driver checks against the channel the frame arrived on.
- *
- * The address is locally administered (bit 1 of the first byte), because a
- * model must not put a real vendor's address on the air.
- */
-#define BEACON_MAX      128
-#define SSID_MAX        32
-
-/* The access point's own address, and the one every frame from it carries.
- * Locally administered, so no real vendor's address goes on the air. */
-static const uint8_t ap_address[6] = { 0x02, 0x00, 0x00, 0x00, 0x00, 0x01 };
-static const uint8_t everyone[6] = { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };
-
-/* A management frame's twenty-four byte header. `kind` is the whole first
- * octet: the subtype in its top nibble and the type in the two bits below,
- * which for management frames are zero -- 0x80 a beacon, 0x50 a probe
- * response, 0xb0 an authentication, 0x10 an association response. */
-static size_t build_header(uint8_t *out, uint8_t kind, const uint8_t *to,
-                           uint16_t sequence)
-{
-    out[0] = kind;
-    out[1] = 0x00;
-    out[2] = 0x00;                                      /* duration */
-    out[3] = 0x00;
-    memcpy(out + 4, to, 6);                             /* who it is for */
-    memcpy(out + 10, ap_address, 6);                    /* from us */
-    memcpy(out + 16, ap_address, 6);                    /* our network */
-    out[22] = (uint8_t)(sequence << 4);
-    out[23] = (uint8_t)(sequence >> 4);
-    return 24;
-}
-
-/* What a beacon and a probe response say, which is the same thing: the fixed
- * fields and then the elements a scanning station reads. */
-static size_t build_body(uint8_t *out, const char *ssid, unsigned channel,
-                         bool wpa2)
-{
-    size_t len = strlen(ssid);
-    size_t at = 0;
-
-    if (len > SSID_MAX) {
-        len = SSID_MAX;
-    }
-    memset(out, 0, 8);                                  /* timestamp */
-    at = 8;
-    out[at++] = 0x64;                                   /* every 100 */
-    out[at++] = 0x00;
-    /* An infrastructure network, and one with a passphrase says so here as
-     * well as in its RSN element: a station given one filters the open
-     * networks out of its connect-time scan, so without the privacy bit the
-     * firmware's own network is "not found" even while every scan lists it. */
-    out[at++] = wpa2 ? 0x11 : 0x01;
-    out[at++] = 0x00;
-    out[at++] = 0x00;                                   /* the name */
-    out[at++] = (uint8_t)len;
-    memcpy(out + at, ssid, len);
-    at += len;
-    /* An ordinary 2.4 GHz g network's rate set: the four b rates as basic,
-     * four more on top, and the rest in the extended element below. Four b
-     * rates and nothing else described a pure 802.11b access point, which is
-     * not a thing that carries an RSN element -- no such network exists to be
-     * connected to, so a station's phy-mode and rate negotiation has never had
-     * to cope with one. */
-    out[at++] = 0x01;                                   /* the rates it offers */
-    out[at++] = 0x08;
-    out[at++] = 0x82;                                   /* 1, 2, 5.5, 11 basic */
-    out[at++] = 0x84;
-    out[at++] = 0x8B;
-    out[at++] = 0x96;
-    out[at++] = 0x0C;                                   /* 6, 9, 12, 18 */
-    out[at++] = 0x12;
-    out[at++] = 0x18;
-    out[at++] = 0x24;
-    out[at++] = 0x03;                                   /* and its channel */
-    out[at++] = 0x01;
-    out[at++] = (uint8_t)(channel ? channel : 1);
-    out[at++] = 0x2A;                                   /* it is an ERP network */
-    out[at++] = 0x01;
-    out[at++] = 0x00;                                   /* nothing non-ERP here */
-    if (wpa2) {
-        static const uint8_t rsn[] = {
-            0x30, 0x14,                                 /* RSN, twenty bytes */
-            0x01, 0x00,                                 /* version 1 */
-            0x00, 0x0F, 0xAC, 0x04,                     /* group: CCMP */
-            0x01, 0x00, 0x00, 0x0F, 0xAC, 0x04,         /* one pairwise: CCMP */
-            0x01, 0x00, 0x00, 0x0F, 0xAC, 0x02,         /* one key kind: PSK */
-            0x00, 0x00,                                 /* no capabilities */
-        };
-        memcpy(out + at, rsn, sizeof(rsn));
-        at += sizeof(rsn);
-    }
-    out[at++] = 0x32;                                   /* 24, 36, 48, 54 */
-    out[at++] = 0x04;
-    out[at++] = 0x30;
-    out[at++] = 0x48;
-    out[at++] = 0x60;
-    out[at++] = 0x6C;
-    return at;
-}
-
-static size_t build_beacon(uint8_t *out, const char *ssid, unsigned channel,
-                           bool wpa2)
-{
-    size_t at = build_header(out, 0x80, everyone, 0);
-    return at + build_body(out + at, ssid, channel, wpa2);
-}
+/* What a frame looks like is the peer's business now (ADR 0064): the beacon
+ * builder, the body builder and the reply builder all left this file with it.
+ * What stays is the size of the biggest frame this radio will carry, because
+ * that bounds the buffers below. */
+#define FRAME_MAX         128
 
 /* Every frame on the air ends with a check sequence over its own bytes, and a
  * receiver that validates one will throw away a frame that has none. The
@@ -473,18 +385,34 @@ struct EspWifiMac {
      * controller is tuned to". BOARDEMUL_WIFI_CHANNEL, or the property. */
     uint32_t channel;
     /* The access point this device puts in the air, if any. */
-    char *ssid;
     uint32_t beacon_ms;
-    bool wpa2;
     bool gated;
     uint32_t status_mask;
     uint32_t queue_mask;
     uint32_t header_tag;
     uint32_t mark_kind;
     bool any_descriptor;
+    char *frames_path;
+    /* Why a delivery did not happen, so the binding constraint is a number
+     * rather than a guess: no ring, the MAC not listening, the head
+     * descriptor still full, its buffer not yet pointed anywhere. */
+    unsigned stalled[4];
+    /* Two delivery choices, switchable so the difference is measured rather
+     * than argued. Defaults are what the C peer did and the suites pass on:
+     * an answer skips the receive gate so it is prompt, and the beacon it
+     * displaced follows it rather than waiting a whole period. Measured,
+     * with nothing else changed: prompt and no follow-up gave thirty-three
+     * silent scans in thirty-five and no association; gated with a
+     * follow-up gave ten in fourteen; both together gave none in five, and
+     * two associations. BOARDEMUL_WIFI_GATE_ANSWERS=1 and
+     * BOARDEMUL_WIFI_NO_FOLLOWUP=1 turn each round the other way. */
+    bool answer_exempt;
+    bool answer_followup;
+    /* Descriptors delivered into and not yet seen handed back. */
+    hwaddr awaiting[DESC_MAX];
+    int frames_fd;
     int64_t mark_at;
     uint32_t ring;              /* what the driver handed us */
-    hwaddr delivered_to;        /* the descriptor a frame went into */
     unsigned deliveries;
     unsigned taken;
     unsigned repeat;
@@ -513,6 +441,53 @@ static void wifi_raise(EspWifiMac *s, int level)
 
 /* Follow the chain to the first descriptor the hardware still owns, which is
  * the one a real MAC would fill next. */
+/* One request, one reply. Blocking, like every unmodelled access the bus
+ * bridge forwards: the guest tolerates that already and this happens once per
+ * beacon rather than once per load. A peer that has gone away closes the
+ * channel and the device falls silent, which is what an access point being
+ * switched off looks like. */
+static size_t wifi_ask(EspWifiMac *s, uint16_t type, unsigned channel,
+                       const uint8_t *frame, size_t len,
+                       uint8_t *out, size_t max)
+{
+    if (s->frames_fd < 0) {
+        return 0;
+    }
+    uint8_t head[6];
+    stw_le_p(head + 0, type);
+    stw_le_p(head + 2, (uint16_t)channel);
+    stw_le_p(head + 4, (uint16_t)len);
+    if (qemu_write_full(s->frames_fd, head, sizeof(head)) != sizeof(head)
+        || (len && qemu_write_full(s->frames_fd, frame, len) != len)) {
+        goto gone;
+    }
+    uint8_t reply[2];
+    if (recv(s->frames_fd, reply, sizeof(reply), MSG_WAITALL) != sizeof(reply)) {
+        goto gone;
+    }
+    size_t back = lduw_le_p(reply);
+    if (!back) {
+        return 0;
+    }
+    if (back > max) {
+        qemu_log_mask(LOG_UNIMP, "esp-wifi-mac: the peer offered %u byte(s), "
+                      "which is more than this radio can put on the air%c",
+                      (unsigned)back, 10);
+        goto gone;
+    }
+    if (recv(s->frames_fd, out, back, MSG_WAITALL) != (ssize_t)back) {
+        goto gone;
+    }
+    return back;
+
+gone:
+    qemu_log_mask(LOG_UNIMP, "esp-wifi-mac: the frame channel closed; "
+                  "nothing more will go on the air%c", 10);
+    close(s->frames_fd);
+    s->frames_fd = -1;
+    return 0;
+}
+
 /* The head of the list the consumer walks. `wdevProcessRxSucDataAll`
  * (0x4004147c) starts at `*wDevCtrl` and follows each descriptor's next
  * pointer at +8, counting as it goes:
@@ -622,15 +597,28 @@ static void wifi_deliver(void *opaque)
      * only collects beacons while a scan is listening, and it hops channels
      * several times a second. So this keeps putting them on until told to
      * stop, and counts how many were taken. */
-    if (s->delivered_to) {
+    /* Which delivered descriptors the driver has handed back.
+     *
+     * This used to hold one, and ask about it at the next delivery. That
+     * reads as frame loss when it is only impatience: deliveries can now
+     * follow each other three hundred microseconds apart, and a driver has
+     * not always re-armed the last one that soon -- it re-arms it a moment
+     * later, and the count had already moved on. A run with a scan that heard
+     * every beacon reported eighty-seven per cent taken, which was not true
+     * of the ring and was true of the question. So the outstanding ones are
+     * kept and asked about again. */
+    for (unsigned i = 0; i < DESC_MAX; i++) {
+        if (!s->awaiting[i]) {
+            continue;
+        }
         uint32_t previous[3] = { 0 };
-        if (address_space_read(&address_space_memory, s->delivered_to,
+        if (address_space_read(&address_space_memory, s->awaiting[i],
                                MEMTXATTRS_UNSPECIFIED, previous,
                                sizeof(previous)) == MEMTX_OK
             && (previous[0] & DESC_OWNER)) {
             s->taken++;
+            s->awaiting[i] = 0;
         }
-        s->delivered_to = 0;
     }
     if (s->repeat && s->deliveries >= s->repeat) {
         qemu_log_mask(LOG_UNIMP, "esp-wifi-mac: put %u frame(s) on; the driver "
@@ -656,19 +644,27 @@ static void wifi_deliver(void *opaque)
      * delivered while held was the run that never heard anything: it landed
      * during bring-up, its interrupt was acknowledged unread, and with all
      * four descriptors filled and none ever re-armed the ring was dead. */
-    /* An answer is exempt, and that is about when the frame arrived rather
-     * than about being in a hurry. On the air the reply leaves the access
-     * point ten microseconds after the station's frame, while the station is
-     * still listening for it -- it is in the receiver before the driver can
-     * do anything else. What the driver does *next* is switch the receiver
-     * off for a hundred milliseconds to reprogram its address filters, and
-     * holding the answer behind that gate delivers a frame that physically
-     * arrived before the gate closed a tenth of a second after it opened
-     * again. A free descriptor is still required, below: that is the one
-     * resource a real MAC genuinely cannot do without. */
-    if (!s->pending_len
+    /* Nothing is heard while the MAC is held, and that now includes answers.
+     *
+     * ADR 0062 exempted them, reasoning that on the air a reply is in the
+     * receiver before the driver can switch it off. True, and it was the right
+     * change for one authentication reply a minute. It is the wrong one for
+     * ten probe answers a second: the receiver is off about three quarters of
+     * the time while a station hops channels, and an exempt frame delivered
+     * into that window is the very thing ADR 0057 found kills the ring -- its
+     * interrupt is acknowledged unread and its descriptor is never handed
+     * back. Measured: 1977 stalls on this gate against 600 deliveries, with
+     * beacons crowded out and no scan hearing anything.
+     *
+     * What made the exemption look necessary was the retry, not the gate. An
+     * answer waiting here re-arms at its own air time rather than at the
+     * beacon period, so it goes out as soon as the receiver is back -- which
+     * is what a real link does with a frame that arrived while the radio was
+     * elsewhere: it is lost, and the station asks again. */
+    if ((!s->pending_len || !s->answer_exempt)
         && ((s->regs[R_MAC_HOLD / 4] & MAC_HELD)
             || !(s->regs[R_RX_ENABLE / 4] & RX_ENABLED))) {
+        s->stalled[1]++;
         timer_mod_ns(s->hatch,
                      qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + wifi_retry_ns(s));
         return;
@@ -688,6 +684,7 @@ static void wifi_deliver(void *opaque)
         qemu_log_mask(LOG_UNIMP, "esp-wifi-mac: the ring at 0x%08x has no "
                       "descriptor the hardware owns after %u frame(s); waiting%c",
                       s->ring, s->deliveries, 10);
+        s->stalled[2]++;
         timer_mod_ns(s->hatch,
                      qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + wifi_retry_ns(s));
         return;
@@ -701,9 +698,11 @@ static void wifi_deliver(void *opaque)
          * the driver has handed it back but not yet pointed it anywhere. Wait
          * -- and *re-arm*, which this did not do. A return without re-arming
          * stops the beacon schedule until something else happens to poke the
-         * timer, and a transmit completion does, so the symptom was a beacon
-         * rate that rose and fell with how much the station was transmitting
-         * and never reached the rate it was asked for. */
+         * timer, which a transmit completion does, so the symptom was a
+         * beacon rate that rose and fell with how much the station was
+         * transmitting and never reached the rate that was asked for. Fifty
+         * beacons a second were configured and five arrived. */
+        s->stalled[3]++;
         timer_mod_ns(s->hatch,
                      qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + wifi_retry_ns(s));
         return;
@@ -742,6 +741,7 @@ static void wifi_deliver(void *opaque)
     /* An answer the station is waiting for goes first; a beacon is what there
      * is to say when nothing was asked. */
     size_t frame_len;
+    bool answered = s->pending_len != 0;
     if (s->pending_len) {
         memcpy(frame, s->pending, s->pending_len);
         frame_len = s->pending_len;
@@ -751,8 +751,16 @@ static void wifi_deliver(void *opaque)
                       (unsigned)(qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) / 1000000),
                       frame[0], (unsigned)frame_len, 10);
     } else {
-        frame_len = build_beacon(frame, s->ssid ? s->ssid : "BoardEmul",
-                                 wifi_channel(s), s->wpa2);
+        /* Nothing staged, so ask the peer whether it has anything for this
+         * tick. It usually has a beacon; between beacons it may have the next
+         * message of a handshake, and sometimes it has nothing. */
+        frame_len = wifi_ask(s, FRAME_TICK, wifi_channel(s), NULL, 0,
+                             frame, FRAME_MAX);
+        if (!frame_len) {
+            timer_mod_ns(s->hatch,
+                         qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + s->gap_ns);
+            return;
+        }
     }
     uint32_t fcs = frame_check(frame, frame_len);
 
@@ -799,15 +807,24 @@ static void wifi_deliver(void *opaque)
                     | DESC_EOF;
     address_space_write(&address_space_memory, desc, MEMTXATTRS_UNSPECIFIED,
                         &filled, sizeof(filled));
-    s->delivered_to = desc;
+    for (unsigned i = 0; i < DESC_MAX; i++) {
+        if (!s->awaiting[i]) {
+            s->awaiting[i] = desc;
+            break;
+        }
+    }
     s->deliveries++;
     /* A standing access point never reaches the summary below, so it says how
      * it is getting on as it goes. Taken means the driver re-armed the
      * descriptor, which is the only thing the model can see. */
     if (!s->repeat && s->deliveries % 100 == 0) {
-        qemu_log_mask(LOG_UNIMP, "esp-wifi-mac: %u beacon(s) put on the air, "
-                      "the driver took %u, and it has sent %u frame(s)%c",
-                      s->deliveries, s->taken, s->transmits, 10);
+        qemu_log_mask(LOG_UNIMP, "esp-wifi-mac: %u frame(s) put on the air, "
+                      "the driver took %u, and it has sent %u; stalled on "
+                      "no ring %u, not listening %u, no free descriptor %u, "
+                      "no buffer %u%c",
+                      s->deliveries, s->taken, s->transmits,
+                      s->stalled[0], s->stalled[1], s->stalled[2],
+                      s->stalled[3], 10);
     }
     if (s->deliveries <= 2) {
     qemu_log_mask(LOG_UNIMP, "esp-wifi-mac: put %u byte(s) into the buffer at "
@@ -836,8 +853,20 @@ static void wifi_deliver(void *opaque)
     /* Again after a gap. It has to be long enough for the driver to hand the
      * descriptor back -- at a tenth of a second it ran the ring dry after two
      * frames -- and short enough to keep landing inside a scan's dwell on each
-     * channel. BOARDEMUL_WIFI_GAP sets it, in milliseconds. */
-    timer_mod_ns(s->hatch, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + s->gap_ns);
+     * channel. BOARDEMUL_WIFI_GAP sets it, in milliseconds.
+     *
+     * Except after an answer, which comes back at once and so displaced a
+     * beacon that was due. Re-arming at the gap then charged the beacon
+     * schedule for the answer: a station probing eight times a second took
+     * eight of the nine deliveries a second the driver's descriptors allow,
+     * beacons fell to one, no scan heard anything, and the station probed
+     * harder still. Measured either side of this line -- with answers
+     * suppressed entirely, nine hundred beacons in a minute and every scan
+     * heard one; with them, seventy-two and none did. An answer is extra to
+     * the schedule, not instead of it. */
+    timer_mod_ns(s->hatch, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL)
+                 + (answered && s->answer_followup
+                    ? s->tx_delay_ns : s->gap_ns));
 }
 
 /* Which code is doing the asking. A driver that reads a register once has been
@@ -920,53 +949,6 @@ static size_t wifi_read_tx_frame(unsigned slot, uint8_t *out, size_t max)
  * The subtype comes out of the request's first octet, and the reply is
  * addressed to whoever sent it. Frames that are neither management nor
  * addressed to this access point are not answered. */
-static size_t wifi_build_reply(EspWifiMac *s, const uint8_t *request,
-                               size_t length, uint8_t *out)
-{
-    if (length < 24 || (request[0] & 0x0C) != 0) {
-        return 0;
-    }
-    const uint8_t *to = request + 4;                    /* the request's addr1 */
-    if (memcmp(to, ap_address, 6) != 0 && memcmp(to, everyone, 6) != 0) {
-        return 0;
-    }
-    const uint8_t *station = request + 10;              /* and its addr2 */
-    size_t at;
-
-    switch (request[0] & 0xF0) {
-    case 0x40:                                          /* probe request */
-        at = build_header(out, 0x50, station, s->sequence++);
-        return at + build_body(out + at, s->ssid ? s->ssid : "BoardEmul",
-                               wifi_channel(s), s->wpa2);
-    case 0xB0:                                          /* authentication */
-        at = build_header(out, 0xB0, station, s->sequence++);
-        out[at++] = 0x00;                               /* open system */
-        out[at++] = 0x00;
-        out[at++] = 0x02;                               /* transaction two */
-        out[at++] = 0x00;
-        out[at++] = 0x00;                               /* success */
-        out[at++] = 0x00;
-        return at;
-    case 0x00:                                          /* association */
-        at = build_header(out, 0x10, station, s->sequence++);
-        out[at++] = s->wpa2 ? 0x11 : 0x01;              /* the same capability */
-        out[at++] = 0x00;
-        out[at++] = 0x00;                               /* success */
-        out[at++] = 0x00;
-        out[at++] = 0x01;                               /* identifier one */
-        out[at++] = 0xC0;
-        out[at++] = 0x01;                               /* the rates it may use */
-        out[at++] = 0x04;
-        out[at++] = 0x82;
-        out[at++] = 0x84;
-        out[at++] = 0x8B;
-        out[at++] = 0x96;
-        return at;
-    default:
-        return 0;
-    }
-}
-
 /* Which transmit slot a register offset belongs to, or -1. The array runs
  * downwards from R_TX_SLOT0 in eight-byte steps. */
 static int wifi_tx_slot(hwaddr offset)
@@ -1006,7 +988,9 @@ static void wifi_tx_complete(void *opaque)
         if (!length || s->pending_len) {
             continue;
         }
-        size_t reply = wifi_build_reply(s, request, length, s->pending);
+        size_t reply = wifi_ask(s, FRAME_TX, wifi_channel(s),
+                                request, length,
+                                s->pending, sizeof(s->pending));
         if (!reply) {
             continue;
         }
@@ -1070,7 +1054,7 @@ static void wifi_write(void *opaque, hwaddr offset, uint64_t value, unsigned siz
         s->regs[offset / 4] = (uint32_t)value & ~RX_COMMAND_GO;
         return;
     }
-    if (offset == R_TX_DONE_ACK && s->beacon_ms) {
+    if (offset == R_TX_DONE_ACK && s->frames_fd >= 0) {
         /* Write one to clear, on the register beside it. A pending set that
          * never empties is a handler that never stops -- the same lesson the
          * interrupt status taught. */
@@ -1097,7 +1081,7 @@ static void wifi_write(void *opaque, hwaddr offset, uint64_t value, unsigned siz
      * a transmit-complete interrupt it had never received before leaves it
      * unable to finish its run. Nothing in the mesh has any use for a
      * transmit that completes, so nothing in the mesh is given one. */
-    int slot = s->beacon_ms ? wifi_tx_slot(offset) : -1;
+    int slot = s->frames_fd >= 0 ? wifi_tx_slot(offset) : -1;
     if (slot >= 0 && ((uint32_t)value & TX_ARMED) == TX_ARMED
         && (s->regs[offset / 4] & TX_ARMED) != TX_ARMED) {
         /* Armed now, by this write. Requiring the transition rather than the
@@ -1161,7 +1145,7 @@ static void wifi_reset(void *opaque)
     s->ring = 0;
     s->tx_pending = 0;
     s->pending_len = 0;
-    s->delivered_to = 0;
+    memset(s->awaiting, 0, sizeof(s->awaiting));
     wifi_raise(s, 0);
 }
 
@@ -1178,8 +1162,29 @@ static void wifi_realize(DeviceState *dev, Error **errp)
         }
         s->irq_line = qdev_get_gpio_in(DEVICE(intc), s->irq_source);
     }
+    /* The peer, if this run asked for one. Connected here rather than lazily
+     * so that a socket that is not there is a complaint at start-up and not a
+     * silence forty seconds into a scan. */
+    s->frames_fd = -1;
+    if (s->frames_path) {
+        struct sockaddr_un at = { .sun_family = AF_UNIX };
+        int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+
+        pstrcpy(at.sun_path, sizeof(at.sun_path), s->frames_path);
+        if (fd < 0 || connect(fd, (struct sockaddr *)&at, sizeof(at)) < 0) {
+            error_setg_errno(errp, errno, "esp-wifi-mac: no frame peer at %s",
+                             s->frames_path);
+            if (fd >= 0) {
+                close(fd);
+            }
+            return;
+        }
+        s->frames_fd = fd;
+    }
     s->gated = g_strcmp0(getenv("BOARDEMUL_PHY_GATES"), "0") != 0;
     s->any_descriptor = getenv("BOARDEMUL_WIFI_ANYDESC") != NULL;
+    s->answer_exempt = getenv("BOARDEMUL_WIFI_GATE_ANSWERS") == NULL;
+    s->answer_followup = getenv("BOARDEMUL_WIFI_NO_FOLLOWUP") == NULL;
     const char *mark = getenv("BOARDEMUL_WIFI_MARK");
     s->mark_kind = mark ? (uint32_t)strtoul(mark, NULL, 0) : 0;
     const char *tag = getenv("BOARDEMUL_WIFI_TAG");
@@ -1268,10 +1273,9 @@ static Property wifi_props[] = {
     /* An access point in the air: what it is called, how often it beacons in
      * milliseconds (zero for none), and which channel it claims (zero to
      * claim whichever the controller is tuned to). */
-    DEFINE_PROP_STRING("ssid", EspWifiMac, ssid),
     DEFINE_PROP_UINT32("beacon-ms", EspWifiMac, beacon_ms, 0),
+    DEFINE_PROP_STRING("frames", EspWifiMac, frames_path),
     DEFINE_PROP_UINT32("channel", EspWifiMac, channel, 0),
-    DEFINE_PROP_BOOL("wpa2", EspWifiMac, wpa2, false),
     DEFINE_PROP_END_OF_LIST(),
 };
 

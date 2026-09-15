@@ -149,6 +149,9 @@ class Board:
     i2c0: I2CServer
     i2c1: I2CServer
     panel: SpiDevice        # whichever panel this board carries
+    # The access point's frame channel, when a run asked for one. The MAC is
+    # a C device; what is on the air is this (ADR 0064).
+    frames: object | None = None
     devices: list[str] = field(default_factory=list)
     # A part on one of the machine's own UARTs, when the scenario asks for one.
     # It needs no device of ours: the fork's controller already speaks to a
@@ -162,12 +165,15 @@ class Board:
         self.i2c1.start()
         if self.gps:
             self.gps.start()
+        if self.frames:
+            self.frames.start()
         # BUSY idles high on this panel. Set before QEMU connects; the client
         # replays it on connect, so the line is right from the first fetch.
         self.gpio.drive(EPD_BUSY_PIN, 1)
 
     def stop(self) -> None:
-        for link in (self.spi, self.i2c0, self.i2c1, self.gpio, self.gps):
+        for link in (self.spi, self.i2c0, self.i2c1, self.gpio,
+                     self.gps, self.frames):
             if link:
                 link.stop()
 
@@ -192,7 +198,7 @@ def build(outdir: Path, air: str | None = None, ble_air: str | None = None,
           antenna_dbi: float = 0.0, exponent: float = 2.0,
           obstruction_db: float = 0.0,
           gps: tuple[float, float, float] | None = None,
-          wifi_ap: tuple[str, int, int, bool] | None = None) -> Board:
+          wifi_ap: tuple[str, int, int, bool, str] | None = None) -> Board:
     """`ble_air` and `wifi_ap` are accepted and do nothing here: this board has
     a radio but no Bluetooth controller and no WiFi MAC modelled, so there is no
     part for either to reach. Every board takes the same arguments on purpose --

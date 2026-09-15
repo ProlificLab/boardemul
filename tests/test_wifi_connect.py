@@ -42,6 +42,11 @@ FIRMWARE = REPO_ROOT / "firmware" / "T-Deck_UnitTest_250620.bin"
 # an SSID and beacon rate it will try to join. A name it does not know gets as
 # far as a scan result and no further: `no matching wifi found`.
 SSID = "xinyuandianzi"
+# And the passphrase it carries beside the name, near offset 0x11dd9 of the
+# image. The four-way handshake derives its keys from the two together, so a
+# peer given the name and not the passphrase can answer an association request
+# and nothing after it.
+PASSPHRASE = "AA15994823428"
 # Twenty milliseconds. A scan that hears nothing cannot start a connect, and
 # the firmware scans in short bursts while it retries -- at a tenth of a second
 # five scans in six heard nothing and the first association took two minutes;
@@ -110,7 +115,8 @@ def connected(tmp_path_factory) -> Run:
         run = run_emulator(scratch, firmware=FIRMWARE, board="tdeck",
                            timeout=300,
                            extra=("--psram-octal", "--wifi-ap",
-                                  f"{SSID},{BEACON_MS}", "--wifi-wpa2"),
+                                  f"{SSID},{BEACON_MS}", "--wifi-wpa2",
+                                  "--wifi-pass", PASSPHRASE),
                            until=_associated(scratch))
         keep = tmp_path_factory.mktemp("connect")
         for log in list(scratch.glob("*.uart.log")) + list(scratch.glob("*.qemu.log")):

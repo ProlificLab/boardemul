@@ -32,6 +32,7 @@ from emu.devices.air import AirMedium
 from emu.devices.es7210 import Es7210
 from emu.devices.sdcard import SdCard
 from emu.devices.spi_trace import SpiTrace
+from emu.devices.wifi_ap import AccessPoint, FrameChannel, Network
 from emu.devices.sx1262 import Sx1262
 from emu.devices.tdeck_i2c import GT911, TDeckKeyboard
 from emu.peripherals.adc import SarAdc
@@ -236,7 +237,7 @@ def build(outdir: Path, air: str | None = None, ble_air: str | None = None,
           antenna_dbi: float = 0.0, exponent: float = 2.0,
           obstruction_db: float = 0.0,
           gps: tuple[float, float, float] | None = None,
-          wifi_ap: tuple[str, int, int, bool] | None = None) -> Board:
+          wifi_ap: tuple[str, int, int, bool, str] | None = None) -> Board:
     outdir = Path(outdir)
     panel = St7789Panel(outdir / "frames")
     gpio = GpioClient(outdir / "gpio.sock")
@@ -304,14 +305,21 @@ def build(outdir: Path, air: str | None = None, ble_air: str | None = None,
         # beacons on the channel the controller is tuned to, which is what a
         # scanning station has to hear to find a network (ADR 0057).
         f"esp-wifi-mac,base=0x{WIFI_MAC_BASE:x},irq={IRQ_WIFI_MAC}"
-        + (f",ssid={wifi_ap[0]},beacon-ms={wifi_ap[1]},channel={wifi_ap[2]}"
-           f",wpa2={'on' if wifi_ap[3] else 'off'}"
+        + (f",beacon-ms={wifi_ap[1]},channel={wifi_ap[2]}"
+           f",frames={outdir / 'wifi.sock'}"
            if wifi_ap else ""),
         f"esp-ble-core,base=0x{BLE_CORE_BASE:x},irq={IRQ_RWBLE}"
         + (f",air={ble_air},airname={outdir.name}" if ble_air else ""),
     ]
+    frames = None
+    if wifi_ap:
+        # The network, and the peer that answers for it. The device asks down
+        # this socket; it does not know what a beacon is (ADR 0064).
+        frames = FrameChannel(outdir / "wifi.sock", AccessPoint(Network(
+            ssid=wifi_ap[0], channel=wifi_ap[2] or 1, wpa2=wifi_ap[3],
+            passphrase=wifi_ap[4] if len(wifi_ap) > 4 else "")))
     board = Board(regions=regions, gpio=gpio, spi=spi, i2c0=i2c0, i2c1=i2c1,
-                  panel=panel, gps=receiver, devices=devices)
+                  panel=panel, gps=receiver, devices=devices, frames=frames)
     board.touch = touch
     board.keypad = keypad
     return board
