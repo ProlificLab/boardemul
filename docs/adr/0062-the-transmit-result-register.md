@@ -3,6 +3,8 @@
 **Status:** Accepted — 2026-09-14. Closes the transmit path opened in ADR 0059
 and finishes ADR 0061's open question. Does *not* get the station associated;
 that is written down below as a negative result with what it rules out.
+ADR 0063 closes it: the second argument is a walk-position count, and the
+model was delivering frames out of order.
 
 ## Context
 
@@ -201,14 +203,14 @@ afterwards delivers a frame that physically arrived before the gate shut.
   in, and the two-point correlation above was a coincidence. Reverted, and
   the scan verified back at eleven scans with nothing missed.
 
-  **The next step is therefore in the driver, not the header.** The argument
-  is assembled by the driver's own IRAM caller: at 0x4037bdd6 it reads a byte
-  from a table, indexed by a four-bit value it stashed at 0x4037aa84+170 from
-  the result of a dispatched call, and passes it as the second argument
-  through `pp_wdev_funcs[125]` at 0x4037bdd9. A step trace of *that* caller,
-  on a frame that draws a 1 and a frame that draws a 4, says what the device
-  would have to do differently. `tools/trace_rx_frame.py` reaches it by
-  breaking at 0x4037bda0 instead of the ROM entry.
+  **The next step is in the caller** -- and the caller named here is the wrong
+  one. This guessed the argument was a queue and pointed at the driver's IRAM
+  routine at 0x4037bda0, reading the return address in `a0` as the immediate
+  caller. It is not: `a0` before the callee's `entry` executes holds the
+  return address one level up, which this project had already recorded and
+  this bullet forgot. The level in between is `wdevProcessRxSucDataAll`, in
+  ROM, where the argument turns out to be a count of descriptors walked rather
+  than a queue at all. ADR 0063 has it.
 
 - **Two ADR 0061 statements are corrected.** The status word is not "outside
   this device's page" any more, and it was never a plausible cause; and

@@ -173,6 +173,8 @@ def main() -> None:
     print("stopped: %s" % stop, flush=True)
     pc, regs = registers()
     print("hit: pc=0x%08x %s" % (pc, where(pc)), flush=True)
+    print("  a0=%08x (the caller, less its window increment: 0x%08x)"
+          % (regs.get("a00", 0), regs.get("a00", 0) & 0x3FFFFFFF), flush=True)
     print("  a2=%08x a3=%08x a4=%08x a5=%08x a6=%08x a7=%08x"
           % tuple(regs.get("a%02d" % n, 0) for n in (2, 3, 4, 5, 6, 7)), flush=True)
     # Learn the gdb register numbering once, so a later script can skip QMP.
@@ -198,7 +200,7 @@ def main() -> None:
         print("  %-4d %s 0x%08x %-20s %-30s %s"
               % (i, "*" if jump else " ", pc, name, text(pc),
                  " ".join("a%d=%08x" % (n, regs.get("a%02d" % n, 0))
-                          for n in (2, 3, 4, 5))))
+                          for n in (2, 3, 4, 5, 9, 10, 11, 13, 14))))
         last = pc
     link.close()
 

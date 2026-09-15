@@ -481,6 +481,7 @@ struct EspWifiMac {
     uint32_t queue_mask;
     uint32_t header_tag;
     uint32_t mark_kind;
+    bool any_descriptor;
     int64_t mark_at;
     uint32_t ring;              /* what the driver handed us */
     hwaddr delivered_to;        /* the descriptor a frame went into */
@@ -512,9 +513,71 @@ static void wifi_raise(EspWifiMac *s, int level)
 
 /* Follow the chain to the first descriptor the hardware still owns, which is
  * the one a real MAC would fill next. */
+/* The head of the list the consumer walks. `wdevProcessRxSucDataAll`
+ * (0x4004147c) starts at `*wDevCtrl` and follows each descriptor's next
+ * pointer at +8, counting as it goes:
+ *
+ *     a3 = 0
+ *     loop: word = *desc; a3 += 1; next = *(desc + 8)
+ *           if (!(word & (1 << 30))) goto skip     -- no frame here
+ *           wDev_ProcessRxSucData(desc, a3); a3 = 0
+ *
+ * and that count is the second argument `wDev_IndicateFrame` tests against
+ * one. So the count is not a queue and not an index: it is how many
+ * descriptors were examined to reach this frame. One means "the next one in
+ * order", and anything else means descriptors were skipped, which the ROM
+ * treats as frames lost and throws the frame away.
+ *
+ * Which is why this model's scan worked and its authentication reply did not.
+ * The walk below used to start from whichever descriptor the driver had most
+ * recently handed back, so a frame landed at an arbitrary position in the
+ * list: measured, a beacon at position one was delivered and an
+ * authentication reply at position four was discarded. Beacons come ten a
+ * second and enough of them drew a one; a reply gets one throw per connect
+ * attempt.
+ *
+ * A real MAC does not choose. It writes into the next descriptor in order,
+ * and if that one is still full it is out of room. So this starts where the
+ * consumer starts. Reading `wDevCtrl` is the same documented shortcut ADR
+ * 0057 takes for the channel, for the same reason: the alternative is a
+ * register whose contents are not decoded. */
+static hwaddr wifi_rx_list_head(void)
+{
+    uint32_t control = 0, head = 0;
+
+    address_space_read(&address_space_memory, WDEV_CTRL_PTR,
+                       MEMTXATTRS_UNSPECIFIED, &control, sizeof(control));
+    if (!control) {
+        return 0;
+    }
+    address_space_read(&address_space_memory, control, MEMTXATTRS_UNSPECIFIED,
+                       &head, sizeof(head));
+    return head;
+}
+
 static hwaddr wifi_free_descriptor(EspWifiMac *s, uint32_t *word_out)
 {
-    hwaddr at = s->ring;
+    /* BOARDEMUL_WIFI_ANYDESC=1 is the behaviour this replaced, whole: start
+     * from whichever descriptor the driver last handed back and take the first
+     * one going that is free. Kept so the difference can be measured rather
+     * than argued about. */
+    hwaddr head = s->any_descriptor ? 0 : wifi_rx_list_head();
+    hwaddr at = head ? head : s->ring;
+
+    /* Only the head will do, when there is one: a frame put anywhere else is
+     * counted as out of order and discarded. BOARDEMUL_WIFI_ANYDESC=1 restores
+     * the old walk, for the run that wants to see the difference. */
+    if (head) {
+        uint32_t desc[3] = { 0 };
+        if (address_space_read(&address_space_memory, head,
+                               MEMTXATTRS_UNSPECIFIED, desc,
+                               sizeof(desc)) != MEMTX_OK
+            || !(desc[0] & DESC_OWNER)) {
+            return 0;
+        }
+        *word_out = desc[0];
+        return head;
+    }
 
     for (unsigned i = 0; i < DESC_MAX && at; i++) {
         uint32_t desc[3] = { 0 };
@@ -1107,6 +1170,7 @@ static void wifi_realize(DeviceState *dev, Error **errp)
         s->irq_line = qdev_get_gpio_in(DEVICE(intc), s->irq_source);
     }
     s->gated = g_strcmp0(getenv("BOARDEMUL_PHY_GATES"), "0") != 0;
+    s->any_descriptor = getenv("BOARDEMUL_WIFI_ANYDESC") != NULL;
     const char *mark = getenv("BOARDEMUL_WIFI_MARK");
     s->mark_kind = mark ? (uint32_t)strtoul(mark, NULL, 0) : 0;
     const char *tag = getenv("BOARDEMUL_WIFI_TAG");
