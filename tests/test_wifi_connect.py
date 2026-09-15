@@ -159,7 +159,15 @@ def test_it_authenticates_before_it_associates(connected: Run) -> None:
     assoc = [int(m) for m in re.findall(
         r"at (\d+) ms the driver transmitted on slot \d+ \(\d+ so far\) a 0x00", said)]
     assert auth and assoc, f"auth {auth}, assoc {assoc}"
-    assert min(auth) < min(assoc), f"associated at {min(assoc)} ms before authenticating at {min(auth)} ms"
+    # Pair the first association with the authentication it followed, not with
+    # the first of the run: the station authenticates, fails at the handshake,
+    # and tries the whole thing again, so those two can be minutes apart and
+    # comparing them says nothing. What matters is that the association had an
+    # authentication immediately in front of it.
+    before = [t for t in auth if t <= assoc[0]]
+    assert before, (f"associated at {assoc[0]} ms with no authentication "
+                    f"before it; authentications at {auth}")
+    gap = assoc[0] - before[-1]
     # Milliseconds apart in practice -- ten, in the run this was written from.
-    assert min(assoc) - min(auth) < 5000, (
-        f"{min(assoc) - min(auth)} ms between the two, which is not one exchange")
+    assert gap < 5000, (f"{gap} ms between authenticating at {before[-1]} and "
+                        f"associating at {assoc[0]}, which is not one exchange")

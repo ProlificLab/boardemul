@@ -697,6 +697,15 @@ static void wifi_deliver(void *opaque)
     address_space_read(&address_space_memory, desc + 4, MEMTXATTRS_UNSPECIFIED,
                        &buffer, sizeof(buffer));
     if (!buffer) {
+        /* A descriptor the hardware owns whose buffer pointer is still zero:
+         * the driver has handed it back but not yet pointed it anywhere. Wait
+         * -- and *re-arm*, which this did not do. A return without re-arming
+         * stops the beacon schedule until something else happens to poke the
+         * timer, and a transmit completion does, so the symptom was a beacon
+         * rate that rose and fell with how much the station was transmitting
+         * and never reached the rate it was asked for. */
+        timer_mod_ns(s->hatch,
+                     qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + wifi_retry_ns(s));
         return;
     }
     /* A header, then the packet, then its check sequence.
