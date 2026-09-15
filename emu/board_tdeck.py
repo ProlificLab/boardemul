@@ -305,7 +305,11 @@ def build(outdir: Path, air: str | None = None, ble_air: str | None = None,
         # beacons on the channel the controller is tuned to, which is what a
         # scanning station has to hear to find a network (ADR 0057).
         f"esp-wifi-mac,base=0x{WIFI_MAC_BASE:x},irq={IRQ_WIFI_MAC}"
-        + (f",beacon-ms={wifi_ap[1]},channel={wifi_ap[2]}"
+        # beacon-ms is how often the device offers the peer a chance to put
+        # something on the air, not how often a beacon goes out -- the peer
+        # paces those itself now, on the guest's clock. Short, so that a
+        # handshake message waits milliseconds rather than a beacon period.
+        + (f",beacon-ms={min(wifi_ap[1], 5)},channel={wifi_ap[2]}"
            f",frames={outdir / 'wifi.sock'}"
            if wifi_ap else ""),
         f"esp-ble-core,base=0x{BLE_CORE_BASE:x},irq={IRQ_RWBLE}"
@@ -317,7 +321,8 @@ def build(outdir: Path, air: str | None = None, ble_air: str | None = None,
         # this socket; it does not know what a beacon is (ADR 0064).
         frames = FrameChannel(outdir / "wifi.sock", AccessPoint(Network(
             ssid=wifi_ap[0], channel=wifi_ap[2] or 1, wpa2=wifi_ap[3],
-            passphrase=wifi_ap[4] if len(wifi_ap) > 4 else "")))
+            passphrase=wifi_ap[4] if len(wifi_ap) > 4 else "",
+            beacon_ms=wifi_ap[1])))
     board = Board(regions=regions, gpio=gpio, spi=spi, i2c0=i2c0, i2c1=i2c1,
                   panel=panel, gps=receiver, devices=devices, frames=frames)
     board.touch = touch

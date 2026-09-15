@@ -8,14 +8,17 @@ standard library's hashing is.
 
 The device drives this over a socket, synchronously:
 
-    request   type:u16  channel:u16  length:u16  frame[length]
-    reply     length:u16            frame[length]
+    request   type:u16 channel:u16 length:u16 clock:u32 free:u16 frame[]
+    reply     length:u16                                          frame[]
 
-Type 1 says the guest transmitted the frame that follows; type 2 is a tick on
-the guest's clock. Either can be answered with a frame to put on the air, or
-with nothing. The device keeps the schedule so that the beacon rate stays on
-the guest's clock rather than the host's, which every WiFi test in this suite
-depends on.
+Type 1 says the guest transmitted the frame that follows; type 2 is a tick.
+Either can be answered with a frame to put on the air, or with nothing. The
+clock is the guest's, in milliseconds, which is what lets this side pace
+itself without the beacon rate drifting with host load -- and what lets it
+keep a beacon back when something more urgent is due. `free` is how many of
+the driver's descriptors the hardware owns, so this side can decline to spend
+the last one on a beacon -- they are the one frame here that can always
+wait.
 """
 
 from __future__ import annotations
@@ -35,7 +38,7 @@ log = logging.getLogger("wifi")
 
 REQ_TX = 1
 REQ_TICK = 2
-HEAD = struct.Struct("<HHH")
+HEAD = struct.Struct("<HHHIH")
 
 # 802.11 subtypes, as the first octet of a frame carries them.
 PROBE_REQUEST = 0x40
@@ -82,6 +85,10 @@ class Network:
     """The network this access point advertises."""
     ssid: str = "BoardEmul"
     channel: int = 1
+    # How often a beacon is due, on the guest's clock. A real access point
+    # beacons about ten times a second; a scan that has to hear one inside its
+    # dwell on a channel does better with more.
+    beacon_ms: int = 100
     wpa2: bool = False
     passphrase: str = ""
 
@@ -135,6 +142,11 @@ class AccessPoint:
                        if network.wpa2 and network.passphrase else b"")
         self.counts: dict[str, int] = {}
         self.channel = network.channel
+        self.last_beacon = 0
+        log.info("access point %r on channel %d, %s", network.ssid,
+                 network.channel,
+                 "WPA2 with a master key" if self.master
+                 else ("WPA2 but no passphrase" if network.wpa2 else "open"))
 
     def _next(self) -> int:
         self.sequence = (self.sequence + 1) & 0xFFF
@@ -145,7 +157,7 @@ class AccessPoint:
 
     # ---------------------------------------------------------------- ticks
 
-    def tick(self, channel: int) -> bytes | None:
+    def tick(self, channel: int, clock: int, free: int = 9) -> bytes | None:
         """What to put on the air when nothing was asked.
 
         A handshake that owes its first message gets it here: the association
@@ -153,11 +165,27 @@ class AccessPoint:
         waiting for.
         """
         self.channel = channel or self.channel
+        # Anything owed comes first, and is never held back for a schedule.
         for station in self.stations.values():
             if station.owes_first and station.shake is not None:
                 station.owes_first = False
                 self._count("eapol 1")
+                self.last_beacon = clock
                 return self.data(station.address, station.shake.first())
+        # A beacon only when one is due. Offering one on every opportunity is
+        # what filled the driver's descriptors and left none for the frames
+        # that matter.
+        if clock - self.last_beacon < self.network.beacon_ms:
+            self._count("nothing due")
+            return None
+        if free < 2:
+            # Never spend the last descriptor on a beacon. The driver recycles
+            # them at its own pace, and it was spending a whole second after an
+            # association with none free -- which is where the handshake's
+            # first message has to go.
+            self._count("beacon held back")
+            return None
+        self.last_beacon = clock
         self._count("beacon")
         return header(BEACON, BROADCAST, self._next()) + self.network.body(channel)
 
@@ -177,7 +205,7 @@ class AccessPoint:
         llc = bytes.fromhex("aaaa03000000888e")
         return head + llc + payload
 
-    def take(self, frame: bytes, channel: int) -> bytes | None:
+    def take(self, frame: bytes, channel: int, clock: int = 0) -> bytes | None:
         """A frame the guest transmitted. What to send back, or nothing."""
         self.channel = channel or self.channel
         if len(frame) < 24:
@@ -224,6 +252,8 @@ class AccessPoint:
         """
         self._count("assoc")
         station.associated = True
+        log.info("%s associated; handshake %s", station.address.hex(":"),
+                 "armed" if self.master else "not armed (no master key)")
         if self.master:
             station.shake = wpa2.Handshake(
                 master=self.master, ap=AP_ADDRESS, station=station.address,
@@ -311,15 +341,15 @@ class FrameChannel:
                 if head is None:
                     break
                 started = time.monotonic()
-                kind, channel, length = HEAD.unpack(head)
+                kind, channel, length, clock, free = HEAD.unpack(head)
                 frame = self._recv(conn, length) if length else b""
                 if length and frame is None:
                     break
                 try:
                     if kind == REQ_TX:
-                        out = self.point.take(frame, channel)
+                        out = self.point.take(frame, channel, clock)
                     elif kind == REQ_TICK:
-                        out = self.point.tick(channel)
+                        out = self.point.tick(channel, clock, free)
                     else:
                         out = None
                 except Exception:

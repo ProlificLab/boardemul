@@ -148,6 +148,31 @@ not do.
   to take a single measurement of: the same settings gave 1444 beacons in one
   run and 795 in the next.
 
+- **The handshake starts and cannot finish, and the reason is the descriptor
+  rule.** The peer builds the first EAPOL-Key message and the device asks for
+  it, but between an association response and the disassociation a second
+  later, nothing goes on the air at all: the head descriptor holds a frame the
+  driver has not picked up, and ADR 0063's rule says the head is the only
+  place a frame may go. Every other descriptor in the ring can be free and it
+  makes no difference.
+
+  Two things were tried on that and both are recorded rather than kept. The
+  peer now declines to spend the last free descriptor on a beacon, which is
+  right in itself and was not the constraint -- the counter for it fires while
+  the head is the thing that is busy. And the rule was relaxed to "the first
+  descriptor the hardware owns, walking from the head", on the argument that
+  anything before it must be a frame this device filled, so no gap could open:
+  thirty-nine silent scans in forty-three and no authentication at all,
+  against none in fourteen. The driver owns descriptors this device never
+  filled, so the gap does open and the consumer's count runs past one.
+
+  What is not yet known is why the driver stops picking frames up for about a
+  second immediately after it associates. A station derives its own master key
+  around then -- four thousand rounds of PBKDF2 -- which would explain it, and
+  that is a guess until something measures it. It is the next thing to find
+  out, and it is a question about the firmware rather than a knob on this
+  side.
+
 - **Writing AES is a correctness risk this project cannot test away entirely.**
   Published vectors say the primitive is right. They do not say the cipher is
   used right, and a CCMP nonce assembled wrongly is a bug the station will

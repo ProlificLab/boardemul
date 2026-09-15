@@ -253,12 +253,23 @@ OBJECT_DECLARE_SIMPLE_TYPE(EspWifiMac, ESP_WIFI_MAC)
  * a Python peer on a socket. Synchronous request and reply, which is the shape
  * the bus bridge already establishes:
  *
- *     request   type:u16  channel:u16  length:u16  frame[length]
- *     reply     length:u16            frame[length]
+ *     request   type:u16 channel:u16 length:u16 clock:u32 free:u16 frame[]
+ *     reply     length:u16                                          frame[]
  *
  * A reply of zero length means nothing to say. Two request types: the guest
- * transmitted this frame, and a tick -- because the schedule belongs to the
- * guest's clock and only the content belongs to the peer. */
+ * transmitted this frame, and a tick.
+ *
+ * The clock is the guest's, in milliseconds, and it is what keeps the schedule
+ * on the guest's clock while leaving the peer to decide what is due. The
+ * device used to decide instead -- every firing with nothing staged put a
+ * beacon on -- which meant an answer earned an *extra* beacon rather than
+ * merely not costing one, and four hundred answers bought four hundred
+ * beacons the interval never asked for. That filled the driver's four
+ * descriptors faster than it drained them, and the second that mattered --
+ * between an association response and the handshake message that should
+ * follow it -- was a second with no free descriptor and nothing on the air.
+ * So the device offers opportunities and says what time it is; the peer says
+ * what, if anything, is due. */
 #define FRAME_TX          1u
 #define FRAME_TICK        2u
 /* Why the handler was woken. Found by raising the interrupt with nothing to
@@ -317,8 +328,16 @@ OBJECT_DECLARE_SIMPLE_TYPE(EspWifiMac, ESP_WIFI_MAC)
 /* What a frame looks like is the peer's business now (ADR 0064): the beacon
  * builder, the body builder and the reply builder all left this file with it.
  * What stays is the size of the biggest frame this radio will carry, because
- * that bounds the buffers below. */
-#define FRAME_MAX         128
+ * that bounds the buffers below.
+ *
+ * Sixteen hundred, not the hundred and twenty-eight a beacon needs. That bound
+ * came from the beacon builder and outlived it by one commit: the first
+ * handshake message is a hundred and thirty-one bytes, so the radio refused it
+ * and closed the channel, and the station waited for a frame that had been
+ * thrown away at this end. The third message with a wrapped group key is
+ * bigger again, and a data frame carrying a DHCP exchange is bigger than
+ * that. */
+#define FRAME_MAX         1600
 
 /* Every frame on the air ends with a check sequence over its own bytes, and a
  * receiver that validates one will throw away a frame that has none. The
@@ -441,6 +460,9 @@ static void wifi_raise(EspWifiMac *s, int level)
 
 /* Follow the chain to the first descriptor the hardware still owns, which is
  * the one a real MAC would fill next. */
+/* Defined below, beside the walk it shares its reading of the chain with. */
+static unsigned wifi_free_count(EspWifiMac *s);
+
 /* One request, one reply. Blocking, like every unmodelled access the bus
  * bridge forwards: the guest tolerates that already and this happens once per
  * beacon rather than once per load. A peer that has gone away closes the
@@ -453,10 +475,13 @@ static size_t wifi_ask(EspWifiMac *s, uint16_t type, unsigned channel,
     if (s->frames_fd < 0) {
         return 0;
     }
-    uint8_t head[6];
+    uint8_t head[12];
     stw_le_p(head + 0, type);
     stw_le_p(head + 2, (uint16_t)channel);
     stw_le_p(head + 4, (uint16_t)len);
+    stl_le_p(head + 6, (uint32_t)(qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL)
+                                  / 1000000));
+    stw_le_p(head + 10, (uint16_t)wifi_free_count(s));
     if (qemu_write_full(s->frames_fd, head, sizeof(head)) != sizeof(head)
         || (len && qemu_write_full(s->frames_fd, frame, len) != len)) {
         goto gone;
@@ -530,6 +555,34 @@ static hwaddr wifi_rx_list_head(void)
     return head;
 }
 
+/* How many descriptors in the chain the hardware owns. The peer is told, so it
+ * can decline to spend the last one on a beacon: an association response used
+ * to take it, and the second afterwards -- exactly the second the handshake's
+ * first message belongs in -- had nothing free and the device never even asked
+ * what was due. Beacons are the one frame here that can always wait. */
+static unsigned wifi_free_count(EspWifiMac *s)
+{
+    hwaddr head = wifi_rx_list_head();
+    hwaddr at = head ? head : s->ring;
+    unsigned free = 0;
+
+    for (unsigned i = 0; i < DESC_MAX && at; i++) {
+        uint32_t desc[3] = { 0 };
+        if (address_space_read(&address_space_memory, at, MEMTXATTRS_UNSPECIFIED,
+                               desc, sizeof(desc)) != MEMTX_OK) {
+            break;
+        }
+        if (desc[0] & DESC_OWNER) {
+            free++;
+        }
+        at = desc[2];
+        if (at == head) {
+            break;                      /* the chain is circular */
+        }
+    }
+    return free;
+}
+
 static hwaddr wifi_free_descriptor(EspWifiMac *s, uint32_t *word_out)
 {
     /* BOARDEMUL_WIFI_ANYDESC=1 is the behaviour this replaced, whole: start
@@ -539,9 +592,21 @@ static hwaddr wifi_free_descriptor(EspWifiMac *s, uint32_t *word_out)
     hwaddr head = s->any_descriptor ? 0 : wifi_rx_list_head();
     hwaddr at = head ? head : s->ring;
 
-    /* Only the head will do, when there is one: a frame put anywhere else is
-     * counted as out of order and discarded. BOARDEMUL_WIFI_ANYDESC=1 restores
-     * the old walk, for the run that wants to see the difference. */
+    /* Only the head will do. ADR 0063 measured that and this tried to reason
+     * past it: a descriptor behind the head that the hardware owns looked like
+     * the write pointer, on the argument that everything before it must be a
+     * frame this device had filled and so no gap could open. Wrong, and
+     * measured wrong -- thirty-nine silent scans in forty-three and no
+     * authentication at all, against none in fourteen with head-only. The
+     * driver owns descriptors this device never filled, so a gap does open,
+     * and the consumer's count runs past one and throws the frame away.
+     *
+     * The cost is real and is written down in ADR 0064: while the head holds
+     * a frame the driver has not picked up, nothing can be delivered, however
+     * many descriptors behind it are free.
+     *
+     * BOARDEMUL_WIFI_ANYDESC=1 restores the oldest walk, from whichever
+     * descriptor the driver last handed back, which delivered out of order. */
     if (head) {
         uint32_t desc[3] = { 0 };
         if (address_space_read(&address_space_memory, head,
@@ -798,6 +863,20 @@ static void wifi_deliver(void *opaque)
     memcpy(staged + RX_HEADER, frame, frame_len);
     memcpy(staged + RX_HEADER + frame_len, &fcs, sizeof(fcs));
     size_t staged_len = RX_HEADER + frame_len + 4;
+    /* The driver said how big the buffer is, in the descriptor's low twelve
+     * bits. Writing past it would corrupt whatever the guest keeps next door,
+     * which is the sort of bug that surfaces as an unrelated crash minutes
+     * later -- so a frame that does not fit is dropped, loudly, the way a real
+     * radio drops one it has no room for. */
+    size_t room = word & DESC_SIZE_MASK;
+    if (room && staged_len > room) {
+        qemu_log_mask(LOG_UNIMP, "esp-wifi-mac: a %u byte frame does not fit "
+                      "the driver's %u byte buffer; dropped%c",
+                      (unsigned)staged_len, (unsigned)room, 10);
+        timer_mod_ns(s->hatch,
+                     qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + wifi_retry_ns(s));
+        return;
+    }
     address_space_write(&address_space_memory, buffer, MEMTXATTRS_UNSPECIFIED,
                         staged, staged_len);
     /* Keep the size the driver gave the buffer; say how much arrived, mark it
