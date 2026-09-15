@@ -61,3 +61,11 @@ superseded ADR is marked superseded and points forward.
 | [0053](0053-the-screen-has-a-brightness.md) | The screen has a brightness | Accepted |
 | [0054](0054-what-wifi-would-need-to-hear-something.md) | What WiFi would need to hear something | Mostly answered by 0055 |
 | [0055](0055-a-frame-the-wifi-driver-accepts.md) | A frame the WiFi driver accepts | Accepted |
+| [0056](0056-what-tells-the-driver-a-frame-arrived.md) | What tells the driver a frame arrived | Accepted (supersedes half of 0055) |
+| [0057](0057-a-network-the-firmware-can-see.md) | A network the firmware can see | Accepted (one cost corrected by 0060) |
+| [0058](0058-the-firmware-tries-to-connect.md) | The firmware tries to connect, and where it stops | Accepted (central claim corrected by 0059) |
+| [0059](0059-the-transmit-engine.md) | The transmit engine | Accepted |
+| [0060](0060-an-access-point-that-answers.md) | An access point that answers | Accepted (its account of the failure corrected by 0061) |
+| [0061](0061-the-station-authenticates.md) | The station authenticates | Accepted (its suspect cleared by 0062) |
+| [0062](0062-the-transmit-result-register.md) | The transmit result register | Accepted (open question closed by 0063) |
+| [0063](0063-the-station-associates.md) | The station associates | Accepted |
