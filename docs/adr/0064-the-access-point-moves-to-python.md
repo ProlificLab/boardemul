@@ -166,12 +166,40 @@ not do.
   against none in fourteen. The driver owns descriptors this device never
   filled, so the gap does open and the consumer's count runs past one.
 
-  What is not yet known is why the driver stops picking frames up for about a
-  second immediately after it associates. A station derives its own master key
-  around then -- four thousand rounds of PBKDF2 -- which would explain it, and
-  that is a guess until something measures it. It is the next thing to find
-  out, and it is a question about the firmware rather than a knob on this
-  side.
+  **Why the driver stops picking frames up is now measured, and it is neither
+  of the guesses.** `tools/ring_state.py` waits for the station to transmit an
+  authentication and then watches the ring and the cores without stepping
+  anything. Through the whole window:
+
+  * the receive interrupt is **asserted and never acknowledged** -- status
+    `0x00004000`, bit fourteen, held for seconds;
+  * the receiver is enabled (`+0x0d8` = `0x155`) and the MAC is not held;
+  * one frame sits in the head descriptor, filled and not handed back, and
+    the **other three descriptors are free** the entire time;
+  * the head pointer never moves.
+
+  And both cores are at **`PS.INTLEVEL = 3`**, with interrupts pending on core
+  zero (`INTERRUPT = 0x100d`, `INTENABLE = 0x1300320d`). Core zero is in a
+  compare-and-swap retry loop at 0x40381f9b whose awaited value is
+  `0xB33FFFFF`; core one is at 0x403820bc. The literals in that code name it
+  without ambiguity: **`spinlock.h`**, **`spinlock_release`**, and the
+  assertion **`core_id == lock->owner`**. `0xB33FFFFF` is ESP-IDF's
+  `SPINLOCK_FREE`.
+
+  So the driver is not busy and not waiting on us: **both cores are deadlocked
+  on an ESP-IDF spinlock with interrupts masked**, which is why the frame is
+  never collected and why nothing this side does about descriptors or pacing
+  makes any difference. It lasts seconds and ends with the station giving up,
+  and it is intermittent -- one run got its first handshake message out, so the
+  window is sometimes short enough.
+
+  That reframes the remaining work. The question is no longer "how should the
+  model deliver this frame" but "what makes two emulated cores deadlock on a
+  lock the hardware does not deadlock on". The candidates worth testing, in
+  order of cheapness: whether `s32c1i` is atomic across this fork's TCG
+  threads; whether a delivery landing while the driver holds that lock is what
+  provokes it, which is testable because the lock's address is known; and
+  whether it happens at all without a frame delivered in that window.
 
 - **Writing AES is a correctness risk this project cannot test away entirely.**
   Published vectors say the primitive is right. They do not say the cipher is
