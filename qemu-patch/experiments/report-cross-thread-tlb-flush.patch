@@ -1,0 +1,25 @@
+diff --git a/system/physmem.c b/system/physmem.c
+index 7538906..4b449d7 100644
+--- a/system/physmem.c
++++ b/system/physmem.c
+@@ -594,6 +594,20 @@ static void tcg_iommu_unmap_notify(IOMMUNotifier *n, IOMMUTLBEntry *iotlb)
+     if (!notifier->active) {
+         return;
+     }
++    /* BoardEmul diagnostic, not a fix: tlb_flush() performs the flush on the
++     * calling thread, so calling it for a notifier belonging to another CPU
++     * wipes that CPU's TLB from under it. Report whether that happens. */
++    {
++        static unsigned crossed, same;
++        if (qemu_cpu_is_self(notifier->cpu)) {
++            same++;
++        } else if (++crossed <= 10 || crossed % 500 == 0) {
++            fprintf(stderr, "=== iommu notify: thread of cpu %d flushing "
++                    "cpu %d (cross %u, self %u)\n",
++                    current_cpu ? current_cpu->cpu_index : -1,
++                    notifier->cpu->cpu_index, crossed, same);
++        }
++    }
+     tlb_flush(notifier->cpu);
+     notifier->active = false;
+     /* We leave the notifier struct on the list to avoid reallocating it later.

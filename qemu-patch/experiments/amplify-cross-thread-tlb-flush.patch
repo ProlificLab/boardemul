@@ -1,0 +1,44 @@
+diff --git a/accel/tcg/cputlb.c b/accel/tcg/cputlb.c
+index b76a4ea..6ac1788 100644
+--- a/accel/tcg/cputlb.c
++++ b/accel/tcg/cputlb.c
+@@ -384,6 +384,39 @@ static void tlb_flush_by_mmuidx_async_work(CPUState *cpu, run_on_cpu_data data)
+ 
+     tlb_debug("mmu_idx:0x%04" PRIx16 "\n", asked);
+ 
++    /* BoardEmul experiment, not a fix. Widens the window ADR 0041 measured and
++     * ADR 0066 explains: when this flush is running on a thread that does not
++     * own the table, clear the table many times over with a pause between
++     * passes, so the owning CPU has time to refill an entry and then be caught
++     * between reading its comparator and reading its addend.
++     *
++     * Read qemu-patch/experiments/README.md before drawing anything from the
++     * line it prints. A wrong-thread arrival here is not by itself the defect:
++     * the machine's own cpu_reset() at board init is one, and it is harmless.
++     * And this condition is deliberately not guarded by cpu->created, even
++     * though cpu->thread is documented as live only after it -- adding that
++     * guard was tried and stopped the amplification working at all.
++     */
++    if (!qemu_cpu_is_self(cpu)) {
++        static unsigned announced;
++        int pass;
++
++        if (!announced++) {
++            fprintf(stderr, "=== amplifying a cross-thread flush of cpu %d\n",
++                    cpu->cpu_index);
++        }
++        for (pass = 0; pass < 20000; pass++) {
++            int idx;
++
++            qemu_spin_lock(&cpu->neg.tlb.c.lock);
++            for (idx = 0; idx < NB_MMU_MODES; idx++) {
++                tlb_flush_one_mmuidx_locked(cpu, idx, get_clock_realtime());
++            }
++            qemu_spin_unlock(&cpu->neg.tlb.c.lock);
++            g_usleep(20);
++        }
++    }
++
+     qemu_spin_lock(&cpu->neg.tlb.c.lock);
+ 
+     all_dirty = cpu->neg.tlb.c.dirty;
