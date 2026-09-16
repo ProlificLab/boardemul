@@ -4,9 +4,21 @@
 The question this answers is "does execution get this far", which for a path
 through a firmware with no symbols is most of the work. It is deliberately a
 counter and not a tracer: a stop per instruction slows this guest about fifty
-times and it never finishes a scan, while a handful of breakpoints on functions
-that are rarely hit leaves it running well enough to associate -- measured, a
-run with two armed still managed a hundred and thirty-one associations.
+times and it never finishes a scan.
+
+**Arm one address at a time.** Every stop is a debugger round trip, and the
+WiFi path is timing-sensitive enough that a few of them push the station out of
+the window this is trying to observe. Measured on the same firmware, counting
+how far the station got and how many frames arrived while the breakpoints were
+armed:
+
+    armed   associations   frames in the window
+      1          70                170
+      5           3                  0
+      6           0                  0        (one of them was hot)
+
+So a multi-address run is not a shortcut: it is a run whose zeroes mean
+nothing, and the control below is what reveals that rather than the counts.
 
 **A negative result here is worthless without a control.** "Nothing was hit"
 and "the thing we were waiting for never happened" look identical from inside
