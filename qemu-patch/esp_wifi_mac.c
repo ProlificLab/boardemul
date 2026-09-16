@@ -922,10 +922,20 @@ static void wifi_deliver(void *opaque)
     /* Word 0, bits 28 and 29. The flash routine that dispatches on the frame's
      * type reads word 0, ands it with 0x30000000, and goes nowhere useful if
      * the result is zero -- so at least one of them has to be set for a frame
-     * to be looked at at all. What each one means is not established, which is
-     * why both are set and why this is a measured requirement rather than a
-     * decoded field. Without it the driver takes every frame and no scan ever
-     * reports a network. */
+     * to be looked at at all. Without it the driver takes every frame and no
+     * scan ever reports a network.
+     *
+     * Which one carries it is now measured, with BOARDEMUL_WIFI_HEADER=0:...
+     * one bit at a time: bit 28 alone behaves exactly like both (twenty-six
+     * associations, the handshake reaching the same place), and bit 29 alone
+     * gets five authentications and *no* association at all. So bit 28 is the
+     * one the driver wants and bit 29 contributes nothing this firmware looks
+     * at. Both are still set, because setting only what is understood would
+     * be a change with no measured benefit; what is recorded is that the
+     * remaining guess is bit 29 and that it is not load-bearing.
+     *
+     * Neither arrangement helps an EAPOL data frame reach the supplicant, so
+     * this field is not what drops it (ADR 0068's open question). */
     header[0] = 0x30000000u;
     for (unsigned i = 0; i < RX_HEADER / 4; i++) {
         if (s->header_set & (1u << i)) {
