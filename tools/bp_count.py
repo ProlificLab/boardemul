@@ -34,6 +34,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from rsp import Rsp  # noqa: E402
 
+# How many stops to allow before giving up. Each one is a debugger round
+# trip and slows the guest, so a hot address exhausts this quickly --
+# which is a result in itself, reported as such below.
+CAP = 200
+
 
 def main() -> int:
     if len(sys.argv) < 5:
@@ -59,6 +64,7 @@ def main() -> int:
 
     hits = {a: 0 for a in wanted}
     other = 0
+    capped = False
     deadline = started + watch
     while time.monotonic() < deadline:
         if not link.go(timeout=max(1.0, deadline - time.monotonic())):
@@ -73,7 +79,8 @@ def main() -> int:
             other += 1
         # Keep going rather than stopping at the first hit: which of several
         # candidates is reached, and how often, is the interesting part.
-        if sum(hits.values()) + other >= 200:
+        if sum(hits.values()) + other >= CAP:
+            capped = True
             break
 
     print("", flush=True)
@@ -81,6 +88,20 @@ def main() -> int:
         print("0x%08x  %d hit(s)" % (at, hits[at]), flush=True)
     if other:
         print("%d stop(s) somewhere else" % other, flush=True)
+    # Why it stopped matters as much as the counts. A run that spent its budget
+    # on one hot address never gave the others a chance, and reading their
+    # zeroes as "never reached" is wrong -- which happened: one candidate took
+    # two hundred stops, crippled the guest, and the address actually under
+    # test was starved.
+    if capped:
+        print("STOPPED ON THE CAP of %d stops, not the deadline: the counts "
+              "below are not a measurement of the whole window, and any zero "
+              "here means only that the budget ran out first." % CAP, flush=True)
+        hot = max(wanted, key=lambda a: hits[a])
+        if hits[hot] > CAP // 2:
+            print("0x%08x took most of it; re-run without it." % hot, flush=True)
+    else:
+        print("ran to the end of the window", flush=True)
     link.resume()
     link.close()
     return 0
