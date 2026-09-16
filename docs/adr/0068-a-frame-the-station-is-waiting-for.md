@@ -143,10 +143,28 @@ thirteen of the packet as a big-endian half word and compares them with
 to Ethernet framing and is looking at the ethertype. Our LLC/SNAP header
 converts to exactly that value.
 
-Finding the drop is a decoding job, and it is currently limited by the
-instrument rather than the evidence: `tools/disas_rom.py` decodes enough of the
-ISA to read a function's shape but leaves a third of the instructions in this
-region as raw hex, which is slow going for code this size.
+Finding the drop was a decoding job, and the instrument was the limit rather
+than the evidence. That is fixed: `tools/image_to_elf.py` wraps the image's
+segments in an ELF so the toolchain's own objdump will read it -- it segfaults
+on a raw binary -- and `tools/app_symbols.py` recovers five hundred and
+seventy-eight function names from the `__func__` strings the firmware's own
+asserts carry. Both were checked against work done the hard way: objdump agrees
+instruction for instruction with the hand reading above, and the name recovery
+put `ieee80211_auth` at the address an earlier step trace had found, without
+being told.
+
+With those, the trail runs to a shape rather than a line. `ieee80211_handshake`
+at 0x420c94ac is a **dispatcher**: it loads a global, takes a function pointer
+from its offset sixteen, and calls it, logging its own name if the pointer is
+null. So the supplicant's handshake logic is registered at run time, and the
+path from a received EAPOL frame into it goes through an indirect call that no
+amount of static reading will resolve.
+
+That is where this should be picked up: with names to choose from, breakpoint
+the candidates and watch which run when a frame arrives, rather than reading
+further. The instruments for it already exist -- `logs/ccmp_probe.py` is the
+pattern, and its lesson is to carry a control that proves the frame was in
+flight while the breakpoints were armed.
 
 ## Alternatives rejected
 
