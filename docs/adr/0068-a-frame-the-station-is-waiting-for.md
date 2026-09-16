@@ -160,11 +160,42 @@ null. So the supplicant's handshake logic is registered at run time, and the
 path from a received EAPOL frame into it goes through an indirect call that no
 amount of static reading will resolve.
 
-That is where this should be picked up: with names to choose from, breakpoint
-the candidates and watch which run when a frame arrives, rather than reading
-further. The instruments for it already exist -- `logs/ccmp_probe.py` is the
-pattern, and its lesson is to carry a control that proves the frame was in
-flight while the breakpoints were armed.
+**The path is now traced end to end, and the frame gets much further than any
+of the guesses above.** Breakpointing candidates was the wrong instrument --
+every function on this path runs for every frame, and a breakpoint on one slows
+the guest until the station never associates (one address gives seventy
+associations, five give three). A *filtered execution trace* costs nothing
+outside its address range, and the device's own log lines land in the same file,
+so a delivery and what ran next interleave. `tools/analyse_trace.py` reads it
+back with names:
+
+    esp-wifi-mac: a data frame of 131 byte(s) delivered into 0x3fcb6b24
+      wDev_IndicateFrame        via the arg0-low-byte-zero branch, not count==1
+      esf_buf_alloc
+      wDev_DiscardFrame         releasing the original buffer, not ours
+      ppEnqueueRxq -> ppRxPkt -> ppDequeueRxq_Locked
+      ppRxProtoProc
+      ppRxPkt+73
+      0x420c6d30                the stack's receive handler, table +0x35c
+      0x420c6d6d                the ethertype dispatch
+      0x420c6d99                the EAPOL branch  <-- ours is recognised
+      0x420c6e19, 0x420c8950, 0x420c8874
+      0x420d74a8 .. 0x420d76xx  the supplicant, parsing it
+
+The ethertype dispatch is worth writing down because it settles the question
+this page opened with. It reads bytes twelve and thirteen **byte-swapped** --
+`(byte13 << 8) | byte12` -- and compares against two negated constants at
+0x420c6d18 and 0x420c6d1c, which resolve to ethertypes 0x88b4 and **0x888e**.
+The trace takes the second branch. **So the frame reaches the supplicant and is
+recognised as EAPOL.**
+
+That eliminates everything this page was worried about -- the header, the
+gates, the descriptor, the framing, the ethertype -- and moves the question
+inside the supplicant's own EAPOL handling, which is where reason 15 comes
+from. The next question is narrow: the supplicant parses our first message and
+does not answer it. Its handler has no `__func__` string so it is unnamed, but
+it is bounded, entered from 0x420c8874, and the trace will follow it as far as
+the filter is widened.
 
 ## Alternatives rejected
 
