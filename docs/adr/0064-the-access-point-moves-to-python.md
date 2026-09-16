@@ -193,13 +193,32 @@ not do.
   and it is intermittent -- one run got its first handshake message out, so the
   window is sometimes short enough.
 
-  That reframes the remaining work. The question is no longer "how should the
-  model deliver this frame" but "what makes two emulated cores deadlock on a
-  lock the hardware does not deadlock on". The candidates worth testing, in
-  order of cheapness: whether `s32c1i` is atomic across this fork's TCG
-  threads; whether a delivery landing while the driver holds that lock is what
-  provokes it, which is testable because the lock's address is known; and
-  whether it happens at all without a frame delivered in that window.
+  **And the stall is this project's own accel choice, not the firmware and not
+  the cipher.** `s32c1i` is translated with `tcg_gen_atomic_cmpxchg_i32`
+  (`target/xtensa/translate.c`), so the instruction is atomic by construction;
+  and `emu/run.py` launches `-accel tcg,thread=single`, so the two vCPUs never
+  execute concurrently and atomicity could not have been the issue in the
+  first place. What settles it is running the other way: with
+  `BOARDEMUL_TCG_THREADS=multi` the stall does not happen at all -- the
+  interrupt status stays zero, the receive list head **advances**
+  (`6b30 -> 6b24 -> 6b18`), all four descriptors stay free, and both cores are
+  in ordinary code. The stall is an artefact of single-threaded round-robin
+  scheduling: the core holding the lock does not get to run while the other
+  spins on it with interrupts masked.
+
+  That does not make `multi` the answer, because ADR 0041 chose the single
+  thread for a reason -- `multi` segfaults the emulator, rarely and not on an
+  idle machine. So the WPA2 handshake is blocked by the intersection of two
+  things this project already knew separately, and the way through is ADR
+  0041's defect rather than anything on this page. `--icount` was tried as a
+  way of making the single thread's scheduling deterministic instead: it does
+  not help, and runs about three times slower in guest time.
+
+  What is known to work is the peer: it builds the first handshake message
+  correctly and the promise to send it is taken up by the very next tick after
+  the association -- measured, `owes=True` on that tick and consumed on the one
+  after. One such message reached the air in a hundred and fifty seconds,
+  because most attempts stall before getting that far.
 
 - **Writing AES is a correctness risk this project cannot test away entirely.**
   Published vectors say the primitive is right. They do not say the cipher is

@@ -240,6 +240,7 @@ class AccessPoint:
         station.authenticated = True
         station.associated = False
         station.shake = None
+        station.owes_first = False
         return (header(AUTH, station.address, self._next())
                 + bytes([0x00, 0x00, 0x02, 0x00, 0x00, 0x00]))
 
@@ -252,8 +253,9 @@ class AccessPoint:
         """
         self._count("assoc")
         station.associated = True
-        log.info("%s associated; handshake %s", station.address.hex(":"),
-                 "armed" if self.master else "not armed (no master key)")
+        log.info("%s associated; handshake %s",
+                 station.address.hex(":"),
+                 "armed" if self.master else "not armed")
         if self.master:
             station.shake = wpa2.Handshake(
                 master=self.master, ap=AP_ADDRESS, station=station.address,
