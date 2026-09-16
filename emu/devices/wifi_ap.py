@@ -9,7 +9,7 @@ standard library's hashing is.
 The device drives this over a socket, synchronously:
 
     request   type:u16 channel:u16 length:u16 clock:u32 free:u16 frame[]
-    reply     length:u16                                          frame[]
+    reply     length:u16 flags:u16                                frame[]
 
 Type 1 says the guest transmitted the frame that follows; type 2 is a tick.
 Either can be answered with a frame to put on the air, or with nothing. The
@@ -39,6 +39,14 @@ log = logging.getLogger("wifi")
 REQ_TX = 1
 REQ_TICK = 2
 HEAD = struct.Struct("<HHHIH")
+REPLY = struct.Struct("<HH")
+# Reply flags. AWAITED says a station is waiting for this frame, which lets the
+# radio put it on the air even while the station's receiver reads as switched
+# off -- the only state the handshake's first message is ever offered in. A
+# beacon never carries it: nobody is waiting for one and another is due in
+# milliseconds. See ADR 0068; the device learns that a frame is awaited and
+# nothing about what it is.
+AWAITED = 1
 
 # 802.11 subtypes, as the first octet of a frame carries them.
 PROBE_REQUEST = 0x40
@@ -125,6 +133,14 @@ class Network:
 
 
 @dataclass
+class Air:
+    """A frame to put on the air, and the one thing the radio must know about
+    it: whether a station is waiting for it (ADR 0068)."""
+    frame: bytes
+    awaited: bool = False
+
+
+@dataclass
 class Station:
     """One station, and how far it has got with us."""
     address: bytes
@@ -165,7 +181,7 @@ class AccessPoint:
 
     # ---------------------------------------------------------------- ticks
 
-    def tick(self, channel: int, clock: int, free: int = 9) -> bytes | None:
+    def tick(self, channel: int, clock: int, free: int = 9) -> Air | None:
         """What to put on the air when nothing was asked.
 
         A handshake that owes its first message gets it here: the association
@@ -186,7 +202,8 @@ class AccessPoint:
                 log.info("at %d ms handshake message one goes to %s", clock,
                          station.address.hex(":"))
             self.last_beacon = clock
-            return self.data(station.address, station.shake.first())
+            return Air(self.data(station.address, station.shake.first()),
+                       awaited=True)
         # A beacon only when one is due. Offering one on every opportunity is
         # what filled the driver's descriptors and left none for the frames
         # that matter.
@@ -202,7 +219,10 @@ class AccessPoint:
             return None
         self.last_beacon = clock
         self._count("beacon")
-        return header(BEACON, BROADCAST, self._next()) + self.network.body(channel)
+        # Not awaited: a beacon nobody hears is a beacon missed, and the next
+        # one is twenty milliseconds away.
+        return Air(header(BEACON, BROADCAST, self._next())
+                   + self.network.body(channel))
 
     # --------------------------------------------------------------- frames
 
@@ -220,8 +240,18 @@ class AccessPoint:
         llc = bytes.fromhex("aaaa03000000888e")
         return head + llc + payload
 
-    def take(self, frame: bytes, channel: int, clock: int = 0) -> bytes | None:
-        """A frame the guest transmitted. What to send back, or nothing."""
+    def take(self, frame: bytes, channel: int, clock: int = 0) -> Air | None:
+        """A frame the guest transmitted. What to send back, or nothing.
+
+        Everything this returns answers something the station just sent, so
+        the station is waiting for it by construction and it is marked so.
+        """
+        answer = self._answer(frame, channel, clock)
+        return Air(answer, awaited=True) if answer else None
+
+    def _answer(self, frame: bytes, channel: int,
+                clock: int = 0) -> bytes | None:
+        """Which frame answers this one, as bytes."""
         self.channel = channel or self.channel
         if len(frame) < 24:
             return None
@@ -391,7 +421,9 @@ class FrameChannel:
                     # dead emulator.
                     log.exception("the access point raised; answering nothing")
                     out = None
-                conn.sendall(len(out or b"").to_bytes(2, "little") + (out or b""))
+                payload = out.frame if out else b""
+                flags = AWAITED if (out and out.awaited) else 0
+                conn.sendall(REPLY.pack(len(payload), flags) + payload)
                 # How long the device waits on us, against how often it asks.
                 # A round trip happens inside a QEMU timer callback, so time
                 # spent here is time the guest is stopped and the beacon
