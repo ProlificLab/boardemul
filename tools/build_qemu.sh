@@ -110,12 +110,16 @@ fi
 #   gdma-out-eof-desc.patch  ADR 0017  issue 168, offered as PR 176
 #   spi1-dummy-lanes.patch    ADR 0022  issue 169, offered as PR 177
 #   system-bt-lpck-regs.patch ADR 0023  issue 171, offered as PR 178
+#   tlb-flush-owning-thread.patch ADR 0066  issue 175, not yet offered
 # Each PR is the same diff as the patch beside it, against esp-develop, from
 # github.com/ProlificLab/qemu. When one is merged and the pinned tag moves past
 # it, delete the patch and supersede its ADR rather than carrying it on.
+# The last one answers an issue this project already filed but has not been
+# offered as a PR yet; ADR 0066 says so and why.
 # Applied from patch files rather than by hand so that they are declared,
 # reviewed like anything else, and fail loudly if a tag bump moves the code.
-for name in gdma-out-eof-desc.patch spi1-dummy-lanes.patch system-bt-lpck-regs.patch; do
+for name in gdma-out-eof-desc.patch spi1-dummy-lanes.patch system-bt-lpck-regs.patch \
+            tlb-flush-owning-thread.patch; do
     PATCH="${REPO_ROOT}/qemu-patch/${name}"
     if git -C "${SRC}" apply --reverse --check "${PATCH}" 2>/dev/null; then
         echo "==> ${name} already applied"
