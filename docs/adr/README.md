@@ -72,3 +72,4 @@ superseded ADR is marked superseded and points forward.
 | [0064](0064-the-access-point-moves-to-python.md) | The access point moves to Python, behind a frame channel | Accepted (its blocker removed by 0066) |
 | [0065](0065-aes-by-hand.md) | AES by hand, and what can be proved about it | Accepted |
 | [0066](0066-the-cross-thread-tlb-flush.md) | The cross-thread TLB flush | Accepted (fixes the defect 0041 works around) |
+| [0067](0067-a-frame-the-peer-starts.md) | A frame the peer starts, and a radio that loses it | Accepted |
