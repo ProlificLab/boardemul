@@ -107,6 +107,47 @@ the device learning what any of them are.
   (ADR 0064). Nothing outside `emu/devices/wifi_ap.py` touched the peer's
   return values, so the cost was confined to the two files that speak it.
 
+## What happens next, and what is already ruled out
+
+The flag works and the handshake still does not start. The station receives the
+first message -- four hundred and fifty-nine data frames delivered in one run --
+and answers none of them, tearing the link down with **reason 15, the four-way
+handshake timed out**, a hundred and ten times out of a hundred and ten. That
+is the station saying it never saw a valid first message, not that ours was
+wrong: a malformed one gives 17, 19, 20 or 23.
+
+Ruled out, each with a measurement rather than an argument:
+
+- **The frame's contents.** Every field checked against the standard: From-DS
+  set and protected clear, addresses in the right three slots, LLC/SNAP
+  `aaaa03000000888e`, EAPOL version 2 type 3, declared length equal to the
+  actual, key info `0x008a` (descriptor version 2, pairwise, ACK, no MIC) --
+  which is exactly right for a first message.
+- **The descriptor's buffer size.** The device's own refusal message appears in
+  no log of any run, so all one hundred and eighty-three staged bytes are
+  written and the descriptor is taken.
+- **The receive header's unexplained bits.** Bit 28 alone behaves like both
+  bits; bit 29 alone prevents association entirely; neither helps an EAPOL
+  frame. The field is not what drops it.
+- **CCMP decryption.** The only function that logs "Expected CCMP frame ...
+  did not" sits at 0x420cd224, and breakpoints on its entry and on its
+  rejection path were hit **zero** times across a run that delivered four
+  hundred and fifty-nine data frames. It is not on the path. (Two further
+  apparent references to that string turned out to be false positives of a
+  literal-pool scan -- no enclosing function entry within twelve kilobytes of
+  either.)
+
+What is known about where it does go: `0x420c2374` reads bytes twelve and
+thirteen of the packet as a big-endian half word and compares them with
+0x888e, so by that point the driver has already converted the frame from 802.11
+to Ethernet framing and is looking at the ethertype. Our LLC/SNAP header
+converts to exactly that value.
+
+Finding the drop is a decoding job, and it is currently limited by the
+instrument rather than the evidence: `tools/disas_rom.py` decodes enough of the
+ISA to read a function's shape but leaves a third of the instructions in this
+region as raw hex, which is slow going for code this size.
+
 ## Alternatives rejected
 
 **Let the device look at the frame.** One `if` on the subtype -- a beacon is
