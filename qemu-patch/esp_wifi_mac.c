@@ -393,6 +393,14 @@ struct EspWifiMac {
      * for the same conditions: a free descriptor and a MAC that is listening. */
     uint8_t pending[FRAME_MAX];
     size_t pending_len;
+    /* What the peer offered on this pass, which is not the same thing as
+     * the staged answer above and must never become a queue. An answer
+     * waits for the radio and is retried; a frame the peer started is on
+     * the air or it is lost, so this slot is filled and emptied inside one
+     * pass of wifi_deliver. ADR 0067. */
+    uint8_t offered[FRAME_MAX];
+    size_t offered_len;
+    unsigned dropped;
     uint16_t sequence;
     unsigned answers;
     /* One bit per management subtype the station has sent. A fixed cap on
@@ -702,6 +710,17 @@ static void wifi_deliver(void *opaque)
                      qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + wifi_retry_ns(s));
         return;
     }
+    /* Ask the peer before any of the gates below, because they decide whether
+     * a frame can go on the air and not whether there is anything to say. The
+     * peer paces itself on the guest's clock and it owns the protocol, so a
+     * frame it starts -- the handshake's first message -- exists only if it is
+     * asked for. Gating the question meant it never was: measured, zero ticks
+     * across the whole 1027 ms the station stayed associated, and the
+     * handshake could not begin. ADR 0067. */
+    if (!s->pending_len && !s->offered_len) {
+        s->offered_len = wifi_ask(s, FRAME_TICK, wifi_channel(s), NULL, 0,
+                                  s->offered, FRAME_MAX);
+    }
     /* Nothing is heard while the MAC is held. ic_mac_deinit waits for the
      * two busy bits to drop and then sets these eight-plus-one bits;
      * ic_mac_init clears them, and the driver brackets every channel change
@@ -730,6 +749,13 @@ static void wifi_deliver(void *opaque)
         && ((s->regs[R_MAC_HOLD / 4] & MAC_HELD)
             || !(s->regs[R_RX_ENABLE / 4] & RX_ENABLED))) {
         s->stalled[1]++;
+        /* The radio cannot put this on the air, and the air does not
+         * buffer: a frame the peer started is lost here, and the peer
+         * retries it because retrying is protocol. ADR 0067. */
+        if (s->offered_len) {
+            s->offered_len = 0;
+            s->dropped++;
+        }
         timer_mod_ns(s->hatch,
                      qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + wifi_retry_ns(s));
         return;
@@ -750,6 +776,13 @@ static void wifi_deliver(void *opaque)
                       "descriptor the hardware owns after %u frame(s); waiting%c",
                       s->ring, s->deliveries, 10);
         s->stalled[2]++;
+        /* The radio cannot put this on the air, and the air does not
+         * buffer: a frame the peer started is lost here, and the peer
+         * retries it because retrying is protocol. ADR 0067. */
+        if (s->offered_len) {
+            s->offered_len = 0;
+            s->dropped++;
+        }
         timer_mod_ns(s->hatch,
                      qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + wifi_retry_ns(s));
         return;
@@ -768,6 +801,13 @@ static void wifi_deliver(void *opaque)
          * transmitting and never reached the rate that was asked for. Fifty
          * beacons a second were configured and five arrived. */
         s->stalled[3]++;
+        /* The radio cannot put this on the air, and the air does not
+         * buffer: a frame the peer started is lost here, and the peer
+         * retries it because retrying is protocol. ADR 0067. */
+        if (s->offered_len) {
+            s->offered_len = 0;
+            s->dropped++;
+        }
         timer_mod_ns(s->hatch,
                      qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + wifi_retry_ns(s));
         return;
@@ -816,11 +856,13 @@ static void wifi_deliver(void *opaque)
                       (unsigned)(qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) / 1000000),
                       frame[0], (unsigned)frame_len, 10);
     } else {
-        /* Nothing staged, so ask the peer whether it has anything for this
-         * tick. It usually has a beacon; between beacons it may have the next
-         * message of a handshake, and sometimes it has nothing. */
-        frame_len = wifi_ask(s, FRAME_TICK, wifi_channel(s), NULL, 0,
-                             frame, FRAME_MAX);
+        /* Whatever the peer offered on this pass, asked for above the gates so
+         * that a frame it started gets asked for at all (ADR 0067). It usually
+         * has a beacon; between beacons it may have the next message of a
+         * handshake, and sometimes it has nothing. */
+        frame_len = s->offered_len;
+        memcpy(frame, s->offered, frame_len);
+        s->offered_len = 0;
         if (!frame_len) {
             timer_mod_ns(s->hatch,
                          qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + s->gap_ns);
@@ -900,10 +942,23 @@ static void wifi_deliver(void *opaque)
         qemu_log_mask(LOG_UNIMP, "esp-wifi-mac: %u frame(s) put on the air, "
                       "the driver took %u, and it has sent %u; stalled on "
                       "no ring %u, not listening %u, no free descriptor %u, "
-                      "no buffer %u%c",
+                      "no buffer %u; %u frame(s) the peer offered were lost "
+                      "to a closed radio%c",
                       s->deliveries, s->taken, s->transmits,
                       s->stalled[0], s->stalled[1], s->stalled[2],
-                      s->stalled[3], 10);
+                      s->stalled[3], s->dropped, 10);
+    }
+    /* A data frame delivered is worth a line each, because EAPOL is the only
+     * thing that is one and there are a handful per handshake -- against
+     * thousands of beacons, which would drown it. Without this there was no
+     * way to tell a handshake message that reached a descriptor from one the
+     * closed radio dropped, which is the difference between a path bug and a
+     * frame-contents bug. ADR 0067. */
+    if ((frame[0] & 0x0C) == 0x08) {
+        qemu_log_mask(LOG_UNIMP, "esp-wifi-mac: at %u ms a data frame of %u "
+                      "byte(s) was delivered into descriptor 0x%08llx%c",
+                      (unsigned)(qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) / 1000000),
+                      (unsigned)frame_len, (unsigned long long)desc, 10);
     }
     if (s->deliveries <= 2) {
     qemu_log_mask(LOG_UNIMP, "esp-wifi-mac: put %u byte(s) into the buffer at "
