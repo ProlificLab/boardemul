@@ -275,6 +275,17 @@ class AccessPoint:
         self.channel = channel or self.channel
         if len(frame) < 24:
             return None
+        # Bits zero and one of the first octet are the protocol version and
+        # are zero in every real frame. Anything else is not a frame: the
+        # device sometimes reports a transmit whose buffer holds stale memory,
+        # and about a quarter of arbitrary bytes look like a data frame to the
+        # type check below. Counting those as replies from the station is how
+        # "the station answers our handshake" got believed for a while --
+        # twenty-three of them in one run, with random addresses and an
+        # impossible version, and a constant at addr3 that gave them away.
+        if frame[0] & 0x03:
+            self._count("not a frame (bad protocol version)")
+            return None
         kind = frame[0] & 0xFC
         to, station_address = frame[4:10], frame[10:16]
         if (frame[0] & 0x0C) == 0x08:
@@ -355,12 +366,40 @@ class AccessPoint:
                          0x01, 0x04, 0x82, 0x84, 0x8B, 0x96]))
 
     def _data(self, frame: bytes) -> bytes | None:
-        """A data frame from the station. Only EAPOL is understood so far."""
+        """A data frame from the station. Only EAPOL is understood so far.
+
+        Every way out of here used to be a silent `return None`, so a frame in
+        a shape this did not expect vanished without appearing in any count --
+        which is indistinguishable from a station that sent nothing, and that
+        is the question this code is usually being asked.
+        """
+        self._count("data frame in")
         station = self.stations.get(frame[10:16])
-        if station is None or station.shake is None:
+        if station is None:
+            # Either the addressing is not what this expects, or the station
+            # was already forgotten -- a deauthentication pops it, so a reply
+            # that arrives just after one finds nothing. Both look the same
+            # from a single counter, so say which and say who.
+            self._count("data frame from an unknown station")
+            log.info("a 0x%02x data frame: addr1 %s addr2 %s addr3 %s, and "
+                     "no station of that name; known: %s",
+                     frame[0], frame[4:10].hex(":"), frame[10:16].hex(":"),
+                     frame[16:22].hex(":"),
+                     ", ".join(a.hex(":") for a in self.stations) or "none")
             return None
-        body = frame[24:]
+        if station.shake is None:
+            self._count("data frame before the handshake was armed")
+            return None
+        # A QoS data frame carries two more bytes of header than an ordinary
+        # one, so the payload does not start at twenty-four. Reading it at the
+        # fixed offset put the LLC check two bytes out and dropped the frame
+        # for looking wrong.
+        at = 26 if frame[0] & 0x80 else 24
+        body = frame[at:]
         if body[:8] != bytes.fromhex("aaaa03000000888e"):
+            self._count("data frame that is not EAPOL")
+            log.info("a 0x%02x data frame from %s carried %s, not EAPOL",
+                     frame[0], frame[10:16].hex(":"), body[:8].hex())
             return None
         reply = station.shake.take(body[8:])
         if reply is not None:
