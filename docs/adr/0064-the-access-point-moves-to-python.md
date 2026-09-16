@@ -206,13 +206,18 @@ not do.
   scheduling: the core holding the lock does not get to run while the other
   spins on it with interrupts masked.
 
-  That does not make `multi` the answer, because ADR 0041 chose the single
-  thread for a reason -- `multi` segfaults the emulator, rarely and not on an
-  idle machine. So the WPA2 handshake is blocked by the intersection of two
-  things this project already knew separately, and the way through is ADR
+  That did not make `multi` the answer at the time, because ADR 0041 chose the
+  single thread for a reason -- `multi` segfaults the emulator, rarely and not
+  on an idle machine. So the WPA2 handshake was blocked by the intersection of
+  two things this project already knew separately, and the way through was ADR
   0041's defect rather than anything on this page. `--icount` was tried as a
   way of making the single thread's scheduling deterministic instead: it does
   not help, and runs about three times slower in guest time.
+
+  **That blocker is gone.** ADR 0066 found the defect -- a TLB flush performed
+  on the wrong thread -- and fixes it, so `multi` is available to a run that
+  asks for it. It is still not the default, for the timing reasons ADR 0041
+  gives, so the handshake is something this side asks for explicitly.
 
   What is known to work is the peer: it builds the first handshake message
   correctly and the promise to send it is taken up by the very next tick after

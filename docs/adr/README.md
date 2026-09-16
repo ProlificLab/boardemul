@@ -69,3 +69,6 @@ superseded ADR is marked superseded and points forward.
 | [0061](0061-the-station-authenticates.md) | The station authenticates | Accepted (its suspect cleared by 0062) |
 | [0062](0062-the-transmit-result-register.md) | The transmit result register | Accepted (open question closed by 0063) |
 | [0063](0063-the-station-associates.md) | The station associates | Accepted |
+| [0064](0064-the-access-point-moves-to-python.md) | The access point moves to Python, behind a frame channel | Accepted (its blocker removed by 0066) |
+| [0065](0065-aes-by-hand.md) | AES by hand, and what can be proved about it | Accepted |
+| [0066](0066-the-cross-thread-tlb-flush.md) | The cross-thread TLB flush | Accepted (fixes the defect 0041 works around) |

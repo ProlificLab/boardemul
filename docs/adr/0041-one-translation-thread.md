@@ -1,6 +1,8 @@
 # ADR 0041 — One translation thread
 
-**Status:** Accepted — 2026-09-08.
+**Status:** Accepted — 2026-09-08. The defect this works around is **found and
+fixed** by ADR 0066; the decision below stands on its remaining reason, which
+is that one thread measured faster on this workload.
 
 ## Context
 
@@ -60,6 +62,11 @@ Meshtastic boot at once, each with its own build directory: about one run in
 fifteen dies. It needs the load; alone on an idle machine, twenty-eight runs
 came up clean.
 
+*(That rate is too high. Measured again under ADR 0066 with the same
+reproduction, it is two faults in two hundred and twenty-four runs -- nearer
+one in a hundred. `tools/tlb_crash_rate.sh` is the count, so the next person
+does not have to take either figure on trust.)*
+
 **It cannot be watched.** Under gdb it never fires -- the timing shifts and the
 window closes -- and core dumps on this host go to a handler that cannot be
 redirected. `BOARDEMUL_CATCH_SEGV=1` gets around that by having the process
@@ -88,6 +95,14 @@ is QEMU's own machinery rather than anything this project adds to it, and it is
 reported upstream as <https://github.com/espressif/qemu/issues/175>, with the
 reproduction above, the captures, and an explicit note that our boot uses
 out-of-tree devices so they cannot be fully ruled out.
+
+**That guess was right, and ADR 0066 names it.** `tlb_flush()` performs the
+flush on the calling thread, and upstream's IOMMU hook calls it for every
+CPU's notifier from whichever thread wrote the cache's MMU registers -- so
+core zero clears core one's translation table while core one is running. Every
+line of the signature above follows from that, including the one that looked
+like counter-evidence: the fault lands in internal RAM because the flush
+clears every entry, not the page that moved.
 
 ## Alternatives rejected
 
