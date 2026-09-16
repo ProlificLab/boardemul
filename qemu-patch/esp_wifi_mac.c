@@ -272,6 +272,11 @@ OBJECT_DECLARE_SIMPLE_TYPE(EspWifiMac, ESP_WIFI_MAC)
  * what, if anything, is due. */
 #define FRAME_TX          1u
 #define FRAME_TICK        2u
+/* The peer's only reply flag: a station is waiting for this frame, so it may
+ * go on the air even while the receive-enable bit reads clear. It does not
+ * excuse a held MAC -- that is a radio tuned elsewhere, and a frame delivered
+ * into it never happened. ADR 0068. */
+#define REPLY_AWAITED     0x0001u
 /* Why the handler was woken. Found by raising the interrupt with nothing to
  * say and watching what it went and read: it reads this, gets nothing, and
  * returns -- then comes straight back, because the line is still asserted.
@@ -400,6 +405,7 @@ struct EspWifiMac {
      * pass of wifi_deliver. ADR 0067. */
     uint8_t offered[FRAME_MAX];
     size_t offered_len;
+    bool offered_awaited;
     unsigned dropped;
     uint16_t sequence;
     unsigned answers;
@@ -478,7 +484,7 @@ static unsigned wifi_free_count(EspWifiMac *s);
  * switched off looks like. */
 static size_t wifi_ask(EspWifiMac *s, uint16_t type, unsigned channel,
                        const uint8_t *frame, size_t len,
-                       uint8_t *out, size_t max)
+                       uint8_t *out, size_t max, uint16_t *flags)
 {
     if (s->frames_fd < 0) {
         return 0;
@@ -494,11 +500,16 @@ static size_t wifi_ask(EspWifiMac *s, uint16_t type, unsigned channel,
         || (len && qemu_write_full(s->frames_fd, frame, len) != len)) {
         goto gone;
     }
-    uint8_t reply[2];
+    /* length, then flags. The only flag so far says a station is waiting for
+     * this frame, which is the one thing about it the radio needs (ADR 0068). */
+    uint8_t reply[4];
     if (recv(s->frames_fd, reply, sizeof(reply), MSG_WAITALL) != sizeof(reply)) {
         goto gone;
     }
     size_t back = lduw_le_p(reply);
+    if (flags) {
+        *flags = lduw_le_p(reply + 2);
+    }
     if (!back) {
         return 0;
     }
@@ -718,8 +729,10 @@ static void wifi_deliver(void *opaque)
      * across the whole 1027 ms the station stayed associated, and the
      * handshake could not begin. ADR 0067. */
     if (!s->pending_len && !s->offered_len) {
+        uint16_t flags = 0;
         s->offered_len = wifi_ask(s, FRAME_TICK, wifi_channel(s), NULL, 0,
-                                  s->offered, FRAME_MAX);
+                                  s->offered, FRAME_MAX, &flags);
+        s->offered_awaited = (flags & REPLY_AWAITED) != 0;
     }
     /* Nothing is heard while the MAC is held. ic_mac_deinit waits for the
      * two busy bits to drop and then sets these eight-plus-one bits;
@@ -745,9 +758,18 @@ static void wifi_deliver(void *opaque)
      * beacon period, so it goes out as soon as the receiver is back -- which
      * is what a real link does with a frame that arrived while the radio was
      * elsewhere: it is lost, and the station asks again. */
-    if ((!s->pending_len || !s->answer_exempt)
+    /* An answer skips this gate entirely (ADR 0064, and it is load-bearing).
+     * A frame the peer marked awaited skips only the receive-enable half: the
+     * station is waiting for it and its receiver reads clear for most of the
+     * window it is offered in, which is the same approximation the answer
+     * exemption already makes. A held MAC stops both -- that is a radio tuned
+     * to another channel. ADR 0068. */
+    bool exempt_all = s->pending_len && s->answer_exempt;
+    bool exempt_receiver = s->offered_len && s->offered_awaited;
+    if (!exempt_all
         && ((s->regs[R_MAC_HOLD / 4] & MAC_HELD)
-            || !(s->regs[R_RX_ENABLE / 4] & RX_ENABLED))) {
+            || (!exempt_receiver
+                && !(s->regs[R_RX_ENABLE / 4] & RX_ENABLED)))) {
         /* Which half closed it, counted apart, because the two mean opposite
          * things for what may be done about it. A held MAC is a radio retuned
          * to another channel, and a frame put on the air into that is one that
@@ -1134,7 +1156,7 @@ static void wifi_tx_complete(void *opaque)
         }
         size_t reply = wifi_ask(s, FRAME_TX, wifi_channel(s),
                                 request, length,
-                                s->pending, sizeof(s->pending));
+                                s->pending, sizeof(s->pending), NULL);
         if (!reply) {
             continue;
         }
