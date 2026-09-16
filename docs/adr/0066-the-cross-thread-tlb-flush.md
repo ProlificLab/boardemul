@@ -130,10 +130,12 @@ It is a **carried patch** under ADR 0017: it changes QEMU's own logic rather
 than adding to it, so it is a declared diff in `qemu-patch/`, and it is deleted
 when it lands upstream rather than carried on.
 
-It is **not yet reported**. The crash already has an upstream issue --
-<https://github.com/espressif/qemu/issues/175>, filed by ADR 0041 -- and this
-page is the answer to it, but posting the diagnosis and offering the diff is a
-separate, outward-facing step and is not done here.
+It is **reported**, as a comment on the issue ADR 0041 filed:
+<https://github.com/espressif/qemu/issues/175#issuecomment-5699730563>. That
+carries the mechanism, the diagnostic's output, this diff verbatim, the before
+and after below, and the correction to the crash rate that page quoted. No pull
+request yet, which is why `tools/build_qemu.sh` lists an issue and no PR beside
+this patch, unlike the three above it.
 
 ## Consequences
 
