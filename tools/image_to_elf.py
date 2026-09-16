@@ -90,8 +90,15 @@ def build(segments: list[tuple[int, bytes, str]]) -> bytes:
     out += bytes(SHDR)                                       # the null section
     name_at = 1
     for i, (addr, data, name) in enumerate(segments):
-        out += struct.pack("<IIIIIIIIII", name_at, SHT_PROGBITS,
-                           SHF_ALLOC | SHF_EXECINSTR | SHF_WRITE,
+        # Only the code segments are marked executable. Marking the data ones
+        # too makes objdump disassemble constants and string tables as
+        # instructions, and half a million lines of that drowns every search
+        # through the listing -- the first version of this file did exactly
+        # that, and a grep for one bit test came back with thirty-four hits in
+        # the string table.
+        code = ".irom" in name or ".iram" in name or ".rtc" in name
+        flags = SHF_ALLOC | (SHF_EXECINSTR if code else SHF_WRITE)
+        out += struct.pack("<IIIIIIIIII", name_at, SHT_PROGBITS, flags,
                            addr, offsets[i], len(data), 0, 0, 4, 0)
         name_at += len(name) + 1
     out += struct.pack("<IIIIIIIIII", name_at, SHT_STRTAB, 0, 0,
