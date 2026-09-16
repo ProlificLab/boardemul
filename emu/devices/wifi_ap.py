@@ -263,6 +263,12 @@ class AccessPoint:
             return None                 # control frames are not ours to answer
         if to != AP_ADDRESS and to != BROADCAST:
             return None
+        # The low bit of the first octet is the group bit, so a source address
+        # with it set is not a station -- it is a broadcast or multicast
+        # address, and answering it invents a peer that does not exist. One run
+        # grew an ff:ff:ff:ff:ff:ff "station" with a handshake of its own.
+        if station_address[0] & 1:
+            return None
         station = self.stations.setdefault(station_address,
                                            Station(station_address))
         if kind == PROBE_REQUEST:
