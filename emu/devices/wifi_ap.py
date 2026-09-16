@@ -60,6 +60,26 @@ DEAUTH = 0xC0
 DATA = 0x08
 
 SSID_MAX = 32
+
+# Why a station tore the link down, as the standard numbers them. Only the ones
+# this peer can plausibly provoke are named; anything else is printed raw.
+DEAUTH_REASONS = {
+    1: "unspecified",
+    2: "the previous authentication is no longer valid",
+    3: "the station is leaving",
+    4: "inactivity",
+    6: "a class 2 frame arrived from a station that is not authenticated",
+    7: "a class 3 frame arrived from a station that is not associated",
+    8: "the station is leaving the network",
+    15: "the four-way handshake timed out",
+    16: "the group key handshake timed out",
+    17: "an element in the handshake differed from the one advertised",
+    18: "the group cipher is not valid",
+    19: "the pairwise cipher is not valid",
+    20: "the key management suite is not valid",
+    23: "802.1X authentication failed",
+    24: "the cipher suite was rejected by the security policy",
+}
 # How long to wait for the station's message two before offering message one
 # again. The radio loses a frame sent while the station is not listening and
 # nothing buffers it (ADR 0067), so the peer has to be the thing that retries;
@@ -284,9 +304,16 @@ class AccessPoint:
             # Logged with the clock because what matters about a disassociation
             # is how long the station waited before giving up -- the handshake
             # has to fit inside that window.
-            log.info("at %d ms %s %s, and its state goes with it", clock,
+            # The reason code is the station telling us what it objected to,
+            # which is the only direct statement it ever makes about our
+            # frames. Two bytes of fixed body, straight after the header.
+            reason = (int.from_bytes(frame[24:26], "little")
+                      if len(frame) >= 26 else 0)
+            log.info("at %d ms %s %s: reason %d, %s", clock,
                      station_address.hex(":"),
-                     "disassociated" if kind == DISASSOC else "deauthenticated")
+                     "disassociated" if kind == DISASSOC else "deauthenticated",
+                     reason, DEAUTH_REASONS.get(reason, "not a reason we name"))
+            self._count("reason %d" % reason)
             self.stations.pop(station_address, None)
             return None
         return None
