@@ -14,13 +14,13 @@ while it held nothing. Two candidates were ruled out by measurement. What was
 left, in that page's own words, was "the address-translation path itself, under
 two threads".
 
-One correction to that page before anything else. It puts the rate at "about
-one run in fifteen", and re-measuring it here does not support that: two faults
-in two hundred and twenty-four runs, nearer one in a hundred. Nothing follows
-from the difference except that a claim of "fixed" needs more runs than ADR
-0041's number implies, which is what the amplifier below is for.
-
 It is exactly that, and it is five lines of upstream QEMU.
+
+One correction to that page in passing. It puts the rate at "about one run in
+fifteen", and re-measuring does not support that: two faults in two hundred and
+twenty-four runs, nearer one in a hundred. Nothing follows from the difference
+except that a claim of "fixed" needs more runs than ADR 0041's number implies,
+which is what the amplifier below is for.
 
 **`tlb_flush()` is not a request for a flush; it is the flush.** In this
 version, `accel/tcg/cputlb.c`:
