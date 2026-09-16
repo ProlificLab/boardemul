@@ -52,6 +52,11 @@ DEAUTH = 0xC0
 DATA = 0x08
 
 SSID_MAX = 32
+# How long to wait for the station's message two before offering message one
+# again. The radio loses a frame sent while the station is not listening and
+# nothing buffers it (ADR 0067), so the peer has to be the thing that retries;
+# a real access point retries this message on about this period too.
+FIRST_RETRY_MS = 100
 BROADCAST = b"\xff" * 6
 # This access point's own address. Locally administered, so it cannot collide
 # with a real one, and stable so a scan result stays valid across a retry.
@@ -128,7 +133,10 @@ class Station:
     shake: wpa2.Handshake | None = None
     # Message one is sent on a tick rather than in reply to the association
     # request, because a real access point does not answer a frame twice.
+    # It stays owed until message two arrives: handing it to the radio is no
+    # evidence it was heard (ADR 0067).
     owes_first: bool = False
+    first_at: int = 0
 
 
 class AccessPoint:
@@ -167,11 +175,18 @@ class AccessPoint:
         self.channel = channel or self.channel
         # Anything owed comes first, and is never held back for a schedule.
         for station in self.stations.values():
-            if station.owes_first and station.shake is not None:
-                station.owes_first = False
-                self._count("eapol 1")
-                self.last_beacon = clock
-                return self.data(station.address, station.shake.first())
+            if not (station.owes_first and station.shake is not None):
+                continue
+            again = station.first_at != 0
+            if again and clock - station.first_at < FIRST_RETRY_MS:
+                continue                # sent recently; give it time to reply
+            station.first_at = clock
+            self._count("eapol 1 again" if again else "eapol 1")
+            if not again:
+                log.info("at %d ms handshake message one goes to %s", clock,
+                         station.address.hex(":"))
+            self.last_beacon = clock
+            return self.data(station.address, station.shake.first())
         # A beacon only when one is due. Offering one on every opportunity is
         # what filled the driver's descriptors and left none for the frames
         # that matter.
@@ -225,18 +240,25 @@ class AccessPoint:
             return (header(PROBE_RESPONSE, station_address, self._next())
                     + self.network.body(channel))
         if kind == AUTH:
-            return self._auth(station)
+            return self._auth(station, clock)
         if kind == ASSOC_REQUEST:
-            return self._assoc(station)
+            return self._assoc(station, clock)
         if kind in (DISASSOC, DEAUTH):
             self._count("disassoc" if kind == DISASSOC else "deauth")
+            # Logged with the clock because what matters about a disassociation
+            # is how long the station waited before giving up -- the handshake
+            # has to fit inside that window.
+            log.info("at %d ms %s %s, and its state goes with it", clock,
+                     station_address.hex(":"),
+                     "disassociated" if kind == DISASSOC else "deauthenticated")
             self.stations.pop(station_address, None)
             return None
         return None
 
-    def _auth(self, station: Station) -> bytes:
+    def _auth(self, station: Station, clock: int = 0) -> bytes:
         """Open System, transaction two, success."""
         self._count("auth")
+        log.info("at %d ms %s authenticated", clock, station.address.hex(":"))
         station.authenticated = True
         station.associated = False
         station.shake = None
@@ -244,7 +266,7 @@ class AccessPoint:
         return (header(AUTH, station.address, self._next())
                 + bytes([0x00, 0x00, 0x02, 0x00, 0x00, 0x00]))
 
-    def _assoc(self, station: Station) -> bytes:
+    def _assoc(self, station: Station, clock: int = 0) -> bytes:
         """Accepted, with association identifier one.
 
         And, on a protected network, the handshake starts: its first message
@@ -253,7 +275,7 @@ class AccessPoint:
         """
         self._count("assoc")
         station.associated = True
-        log.info("%s associated; handshake %s",
+        log.info("at %d ms %s associated; handshake %s", clock,
                  station.address.hex(":"),
                  "armed" if self.master else "not armed")
         if self.master:
@@ -261,6 +283,9 @@ class AccessPoint:
                 master=self.master, ap=AP_ADDRESS, station=station.address,
                 rsn_element=RSN_ELEMENT)
             station.owes_first = True
+            # A fresh handshake, so its first message is a first send and must
+            # not wait out the previous one's retry deadline.
+            station.first_at = 0
         return (header(ASSOC_RESPONSE, station.address, self._next())
                 + bytes([0x11 if self.network.wpa2 else 0x01, 0x00,
                          0x00, 0x00, 0x01, 0xC0,
@@ -275,6 +300,11 @@ class AccessPoint:
         if body[:8] != bytes.fromhex("aaaa03000000888e"):
             return None
         reply = station.shake.take(body[8:])
+        if reply is not None:
+            # Message two verified, so message one arrived and is no longer
+            # owed. Anything that did not verify leaves it owed, and the
+            # deadline in tick() offers it again.
+            station.owes_first = False
         self._count("eapol %d" % (2 if not station.shake.done else 4))
         if station.shake.done:
             self._count("handshake done")
