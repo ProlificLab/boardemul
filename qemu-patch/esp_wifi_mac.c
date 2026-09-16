@@ -423,7 +423,7 @@ struct EspWifiMac {
     /* Why a delivery did not happen, so the binding constraint is a number
      * rather than a guess: no ring, the MAC not listening, the head
      * descriptor still full, its buffer not yet pointed anywhere. */
-    unsigned stalled[4];
+    unsigned stalled[5];
     /* Two delivery choices, switchable so the difference is measured rather
      * than argued. Defaults are what the C peer did and the suites pass on:
      * an answer skips the receive gate so it is prompt, and the beacon it
@@ -748,7 +748,17 @@ static void wifi_deliver(void *opaque)
     if ((!s->pending_len || !s->answer_exempt)
         && ((s->regs[R_MAC_HOLD / 4] & MAC_HELD)
             || !(s->regs[R_RX_ENABLE / 4] & RX_ENABLED))) {
-        s->stalled[1]++;
+        /* Which half closed it, counted apart, because the two mean opposite
+         * things for what may be done about it. A held MAC is a radio retuned
+         * to another channel, and a frame put on the air into that is one that
+         * could not physically have arrived. A receiver merely switched off is
+         * the ordinary case an answer is already exempted from, and the case a
+         * frame the peer started has to survive somehow. */
+        if (s->regs[R_MAC_HOLD / 4] & MAC_HELD) {
+            s->stalled[1]++;
+        } else {
+            s->stalled[4]++;
+        }
         /* The radio cannot put this on the air, and the air does not
          * buffer: a frame the peer started is lost here, and the peer
          * retries it because retrying is protocol. ADR 0067. */
@@ -941,12 +951,12 @@ static void wifi_deliver(void *opaque)
     if (!s->repeat && s->deliveries % 100 == 0) {
         qemu_log_mask(LOG_UNIMP, "esp-wifi-mac: %u frame(s) put on the air, "
                       "the driver took %u, and it has sent %u; stalled on "
-                      "no ring %u, not listening %u, no free descriptor %u, "
-                      "no buffer %u; %u frame(s) the peer offered were lost "
-                      "to a closed radio%c",
+                      "no ring %u, mac held %u, receiver off %u, no free "
+                      "descriptor %u, no buffer %u; %u frame(s) the peer "
+                      "offered were lost to a closed radio%c",
                       s->deliveries, s->taken, s->transmits,
-                      s->stalled[0], s->stalled[1], s->stalled[2],
-                      s->stalled[3], s->dropped, 10);
+                      s->stalled[0], s->stalled[1], s->stalled[4],
+                      s->stalled[2], s->stalled[3], s->dropped, 10);
     }
     /* A data frame delivered is worth a line each, because EAPOL is the only
      * thing that is one and there are a handful per handshake -- against
