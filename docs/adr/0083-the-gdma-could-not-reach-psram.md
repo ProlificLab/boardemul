@@ -55,7 +55,9 @@ hardware does.** One line, carried as `qemu-patch/gdma-reaches-psram.patch`:
 
 `sys_mem` is `get_system_memory()`, already in scope. The GDMA's address space
 now covers internal RAM, PSRAM and the rest, which is what a real DMA controller
-sees. It is offered upstream like the other carried patches (ADR 0017).
+sees. Filed upstream as espressif/qemu issue 180 and offered as PR 181, like the
+other carried patches (ADR 0017); when it lands and the pinned tag moves past
+it, delete the patch and supersede this ADR.
 
 ## Consequences
 

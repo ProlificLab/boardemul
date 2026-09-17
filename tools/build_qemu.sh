@@ -111,7 +111,7 @@ fi
 #   spi1-dummy-lanes.patch    ADR 0022  issue 169, offered as PR 177
 #   system-bt-lpck-regs.patch ADR 0023  issue 171, offered as PR 178
 #   tlb-flush-owning-thread.patch ADR 0066  issue 175, offered as PR 179
-#   gdma-reaches-psram.patch      ADR 0083  (GDMA could not DMA from PSRAM)
+#   gdma-reaches-psram.patch      ADR 0083  issue 180, offered as PR 181
 # Each PR is the same diff as the patch beside it, against esp-develop, from
 # github.com/ProlificLab/qemu. When one is merged and the pinned tag moves past
 # it, delete the patch and supersede its ADR rather than carrying it on.
