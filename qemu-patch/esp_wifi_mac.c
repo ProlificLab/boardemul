@@ -203,6 +203,12 @@ OBJECT_DECLARE_SIMPLE_TYPE(EspWifiMac, ESP_WIFI_MAC)
 #define EB_FRAME          16
 #define EB_HEAD_LEN       20
 #define EB_BODY_LEN       22
+/* The eb also holds, at offset four, a pointer to the DMA descriptor (a
+ * standard ESP lldesc) the hardware transmits from; the descriptor's second
+ * word is the frame's buffer address. This is the authoritative frame pointer
+ * -- EB_FRAME above only coincides with it for management frames (ADR 0069). */
+#define EB_DESC           4
+#define LLDESC_BUF        4
 /* The most of a frame this device ever reads or writes. */
 /* And how the driver says it has dealt with them. Found the same way, one
  * answer at a time: with the mask left at zero the handler read it and
@@ -1086,7 +1092,7 @@ static uint64_t wifi_read(void *opaque, hwaddr offset, unsigned size)
 /* The frame a transmit slot was armed with, out of the queue entry. */
 static size_t wifi_read_tx_frame(unsigned slot, uint8_t *out, size_t max)
 {
-    uint32_t buffer = 0, at = 0;
+    uint32_t buffer = 0, desc = 0, at = 0;
     uint16_t head = 0, body = 0;
 
     address_space_read(&address_space_memory,
@@ -1095,8 +1101,33 @@ static size_t wifi_read_tx_frame(unsigned slot, uint8_t *out, size_t max)
     if (!buffer) {
         return 0;
     }
-    address_space_read(&address_space_memory, buffer + EB_FRAME,
-                       MEMTXATTRS_UNSPECIFIED, &at, sizeof(at));
+    /* The frame is transmitted by DMA from a descriptor the eb points at, not
+     * from the pointer at EB_FRAME. For a management frame the two coincide,
+     * so reading EB_FRAME worked for probes, authentications and associations.
+     * A data frame does not: the EAPOL reply of the four-way handshake sits
+     * eighteen bytes past EB_FRAME, and reading EB_FRAME returned eighteen
+     * bytes of preceding memory followed by the real frame -- which the peer
+     * saw as a frame with an impossible protocol version and dropped, so the
+     * handshake never advanced.
+     *
+     * Measured: for the reply, EB_FRAME = buffer+96 while the descriptor's
+     * buffer address = buffer+114, which is exactly where the 802.11 data frame
+     * (`08 01 ...`, To-DS, from the station) begins. The descriptor is a
+     * standard ESP lldesc reached through EB_DESC; its second word is the
+     * buffer the hardware reads. That is the address the real MAC DMAs from,
+     * so it is right for both frame kinds. ADR 0069. */
+    address_space_read(&address_space_memory, buffer + EB_DESC,
+                       MEMTXATTRS_UNSPECIFIED, &desc, sizeof(desc));
+    if (desc) {
+        address_space_read(&address_space_memory, desc + LLDESC_BUF,
+                           MEMTXATTRS_UNSPECIFIED, &at, sizeof(at));
+    }
+    if (!at) {
+        /* No descriptor: fall back to the old pointer rather than lose the
+         * frame. A management frame is still readable this way. */
+        address_space_read(&address_space_memory, buffer + EB_FRAME,
+                           MEMTXATTRS_UNSPECIFIED, &at, sizeof(at));
+    }
     address_space_read(&address_space_memory, buffer + EB_HEAD_LEN,
                        MEMTXATTRS_UNSPECIFIED, &head, sizeof(head));
     address_space_read(&address_space_memory, buffer + EB_BODY_LEN,
@@ -1257,6 +1288,24 @@ static void wifi_write(void *opaque, hwaddr offset, uint64_t value, unsigned siz
      * a transmit-complete interrupt it had never received before leaves it
      * unable to finish its run. Nothing in the mesh has any use for a
      * transmit that completes, so nothing in the mesh is given one. */
+    /* Before the modelled-slot check: say when the driver arms *any* slot in
+     * the array, modelled or not. "Only slot zero has ever been seen in use"
+     * was measured on management frames; a data frame may well go out on
+     * another, and a slot this model does not service is a frame that is
+     * never completed, never acknowledged, and never read -- which is what a
+     * station retrying to its limit looks like. */
+    if (s->frames_fd >= 0 && offset <= R_TX_SLOT0
+        && ((R_TX_SLOT0 - offset) % 8) == 0 && (R_TX_SLOT0 - offset) / 8 < 8
+        && ((uint32_t)value & TX_ARMED) == TX_ARMED
+        && (s->regs[offset / 4] & TX_ARMED) != TX_ARMED) {
+        unsigned any = (R_TX_SLOT0 - offset) / 8;
+        if (any >= TX_SLOTS) {
+            qemu_log_mask(LOG_UNIMP, "esp-wifi-mac: at %u ms the driver armed "
+                          "slot %u, which this model does not service%c",
+                          (unsigned)(qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) / 1000000),
+                          any, 10);
+        }
+    }
     int slot = s->frames_fd >= 0 ? wifi_tx_slot(offset) : -1;
     if (slot >= 0 && ((uint32_t)value & TX_ARMED) == TX_ARMED
         && (s->regs[offset / 4] & TX_ARMED) != TX_ARMED) {

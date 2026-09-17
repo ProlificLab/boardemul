@@ -74,3 +74,4 @@ superseded ADR is marked superseded and points forward.
 | [0066](0066-the-cross-thread-tlb-flush.md) | The cross-thread TLB flush | Accepted (fixes the defect 0041 works around) |
 | [0067](0067-a-frame-the-peer-starts.md) | A frame the peer starts, and a radio that loses it | Accepted |
 | [0068](0068-a-frame-the-station-is-waiting-for.md) | A frame the station is waiting for | Accepted |
+| [0069](0069-the-transmit-frame-is-dma-descriptor.md) | The transmitted frame is where the DMA descriptor points | Accepted |
