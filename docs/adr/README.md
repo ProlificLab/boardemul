@@ -97,3 +97,4 @@ superseded ADR is marked superseded and points forward.
 | [0089](0089-a-real-tcp-transport.md) | A real TCP transport, driven a segment at a time | Accepted |
 | [0090](0090-an-authoritative-resolver.md) | An authoritative resolver: a zone, and NXDOMAIN outside it | Accepted |
 | [0091](0091-a-dhcp-pool-and-replies-to-the-source.md) | A DHCP pool, and replies to the source | Accepted |
+| [0092](0092-real-ccmp-the-cipher-is-offloaded-to-the-mac.md) | Real CCMP: the cipher is offloaded to the MAC, not the accelerator | Accepted (plan; corrects 0084's premise) |
