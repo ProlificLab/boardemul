@@ -82,3 +82,4 @@ superseded ADR is marked superseded and points forward.
 | [0074](0074-the-four-way-handshake-completes.md) | The four-way handshake completes, and the station leaves anyway | Accepted |
 | [0075](0075-the-register-trace-opens-on-a-chosen-frame.md) | The register trace opens on a chosen frame | Accepted |
 | [0076](0076-message-one-waits-for-the-station.md) | Message one waits for the station to be ready | Hypothesis refuted by its own test; knob kept, default off |
+| [0077](0077-there-are-no-hardware-key-slots-to-model.md) | There are no hardware key slots to model; the crypto is software | Accepted (corrects 0076's addendum) |
