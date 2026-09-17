@@ -56,6 +56,11 @@ def main() -> int:
     log = Path(sys.argv[1])
     names = rom_names()
     names.update(app_names(Path(sys.argv[2]) if len(sys.argv) > 2 else None))
+    # Optional: start the window at the first delivery whose line contains this
+    # marker (e.g. "187 byte" for message three) rather than the first delivery
+    # of any kind. Lets one path be read against another that took a different
+    # branch -- message one succeeds, message three does not.
+    start_marker = sys.argv[3] if len(sys.argv) > 3 else DELIVERED
 
     inside = False
     seen: list[int] = []
@@ -63,12 +68,12 @@ def main() -> int:
     lines = 0
     with log.open(errors="replace") as fh:
         for line in fh:
-            if DELIVERED in line:
-                if inside:
-                    break               # the next delivery ends the window
+            if not inside and start_marker in line:
                 inside = True
                 print(line.rstrip(), flush=True)
                 continue
+            if inside and DELIVERED in line:
+                break                    # the next delivery ends the window
             if not inside:
                 continue
             lines += 1
