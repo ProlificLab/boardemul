@@ -12,6 +12,7 @@ checked in the fast tier.
 
 from __future__ import annotations
 
+import struct
 import sys
 from pathlib import Path
 
@@ -21,7 +22,7 @@ from emu import tcp, wpa2  # noqa: E402
 from emu.tcp import ACK, FIN, PSH, SYN  # noqa: E402
 from emu.devices.wifi_ap import (  # noqa: E402
     AP_ADDRESS, CLIENT_IP, SERVER_IP, AccessPoint, Network, Station,
-    tcp_segment,
+    tcp_segment, udp4_packet,
 )
 
 STATION = bytes.fromhex("0254444d0001")
@@ -110,6 +111,37 @@ def test_a_fin_is_acknowledged() -> None:
                      1, 1002)
     r = _parse(air.frame)
     assert r["flags"] & ACK and r["ack"] == 102, "the FIN's octet is acknowledged"
+
+
+def _dns_query(name: str, txn: bytes = b"\xab\xcd") -> bytes:
+    qname = b"".join(bytes([len(p)]) + p.encode() for p in name.split(".")) + b"\x00"
+    return txn + struct.pack(">HHHHH", 0x0100, 1, 0, 0, 0) + qname + b"\x00\x01\x00\x01"
+
+
+def _udp_frame(dst_port: int, payload: bytes, src_port: int = 5000) -> bytes:
+    return _sta_frame(udp4_packet(CLIENT_IP, SERVER_IP, src_port, dst_port, payload))
+
+
+def _udp_payload(frame: bytes) -> bytes:
+    ip = frame[40:]
+    ip = ip[:int.from_bytes(ip[2:4], "big")]
+    udp = ip[(ip[0] & 0x0F) * 4:]
+    return udp[8:int.from_bytes(udp[4:6], "big")]
+
+
+def test_a_held_name_resolves_and_an_unknown_one_is_refused() -> None:
+    """The faithful resolver reaches the wire (ADR 0090): a hosted name comes
+    back NOERROR with the gateway, and a name outside the zone comes back
+    NXDOMAIN -- not, as the captive resolver did, the gateway again."""
+    point = _connected()
+    held = _udp_payload(point.take(_udp_frame(53, _dns_query("lilygo.local")),
+                                   1, 2000).frame)
+    assert int.from_bytes(held[2:4], "big") & 0x0F == 0, "a held name is NOERROR"
+
+    air = point.take(_udp_frame(53, _dns_query("example.com")), 1, 2001)
+    refused = _udp_payload(air.frame)
+    assert int.from_bytes(refused[2:4], "big") & 0x0F == 3, "an unknown one is NXDOMAIN"
+    assert point.counts.get("dns nxdomain") == 1
 
 
 def test_an_unanswered_syn_ack_is_retransmitted_on_a_tick() -> None:

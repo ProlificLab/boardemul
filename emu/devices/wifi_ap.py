@@ -32,7 +32,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from emu import tcp, wpa2
+from emu import dns, tcp, wpa2
 
 log = logging.getLogger("wifi")
 
@@ -193,16 +193,6 @@ def dhcp_reply(xid: bytes, chaddr: bytes, message_type: int,
     return bootp + opts
 
 
-def _dns_name(labels: bytes) -> str:
-    """The dotted name a DNS QNAME's length-prefixed labels spell, for the log."""
-    parts, i = [], 0
-    while i < len(labels) and labels[i]:
-        length = labels[i]
-        parts.append(labels[i + 1:i + 1 + length].decode("ascii", "replace"))
-        i += 1 + length
-    return ".".join(parts)
-
-
 def header(kind: int, to: bytes, sequence: int, frm: bytes = AP_ADDRESS,
            bssid: bytes = AP_ADDRESS) -> bytes:
     """Twenty-four bytes of management header.
@@ -303,6 +293,17 @@ class AccessPoint:
         self.conns: dict[tuple[int, int], dict] = {}
         self.tcp_isn = 0x1000
         self.outbox: list[Air] = []
+        # The names this LAN hosts (ADR 0090). Each points at the gateway, which
+        # is where the services behind them live -- but a name outside this set
+        # gets NXDOMAIN, not the gateway, which is what makes the resolver
+        # authoritative rather than captive. The set is exactly the names the
+        # firmware was seen to look up (logs/{ntp,mdns,tcp}): its two NTP servers
+        # and its own .local name.
+        self.zone: dict[str, bytes] = {
+            "lilygo.local": SERVER_IP,
+            "pool.ntp.org": SERVER_IP,
+            "time.nist.gov": SERVER_IP,
+        }
         # The guest's clock in milliseconds, set on every event, so the TCP
         # retransmission timer has a clock to run on.
         self.clock = 0
@@ -675,55 +676,42 @@ class AccessPoint:
         packet = udp4_packet(SERVER_IP, bytes([255, 255, 255, 255]), 67, 68, bootp)
         return self.data_protected(station.address, b"\x08\x00", packet)
 
-    def _a_reply(self, dns: bytes):
-        """Build the answer to a DNS/mDNS A query: the same name, pointed at the
-        gateway. Returns (name, reply-bytes) or None if it is not an A query.
-        A unicast DNS query and the firmware's `.local` mDNS query have the same
-        body, so both go through here."""
-        if len(dns) < 13 or int.from_bytes(dns[4:6], "big") != 1:
-            return None                          # not a single-question query
-        i = 12                                    # walk the QNAME labels to their end
-        while i < len(dns) and dns[i]:
-            i += 1 + dns[i]
-        question = dns[12:i + 5]                  # QNAME + null + QTYPE + QCLASS
-        if question[-4:-2] != b"\x00\x01":        # only A records
-            return None
-        head = dns[0:2] + b"\x81\x80" + b"\x00\x01\x00\x01\x00\x00\x00\x00"
-        answer = (b"\xc0\x0c" + b"\x00\x01\x00\x01"      # name pointer, type A, class IN
-                  + struct.pack(">I", 60) + b"\x00\x04" + SERVER_IP)
-        return _dns_name(dns[12:i]), head + question + answer
+    def _resolve(self, station: "Station", src_port: int, query: bytes,
+                 kind: str, reply_port: int) -> bytes | None:
+        """Answer a DNS or mDNS A query against the zone (ADR 0090).
 
-    def _dns(self, station: "Station", src_port: int, dns: bytes) -> bytes | None:
-        """A DNS query. Answer an A question by pointing the name at the gateway.
-
-        The station resolves its NTP servers (pool.ntp.org, time.nist.gov) and
-        then talks NTP to whatever address comes back. Returning the gateway --
-        the peer itself -- is what routes that NTP query here to be answered.
+        A name the LAN hosts gets its record; a name it does not gets NXDOMAIN,
+        which is the difference between an authoritative resolver and the captive
+        one this replaces. A DNS query and the firmware's unicast-shaped `.local`
+        mDNS query have the same body, so both come through here; only the port
+        the reply leaves from differs.
         """
-        made = self._a_reply(dns)
-        if made is None:
-            self._count("dns, not an A query")
+        reply = dns.respond(query, self.zone)
+        if reply is None:
+            self._count("%s, not served" % kind)
             return None
-        name, reply = made
-        self._count("dns reply")
-        log.info("dns A %s -> %s for %s", name, ".".join(map(str, SERVER_IP)),
+        parsed = dns.parse_query(query)
+        name = parsed.name if parsed else "?"
+        held = self.zone.get(name)
+        self._count("%s reply" % kind if held else "%s nxdomain" % kind)
+        log.info("%s A %s -> %s for %s", kind, name,
+                 ".".join(map(str, held)) if held else "NXDOMAIN",
                  station.address.hex(":"))
-        packet = udp4_packet(SERVER_IP, CLIENT_IP, 53, src_port, reply)
+        packet = udp4_packet(SERVER_IP, CLIENT_IP, reply_port, src_port, reply)
         return self.data_protected(station.address, b"\x08\x00", packet)
 
-    def _mdns(self, station: "Station", src_port: int, dns: bytes) -> bytes | None:
-        """An mDNS A query (the firmware's `.local` lookups). Answered like DNS,
-        unicast back to the querier -- the query is unicast-shaped, from an
-        ephemeral port, so it wants a unicast reply (ADR 0086)."""
-        made = self._a_reply(dns)
-        if made is None:
-            return None
-        name, reply = made
-        self._count("mdns reply")
-        log.info("mdns A %s -> %s for %s", name, ".".join(map(str, SERVER_IP)),
-                 station.address.hex(":"))
-        packet = udp4_packet(SERVER_IP, CLIENT_IP, 5353, src_port, reply)
-        return self.data_protected(station.address, b"\x08\x00", packet)
+    def _dns(self, station: "Station", src_port: int,
+             query: bytes) -> bytes | None:
+        """A DNS query. The station resolves its NTP servers this way and then
+        talks NTP to the address that comes back; those names are in the zone and
+        point at the gateway, which is where NTP is answered (ADR 0085/0090)."""
+        return self._resolve(station, src_port, query, "dns", 53)
+
+    def _mdns(self, station: "Station", src_port: int,
+              query: bytes) -> bytes | None:
+        """An mDNS A query (the firmware's `.local` lookups), answered like DNS
+        but unicast back from port 5353 (ADR 0086)."""
+        return self._resolve(station, src_port, query, "mdns", 5353)
 
     def _ntp(self, station: "Station", src_port: int, ntp: bytes) -> bytes | None:
         """An NTP request. Answer with the host's clock as the server's time."""
