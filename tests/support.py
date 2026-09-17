@@ -241,7 +241,7 @@ def run_emulator(outdir: Path, *, firmware: Path = FIRMWARE,
                  wait_frames: int = 0, timeout: int = 150,
                  settle: int = 25, overlays: tuple[str, ...] = (),
                  icount: bool = False, extra: tuple[str, ...] = (),
-                 script=None, until=None) -> Run:
+                 script=None, until=None, env: dict[str, str] | None = None) -> Run:
     """Boot a firmware, optionally tapping the panel once it has drawn.
 
     A board with no panel model draws nothing, so waiting on frames is opt-in:
@@ -267,7 +267,8 @@ def run_emulator(outdir: Path, *, firmware: Path = FIRMWARE,
         + [arg for spec in overlays for arg in ("--overlay", spec)]
         + (["--icount"] if icount else [])
         + list(extra),
-        cwd=REPO_ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
+        cwd=REPO_ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT,
+        env=dict(os.environ, **(env or {})))
     try:
         deadline = time.monotonic() + timeout
         while wait_frames and time.monotonic() < deadline:

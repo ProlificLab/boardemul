@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The station authenticates and associates with the access point.
+"""The station authenticates, associates, and gets an IP address.
 
 Two 802.11 exchanges that had never happened on either board. The scan came
 first (ADR 0057), then a transmit engine that completed (ADR 0059), then an
@@ -17,10 +17,12 @@ So this asserts the frames, in both directions, out of the model's own log:
 the station's authentication and the reply it accepted, then the association
 request it only sends because that reply was accepted, and the response to it.
 
-It stops there, and so does the firmware: about a second after associating the
-station disassociates, which is the WPA2 four-way handshake timing out. That
-needs AES-CCMP, which is not in the standard library, and the passphrase. It
-is the next wall and it is not this test's business.
+It no longer stops there. With the cross-thread TLB flush fixed (ADR 0066) and
+the GDMA able to reach PSRAM (ADR 0083), the WPA2 four-way handshake completes,
+and with ARP and a one-station DHCP in the peer (ADR 0084) the firmware gets an
+address: it prints "Obtained IP address" and stays connected. So the run goes
+all the way, under `thread=multi` (the handshake needs it), and the last test
+asserts the address.
 """
 
 from __future__ import annotations
@@ -85,13 +87,22 @@ def _device_said(outdir: Path, tail: int = 0) -> str:
         return ""
 
 
-def _associated(outdir: Path):
-    """What this test came to see, so a run that has shown it can stop. The
-    model's log is the witness, not the UART: the firmware says nothing when it
-    associates, and quite a lot when it then gives up."""
+def _peer_said(outdir: Path) -> str:
+    """The access-point peer's own log, where the handshake and DHCP are
+    recorded -- a different file from the device/QEMU log `_device_said` reads."""
+    log = next(iter(outdir.glob("*.bus.log")), None)
+    try:
+        return log.read_text(errors="replace") if log else ""
+    except OSError:
+        return ""
+
+
+def _got_ip(outdir: Path):
+    """The whole point now: a run can stop once the firmware has an address.
+    That line is on the UART, unlike association, which only the model's log
+    witnesses -- so this reads what the guest printed."""
     def check(uart: str, frames: list) -> bool:
-        said = _device_said(outdir, tail=128 * 1024)
-        return "a 0x00 to" in said and "the answer, a 0x10" in said
+        return "Obtained IP address" in uart
     return check
 
 
@@ -117,9 +128,15 @@ def connected(tmp_path_factory) -> Run:
                            extra=("--psram-octal", "--wifi-ap",
                                   f"{SSID},{BEACON_MS}", "--wifi-wpa2",
                                   "--wifi-pass", PASSPHRASE),
-                           until=_associated(scratch))
+                           # The four-way handshake deadlocks under one
+                           # translation thread and completes under two
+                           # (ADR 0066); the full connection needs multi.
+                           env={"BOARDEMUL_TCG_THREADS": "multi"},
+                           until=_got_ip(scratch))
         keep = tmp_path_factory.mktemp("connect")
-        for log in list(scratch.glob("*.uart.log")) + list(scratch.glob("*.qemu.log")):
+        for log in (list(scratch.glob("*.uart.log"))
+                    + list(scratch.glob("*.qemu.log"))
+                    + list(scratch.glob("*.bus.log"))):
             shutil.copy2(log, keep / log.name)
         # The assertions read the copy, so the scratch directory can go.
         return Run(outdir=keep, frames=run.frames, uart=run.uart)
@@ -177,3 +194,17 @@ def test_it_authenticates_before_it_associates(connected: Run) -> None:
     # Milliseconds apart in practice -- ten, in the run this was written from.
     assert gap < 5000, (f"{gap} ms between authenticating at {before[-1]} and "
                         f"associating at {assoc[0]}, which is not one exchange")
+
+
+def test_the_station_gets_an_ip(connected: Run) -> None:
+    """The whole stack, end to end: the four-way handshake completes and the
+    firmware's DHCP client gets the address the peer offers (ADRs 0083, 0084).
+    The handshake completing is what the peer's log records as a done handshake;
+    the address is what the firmware prints when its DHCP client has it."""
+    peer = _peer_said(connected.outdir)
+    assert "completed the four-way handshake" in peer, (
+        "the WPA2 four-way handshake never completed: " + peer[-2000:])
+    assert "dhcp offer" in peer and "dhcp ack" in peer, (
+        "the DHCP exchange did not finish (offer and ack): " + peer[-2000:])
+    assert "Obtained IP address" in connected.uart, (
+        "the firmware never got an IP: " + connected.uart[-2000:])
