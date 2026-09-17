@@ -87,3 +87,4 @@ superseded ADR is marked superseded and points forward.
 | [0079](0079-message-three-is-dropped-in-the-wrong-state.md) | Message three is dropped because the supplicant is in the wrong state | Its rejection relocated by 0080 (MIC, not state) |
 | [0080](0080-message-three-fails-mic-verification-in-the-firmware.md) | Message three fails MIC verification in the firmware | Accepted (its RX-delivery suspicion disproved by 0081) |
 | [0081](0081-message-three-mic-dump.md) | The message-three MIC buffers, dumped: a clean frame, a wrong MIC | Accepted |
+| [0082](0082-the-firmware-miscomputes-the-mic.md) | The firmware miscomputes the MIC: a SHA-accelerator emulation defect | Accepted |
