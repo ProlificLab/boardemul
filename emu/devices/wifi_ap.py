@@ -569,9 +569,19 @@ class AccessPoint:
 
     def _ip(self, station: "Station", ip: bytes) -> bytes | None:
         """An IPv4 packet from the station. DHCP is the one it needs answered."""
-        if len(ip) < 28 or (ip[0] >> 4) != 4 or ip[9] != 17:
-            return None                         # not IPv4/UDP
+        if len(ip) < 28 or (ip[0] >> 4) != 4:
+            return None
         ihl = (ip[0] & 0x0F) * 4
+        if ip[9] == 6:                          # TCP
+            tcp = ip[ihl:]
+            if len(tcp) >= 14 and (tcp[13] & 0x02) and not (tcp[13] & 0x10):
+                # A SYN with no ACK: a connection the station wants opened and
+                # nothing here answers. The port names the service it is after
+                # (ADR 0086); no TCP layer serves it yet.
+                self._count("tcp syn to %d" % int.from_bytes(tcp[2:4], "big"))
+            return None
+        if ip[9] != 17:                         # not UDP
+            return None
         udp = ip[ihl:]
         src_port = int.from_bytes(udp[0:2], "big")
         dst_port = int.from_bytes(udp[2:4], "big")
@@ -583,7 +593,9 @@ class AccessPoint:
             return self._dns(station, src_port, payload)
         if dst_port == 123:                     # NTP
             return self._ntp(station, src_port, payload)
-        self._count("ip, unanswered")
+        if dst_port == 5353:                    # mDNS (.local lookups)
+            return self._mdns(station, src_port, payload)
+        self._count("udp, unanswered to %d" % dst_port)
         return None
 
     def _dhcp(self, station: "Station", dhcp: bytes) -> bytes | None:
@@ -620,6 +632,24 @@ class AccessPoint:
         packet = udp4_packet(SERVER_IP, bytes([255, 255, 255, 255]), 67, 68, bootp)
         return self.data_protected(station.address, b"\x08\x00", packet)
 
+    def _a_reply(self, dns: bytes):
+        """Build the answer to a DNS/mDNS A query: the same name, pointed at the
+        gateway. Returns (name, reply-bytes) or None if it is not an A query.
+        A unicast DNS query and the firmware's `.local` mDNS query have the same
+        body, so both go through here."""
+        if len(dns) < 13 or int.from_bytes(dns[4:6], "big") != 1:
+            return None                          # not a single-question query
+        i = 12                                    # walk the QNAME labels to their end
+        while i < len(dns) and dns[i]:
+            i += 1 + dns[i]
+        question = dns[12:i + 5]                  # QNAME + null + QTYPE + QCLASS
+        if question[-4:-2] != b"\x00\x01":        # only A records
+            return None
+        head = dns[0:2] + b"\x81\x80" + b"\x00\x01\x00\x01\x00\x00\x00\x00"
+        answer = (b"\xc0\x0c" + b"\x00\x01\x00\x01"      # name pointer, type A, class IN
+                  + struct.pack(">I", 60) + b"\x00\x04" + SERVER_IP)
+        return _dns_name(dns[12:i]), head + question + answer
+
     def _dns(self, station: "Station", src_port: int, dns: bytes) -> bytes | None:
         """A DNS query. Answer an A question by pointing the name at the gateway.
 
@@ -627,24 +657,29 @@ class AccessPoint:
         then talks NTP to whatever address comes back. Returning the gateway --
         the peer itself -- is what routes that NTP query here to be answered.
         """
-        if len(dns) < 13 or int.from_bytes(dns[4:6], "big") != 1:
-            return None                          # not a single-question query
-        i = 12                                    # walk the QNAME labels to their end
-        while i < len(dns) and dns[i]:
-            i += 1 + dns[i]
-        name = _dns_name(dns[12:i])
-        question = dns[12:i + 5]                  # QNAME + null + QTYPE + QCLASS
-        if question[-4:-2] != b"\x00\x01":        # only A records
+        made = self._a_reply(dns)
+        if made is None:
             self._count("dns, not an A query")
             return None
+        name, reply = made
         self._count("dns reply")
         log.info("dns A %s -> %s for %s", name, ".".join(map(str, SERVER_IP)),
                  station.address.hex(":"))
-        head = dns[0:2] + b"\x81\x80" + b"\x00\x01\x00\x01\x00\x00\x00\x00"
-        answer = (b"\xc0\x0c" + b"\x00\x01\x00\x01"      # name pointer, type A, class IN
-                  + struct.pack(">I", 60) + b"\x00\x04" + SERVER_IP)
-        reply = head + question + answer
         packet = udp4_packet(SERVER_IP, CLIENT_IP, 53, src_port, reply)
+        return self.data_protected(station.address, b"\x08\x00", packet)
+
+    def _mdns(self, station: "Station", src_port: int, dns: bytes) -> bytes | None:
+        """An mDNS A query (the firmware's `.local` lookups). Answered like DNS,
+        unicast back to the querier -- the query is unicast-shaped, from an
+        ephemeral port, so it wants a unicast reply (ADR 0086)."""
+        made = self._a_reply(dns)
+        if made is None:
+            return None
+        name, reply = made
+        self._count("mdns reply")
+        log.info("mdns A %s -> %s for %s", name, ".".join(map(str, SERVER_IP)),
+                 station.address.hex(":"))
+        packet = udp4_packet(SERVER_IP, CLIENT_IP, 5353, src_port, reply)
         return self.data_protected(station.address, b"\x08\x00", packet)
 
     def _ntp(self, station: "Station", src_port: int, ntp: bytes) -> bytes | None:
