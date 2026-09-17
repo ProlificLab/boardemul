@@ -171,6 +171,16 @@ def dhcp_reply(xid: bytes, chaddr: bytes, message_type: int,
     return bootp + opts
 
 
+def _dns_name(labels: bytes) -> str:
+    """The dotted name a DNS QNAME's length-prefixed labels spell, for the log."""
+    parts, i = [], 0
+    while i < len(labels) and labels[i]:
+        length = labels[i]
+        parts.append(labels[i + 1:i + 1 + length].decode("ascii", "replace"))
+        i += 1 + length
+    return ".".join(parts)
+
+
 def header(kind: int, to: bytes, sequence: int, frm: bytes = AP_ADDRESS,
            bssid: bytes = AP_ADDRESS) -> bytes:
     """Twenty-four bytes of management header.
@@ -565,11 +575,16 @@ class AccessPoint:
         udp = ip[ihl:]
         src_port = int.from_bytes(udp[0:2], "big")
         dst_port = int.from_bytes(udp[2:4], "big")
-        if src_port != 68 or dst_port != 67:    # not a DHCP client -> server
-            self._count("ip, not dhcp")
-            return None
         udp_len = int.from_bytes(udp[4:6], "big")
-        return self._dhcp(station, udp[8:udp_len])
+        payload = udp[8:udp_len]
+        if dst_port == 67:                      # DHCP
+            return self._dhcp(station, payload)
+        if dst_port == 53:                      # DNS
+            return self._dns(station, src_port, payload)
+        if dst_port == 123:                     # NTP
+            return self._ntp(station, src_port, payload)
+        self._count("ip, unanswered")
+        return None
 
     def _dhcp(self, station: "Station", dhcp: bytes) -> bytes | None:
         """A BOOTP request: answer a DISCOVER with an OFFER, a REQUEST with ACK."""
@@ -603,6 +618,50 @@ class AccessPoint:
                  station.address.hex(":"), ".".join(map(str, CLIENT_IP)))
         bootp = dhcp_reply(xid, chaddr, kind, CLIENT_IP)
         packet = udp4_packet(SERVER_IP, bytes([255, 255, 255, 255]), 67, 68, bootp)
+        return self.data_protected(station.address, b"\x08\x00", packet)
+
+    def _dns(self, station: "Station", src_port: int, dns: bytes) -> bytes | None:
+        """A DNS query. Answer an A question by pointing the name at the gateway.
+
+        The station resolves its NTP servers (pool.ntp.org, time.nist.gov) and
+        then talks NTP to whatever address comes back. Returning the gateway --
+        the peer itself -- is what routes that NTP query here to be answered.
+        """
+        if len(dns) < 13 or int.from_bytes(dns[4:6], "big") != 1:
+            return None                          # not a single-question query
+        i = 12                                    # walk the QNAME labels to their end
+        while i < len(dns) and dns[i]:
+            i += 1 + dns[i]
+        name = _dns_name(dns[12:i])
+        question = dns[12:i + 5]                  # QNAME + null + QTYPE + QCLASS
+        if question[-4:-2] != b"\x00\x01":        # only A records
+            self._count("dns, not an A query")
+            return None
+        self._count("dns reply")
+        log.info("dns A %s -> %s for %s", name, ".".join(map(str, SERVER_IP)),
+                 station.address.hex(":"))
+        head = dns[0:2] + b"\x81\x80" + b"\x00\x01\x00\x01\x00\x00\x00\x00"
+        answer = (b"\xc0\x0c" + b"\x00\x01\x00\x01"      # name pointer, type A, class IN
+                  + struct.pack(">I", 60) + b"\x00\x04" + SERVER_IP)
+        reply = head + question + answer
+        packet = udp4_packet(SERVER_IP, CLIENT_IP, 53, src_port, reply)
+        return self.data_protected(station.address, b"\x08\x00", packet)
+
+    def _ntp(self, station: "Station", src_port: int, ntp: bytes) -> bytes | None:
+        """An NTP request. Answer with the host's clock as the server's time."""
+        if len(ntp) < 48:
+            return None
+        now = time.time() + 2208988800            # seconds from the NTP epoch (1900)
+        secs, frac = int(now), int((now - int(now)) * (1 << 32))
+        stamp = struct.pack(">II", secs, frac)
+        self._count("ntp reply")
+        reply = bytes([0x24, 1, 4, 0xEC])         # LI 0, VN 4, mode 4 server; stratum 1
+        reply += struct.pack(">I", 0) + struct.pack(">I", 0) + b"LOCL"  # delay, dispersion, refid
+        reply += stamp                            # reference timestamp
+        reply += ntp[40:48]                       # originate = the client's transmit stamp
+        reply += stamp                            # receive timestamp
+        reply += stamp                            # transmit timestamp
+        packet = udp4_packet(SERVER_IP, CLIENT_IP, 123, src_port, reply)
         return self.data_protected(station.address, b"\x08\x00", packet)
 
     def _arp(self, station: "Station", arp: bytes) -> bytes | None:

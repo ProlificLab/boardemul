@@ -90,3 +90,4 @@ superseded ADR is marked superseded and points forward.
 | [0082](0082-the-firmware-miscomputes-the-mic.md) | The firmware miscomputes the MIC: a SHA-accelerator emulation defect | Accepted |
 | [0083](0083-the-gdma-could-not-reach-psram.md) | The GDMA could not reach PSRAM, so DMA SHA over a received frame failed | Accepted (fixes the defect 0082 located) |
 | [0084](0084-a-station-that-gets-an-ip.md) | A station that gets an IP: identity CCMP, ARP and DHCP in the peer | Accepted |
+| [0085](0085-the-station-resolves-names-and-gets-the-time.md) | The station resolves names and gets the time: DNS and NTP in the peer | Accepted |
