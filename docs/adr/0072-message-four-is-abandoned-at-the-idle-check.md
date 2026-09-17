@@ -1,6 +1,11 @@
 # ADR 0072 — Message four is abandoned at the idle check, not the cipher
 
-**Status:** Accepted — 2026-09-17. Corrects the inference ADR 0071 left open.
+**Status:** Superseded by 0073 — 2026-09-17. **This page is wrong.** Counting
+every occurrence of the branch, rather than reading it off a first-seen
+ordering, shows 453 of 454 sends transmit and exactly one abandons in a
+200-second run. The idle check is not the wall; message four is never
+submitted to the transmit path at all. ADR 0073 has the measurement and the
+instrument defect that produced this error.
 
 ## Context
 
