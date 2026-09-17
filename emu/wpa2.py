@@ -210,6 +210,9 @@ class Handshake:
     done: bool = False
     rsn_element: bytes = b""
     gtk: bytes = field(default_factory=lambda: os.urandom(16))
+    # The message three actually sent, cached so a retransmitted message two
+    # gets the same frame back rather than a fresh one (ADR 0078).
+    _third: bytes = b""
 
     def first(self) -> bytes:
         """Message one: the access point's nonce, unsigned.
@@ -256,8 +259,17 @@ class Handshake:
                 # way there is nothing to answer and the station will retry.
                 self.keys = None
                 return None
-            return self.third()
+            self._third = self.third()
+            return self._third
         if not check(frame, self.keys.kck):
             return None
-        self.done = True
-        return None
+        # A signed frame once the keys are derived is message four only if it
+        # carries the Secure bit (key_info 0x030a). Without it (0x010a) it is
+        # the station retransmitting message two because it has not accepted
+        # message three -- and taking that for message four is how the peer
+        # reported a handshake that never happened (ADR 0078). Resend the same
+        # message three, unchanged, and go on waiting for a real message four.
+        if key_info(frame) & KI_SECURE:
+            self.done = True
+            return None
+        return self._third

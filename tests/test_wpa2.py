@@ -155,6 +155,48 @@ def test_a_handshake_completes_against_a_station_that_plays_along() -> None:
     assert shake.done, "the handshake did not finish"
 
 
+def test_a_retransmitted_message_two_is_not_message_four() -> None:
+    """The bug that reported a handshake which never happened (ADR 0078).
+
+    A station that has not accepted message three resends message two on its
+    retransmit timer. That frame verifies -- it is a real, correctly signed
+    message two -- so the peer used to take the second verifying frame for
+    message four and declare the handshake done. Message four is the one with
+    the Secure bit; a frame without it is message two however many times it
+    arrives, and the peer resends the same message three and keeps waiting.
+    """
+    master = wpa2.pmk("AA15994823428", "xinyuandianzi")
+    shake = wpa2.Handshake(master=master, ap=AP, station=STATION,
+                           rsn_element=bytes.fromhex(
+                               "30140100000fac040100000fac040100000fac020000"))
+    second, _ = _station_side(master, AP, STATION, shake.first())
+    third = shake.take(second)
+    assert third is not None and not shake.done, "message two should not finish it"
+
+    # The identical message two again -- the retransmit.
+    again = shake.take(second)
+    assert not shake.done, "a retransmitted message two completed the handshake"
+    assert again == third, "a retransmit should get the same message three back"
+
+
+def test_only_a_secure_frame_ends_the_handshake() -> None:
+    """Message four is a message two with the Secure bit, so the bit is the
+    whole difference. A frame with it finishes; the same frame without it does
+    not."""
+    master = wpa2.pmk("AA15994823428", "xinyuandianzi")
+    common = dict(nonce=bytes(0))
+    for secure, done in ((False, False), (True, True)):
+        shake = wpa2.Handshake(master=master, ap=AP, station=STATION)
+        second, keys = _station_side(master, AP, STATION, shake.first())
+        shake.take(second)
+        info = wpa2.KI_VERSION_AES | wpa2.KI_PAIRWISE | wpa2.KI_MIC
+        if secure:
+            info |= wpa2.KI_SECURE
+        frame = wpa2.sign(wpa2.eapol_key(info, replay=shake.replay), keys.kck)
+        shake.take(frame)
+        assert shake.done is done, f"secure={secure} should give done={done}"
+
+
 def test_a_wrong_passphrase_gets_nowhere() -> None:
     """The integrity code on message two is the first thing that proves the
     passphrase, and a station using a different one must not get message

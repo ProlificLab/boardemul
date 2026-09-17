@@ -426,29 +426,33 @@ class AccessPoint:
         if len(eap) >= 4:
             eap = eap[:4 + int.from_bytes(eap[2:4], "big")]
         reply = station.shake.take(eap)
+        info = wpa2.key_info(eap)
+        verified = reply is not None or station.shake.done
         # Every EAPOL frame in full, because there are a handful per run and
         # whether a message that does not verify has the wrong bytes or the
         # wrong key can only be told by reading the bytes.
         log.info("eapol in from %s, %d byte(s), header %s, key_info 0x%04x, "
                  "%s: %s", station.address.hex(":"), len(frame),
-                 frame[:at].hex(), wpa2.key_info(eap),
-                 "verified" if reply is not None or station.shake.done
+                 frame[:at].hex(), info, "verified" if verified
                  else "NOT verified", eap.hex())
         if reply is not None:
-            # Message two verified, so message one arrived and is no longer
-            # owed. Anything that did not verify leaves it owed, and the
-            # deadline in tick() offers it again.
+            # A verified frame means message one arrived and is no longer owed.
             station.owes_first = False
-        self._count("eapol %d" % (2 if not station.shake.done else 4))
         if station.shake.done:
+            # A real message four: the Secure bit was set and the code verified
+            # (ADR 0078). This is the only path that ends the handshake.
+            self._count("eapol 4")
             self._count("handshake done")
             log.info("the station %s completed the four-way handshake",
                      station.address.hex(":"))
+            return None
+        # Anything else here is a message two -- the first, or a retransmit
+        # because the station has not accepted message three.
+        self._count("eapol 2")
         if reply is None:
-            # A signed message two that produced no reply means the integrity
-            # code did not verify -- a key-schedule mismatch. Count it so the
-            # difference from "the station never replied" stays visible.
-            if wpa2.key_info(eap) & wpa2.KI_MIC:
+            # No reply means the integrity code did not verify: a key-schedule
+            # mismatch, kept distinct from "the station never replied".
+            if info & wpa2.KI_MIC:
                 self._count("message two, mic did not verify")
             return None
         self._count("eapol 3")

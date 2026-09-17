@@ -79,7 +79,8 @@ superseded ADR is marked superseded and points forward.
 | [0071](0071-message-four-leaves-by-a-path-the-device-cannot-see.md) | Message four leaves by a path the device cannot see | Accepted (its explanation retracted by 0073) |
 | [0072](0072-message-four-is-abandoned-at-the-idle-check.md) | Message four is abandoned at the idle check, not the cipher | Superseded by 0073 |
 | [0073](0073-message-four-is-never-submitted.md) | Message four is never submitted, and the transmit path is sound | Accepted (central measurement amended by 0074) |
-| [0074](0074-the-four-way-handshake-completes.md) | The four-way handshake completes, and the station leaves anyway | Accepted |
-| [0075](0075-the-register-trace-opens-on-a-chosen-frame.md) | The register trace opens on a chosen frame | Accepted |
-| [0076](0076-message-one-waits-for-the-station.md) | Message one waits for the station to be ready | Hypothesis refuted by its own test; knob kept, default off |
+| [0074](0074-the-four-way-handshake-completes.md) | The four-way handshake completes, and the station leaves anyway | Milestone retracted by 0078 (the completion was a miscount) |
+| [0075](0075-the-register-trace-opens-on-a-chosen-frame.md) | The register trace opens on a chosen frame | Accepted (instrument; the wall it served was misdiagnosed, see 0078) |
+| [0076](0076-message-one-waits-for-the-station.md) | Message one waits for the station to be ready | Hypothesis refuted by its own test; superseded context by 0078 |
 | [0077](0077-there-are-no-hardware-key-slots-to-model.md) | There are no hardware key slots to model; the crypto is software | Accepted (corrects 0076's addendum) |
+| [0078](0078-the-handshake-never-completed.md) | The handshake never completed; the peer miscounted a retransmit | Accepted (retracts 0074) |
