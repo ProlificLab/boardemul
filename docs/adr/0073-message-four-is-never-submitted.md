@@ -1,6 +1,10 @@
 # ADR 0073 — Message four is never submitted, and the transmit path is sound
 
-**Status:** Accepted — 2026-09-17. Supersedes 0072, and retracts the
+**Status:** Accepted, central measurement amended by 0074 — 2026-09-17.
+Message four *is* submitted and the handshake *does* complete when the guest
+runs slower; "never submitted" holds for the fast run measured here, not for
+the firmware. The transmit-path clearance and the arms-equal-frames accounting
+below stand, and 0074 builds on both. Supersedes 0072, and retracts the
 explanation ADR 0071 offered. The measurements in both still stand; only their
 accounts of *why* were wrong.
 
