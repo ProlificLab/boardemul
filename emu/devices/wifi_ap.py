@@ -117,6 +117,9 @@ SERVER_IP = bytes([192, 168, 4, 1])
 CLIENT_IP = bytes([192, 168, 4, 2])
 NETMASK = bytes([255, 255, 255, 0])
 LEASE_SECONDS = 7200
+# The one TCP port the peer accepts, to read what the app says first on it and
+# no more (ADR 0087). The station opens this once lilygo.local resolves here.
+TCP_OBSERVE_PORT = 8896
 
 
 def ip_checksum(data: bytes) -> int:
@@ -127,6 +130,14 @@ def ip_checksum(data: bytes) -> int:
     total = (total >> 16) + (total & 0xFFFF)
     total += total >> 16
     return (~total) & 0xFFFF
+
+
+def ipv4_wrap(src_ip: bytes, dst_ip: bytes, proto: int, l4: bytes) -> bytes:
+    """An IPv4 header, checksum filled, in front of a layer-4 payload."""
+    total = 20 + len(l4)
+    ip = (struct.pack(">BBHHHBBH", 0x45, 0, total, 0, 0x4000, 64, proto, 0)
+          + src_ip + dst_ip)
+    return ip[:10] + struct.pack(">H", ip_checksum(ip)) + ip[12:] + l4
 
 
 def udp4_packet(src_ip: bytes, dst_ip: bytes, src_port: int, dst_port: int,
@@ -140,11 +151,22 @@ def udp4_packet(src_ip: bytes, dst_ip: bytes, src_port: int, dst_port: int,
     udp = struct.pack(">HHHH", src_port, dst_port, udp_len, 0) + payload
     pseudo = src_ip + dst_ip + bytes([0, 17]) + struct.pack(">H", udp_len)
     udp = udp[:6] + struct.pack(">H", ip_checksum(pseudo + udp)) + udp[8:]
-    total = 20 + len(udp)
-    ip = (struct.pack(">BBHHHBBH", 0x45, 0, total, 0, 0x4000, 64, 17, 0)
-          + src_ip + dst_ip)
-    ip = ip[:10] + struct.pack(">H", ip_checksum(ip)) + ip[12:]
-    return ip + udp
+    return ipv4_wrap(src_ip, dst_ip, 17, udp)
+
+
+def tcp_segment(src_ip: bytes, dst_ip: bytes, src_port: int, dst_port: int,
+                seq: int, ack: int, flags: int, window: int = 64240,
+                payload: bytes = b"", options: bytes = b"") -> bytes:
+    """An IPv4/TCP segment with the TCP checksum filled in (ADR 0087)."""
+    if len(options) % 4:
+        options += bytes(4 - len(options) % 4)
+    offset = (20 + len(options)) // 4
+    tcp = (struct.pack(">HHIIBBHHH", src_port, dst_port, seq & 0xFFFFFFFF,
+                       ack & 0xFFFFFFFF, offset << 4, flags, window, 0, 0)
+           + options + payload)
+    pseudo = src_ip + dst_ip + bytes([0, 6]) + struct.pack(">H", len(tcp))
+    tcp = tcp[:16] + struct.pack(">H", ip_checksum(pseudo + tcp)) + tcp[18:]
+    return ipv4_wrap(src_ip, dst_ip, 6, tcp)
 
 
 def dhcp_reply(xid: bytes, chaddr: bytes, message_type: int,
@@ -273,6 +295,10 @@ class AccessPoint:
         # the station is connected (ADR 0084). The cipher is identity, so the
         # number only has to advance, not be secret.
         self.pn = 0
+        # TCP accept-and-observe state (ADR 0087): one entry per client source
+        # port, and an initial sequence number that advances per connection.
+        self.tcp: dict[int, dict] = {}
+        self.tcp_isn = 0x1000
         log.info("access point %r on channel %d, %s", network.ssid,
                  network.channel,
                  "WPA2 with a master key" if self.master
@@ -571,15 +597,13 @@ class AccessPoint:
         """An IPv4 packet from the station. DHCP is the one it needs answered."""
         if len(ip) < 28 or (ip[0] >> 4) != 4:
             return None
+        # Trim the device's trailing bytes (the 0xdeadbeef marker and whatever
+        # follows) to the IP total-length, so a length-less header like TCP's
+        # does not read them as payload. UDP self-trims by its own length.
+        ip = ip[:int.from_bytes(ip[2:4], "big")]
         ihl = (ip[0] & 0x0F) * 4
         if ip[9] == 6:                          # TCP
-            tcp = ip[ihl:]
-            if len(tcp) >= 14 and (tcp[13] & 0x02) and not (tcp[13] & 0x10):
-                # A SYN with no ACK: a connection the station wants opened and
-                # nothing here answers. The port names the service it is after
-                # (ADR 0086); no TCP layer serves it yet.
-                self._count("tcp syn to %d" % int.from_bytes(tcp[2:4], "big"))
-            return None
+            return self._tcp(station, ip[ihl:])
         if ip[9] != 17:                         # not UDP
             return None
         udp = ip[ihl:]
@@ -698,6 +722,54 @@ class AccessPoint:
         reply += stamp                            # transmit timestamp
         packet = udp4_packet(SERVER_IP, CLIENT_IP, 123, src_port, reply)
         return self.data_protected(station.address, b"\x08\x00", packet)
+
+    def _tcp(self, station: "Station", tcp: bytes) -> bytes | None:
+        """Accept a connection on the observed port and read its opening bytes,
+        nothing more (ADR 0087). Not a TCP stack: handshake, then acknowledge
+        the client's first data so it stops retransmitting, and log it."""
+        if len(tcp) < 20:
+            return None
+        src_port = int.from_bytes(tcp[0:2], "big")
+        dst_port = int.from_bytes(tcp[2:4], "big")
+        if dst_port != TCP_OBSERVE_PORT:
+            return None
+        seq = int.from_bytes(tcp[4:8], "big")
+        flags = tcp[13]
+        offset = (tcp[12] >> 4) * 4
+        payload = tcp[offset:]
+
+        def send(fl, ack, opts=b""):
+            seg = tcp_segment(SERVER_IP, CLIENT_IP, dst_port, src_port,
+                              conn["snd"], ack, fl, options=opts)
+            return self.data_protected(station.address, b"\x08\x00", seg)
+
+        if flags & 0x04:                         # RST -- forget it
+            self.tcp.pop(src_port, None)
+            return None
+        if (flags & 0x02) and not (flags & 0x10):   # SYN -- open, send SYN-ACK
+            self.tcp_isn = (self.tcp_isn + 0x10000) & 0xFFFFFFFF
+            conn = {"snd": self.tcp_isn, "rcv": (seq + 1) & 0xFFFFFFFF,
+                    "seen": False}
+            self.tcp[src_port] = conn
+            self._count("tcp syn to %d" % dst_port)
+            frame = send(0x12, conn["rcv"],          # SYN+ACK
+                         opts=bytes([2, 4]) + struct.pack(">H", 1460))
+            conn["snd"] = (conn["snd"] + 1) & 0xFFFFFFFF   # the SYN takes a seq
+            return frame
+        conn = self.tcp.get(src_port)
+        if conn is None:
+            return None                          # ACK/data for an unknown one
+        advance = len(payload) + (1 if flags & 0x01 else 0)   # payload, plus FIN
+        if advance == 0:
+            return None                          # a bare ACK needs no reply
+        if payload and not conn["seen"]:
+            conn["seen"] = True
+            self._count("tcp opening on %d" % dst_port)
+            log.info("tcp opening on :%d from %s, %d byte(s): %s", dst_port,
+                     station.address.hex(":"), len(payload), payload[:96].hex())
+            log.info("tcp opening as text: %r", payload[:96])
+        conn["rcv"] = (conn["rcv"] + advance) & 0xFFFFFFFF
+        return send(0x10, conn["rcv"])           # bare ACK
 
     def _arp(self, station: "Station", arp: bytes) -> bytes | None:
         """An ARP request. Answer one that asks for the gateway."""

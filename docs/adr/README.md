@@ -92,3 +92,4 @@ superseded ADR is marked superseded and points forward.
 | [0084](0084-a-station-that-gets-an-ip.md) | A station that gets an IP: identity CCMP, ARP and DHCP in the peer | Accepted |
 | [0085](0085-the-station-resolves-names-and-gets-the-time.md) | The station resolves names and gets the time: DNS and NTP in the peer | Accepted |
 | [0086](0086-answer-mdns-to-see-what-comes-next.md) | Answer mDNS, to see what the app reaches for next | Accepted |
+| [0087](0087-accept-a-tcp-connection-and-read-its-opening.md) | Accept a TCP connection and read its opening, nothing more | Accepted |
