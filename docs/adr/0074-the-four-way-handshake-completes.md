@@ -8,9 +8,13 @@ ADR 0073 measured that message four is never submitted to the transmit path,
 and concluded the question was inside the supplicant. The measurement was
 sound for the run it was taken on. It is **not a property of the firmware**.
 
-Running the same firmware under the wide trace filter -- the four ranges
-`logs/trace_diff.sh` uses, which slow the guest considerably -- the peer
-reports, twice, in two separate runs:
+Running the same firmware under the wide trace filter, which slows the guest
+considerably -- `BOARDEMUL_TCG_THREADS=multi`, `BOARDEMUL_QEMU_DFLAGS=exec`
+and
+
+    -dfilter 0x4003a000+0x4a00,0x40040b00+0x600,0x420c0000+0x18000,0x42060000+0x20000
+
+-- the peer reports, twice, in two separate runs:
 
 | run | filter | assoc | eapol 1 | eapol 2 | eapol 3 | **eapol 4** | **done** |
 |---|---|---|---|---|---|---|---|
