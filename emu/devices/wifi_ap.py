@@ -413,6 +413,17 @@ class AccessPoint:
             log.info("the station %s completed the four-way handshake",
                      station.address.hex(":"))
         if reply is None:
+            # A signed message two that produced no reply means the integrity
+            # code did not verify -- a key-schedule mismatch, not a malformed
+            # frame. Log the nonces so it is visible which input disagrees.
+            eap = body[8:]
+            if wpa2.key_info(eap) & wpa2.KI_MIC:
+                self._count("message two, mic did not verify")
+                if self.counts["message two, mic did not verify"] <= 6:
+                    log.info("mic fail: anonce %s snonce %s replay %s carried "
+                             "mic %s", station.shake.anonce.hex()[:20],
+                             wpa2.nonce_of(eap).hex()[:20], eap[9:17].hex(),
+                             eap[wpa2.MIC_OFFSET:wpa2.MIC_OFFSET + 16].hex())
             return None
         self._count("eapol 3")
         return self.data(station.address, reply)
