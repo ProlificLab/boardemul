@@ -32,7 +32,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from emu import wpa2
+from emu import tcp, wpa2
 
 log = logging.getLogger("wifi")
 
@@ -117,9 +117,9 @@ SERVER_IP = bytes([192, 168, 4, 1])
 CLIENT_IP = bytes([192, 168, 4, 2])
 NETMASK = bytes([255, 255, 255, 0])
 LEASE_SECONDS = 7200
-# The one TCP port the peer accepts, to read what the app says first on it and
-# no more (ADR 0087). The station opens this once lilygo.local resolves here.
-TCP_OBSERVE_PORT = 8896
+# The peer accepts a TCP connection on any port and carries it with a real
+# transport (emu/tcp.py, ADR 0089); which ports have a service behind them is the
+# service layer's business, not the transport's.
 
 
 def ip_checksum(data: bytes) -> int:
@@ -295,10 +295,17 @@ class AccessPoint:
         # the station is connected (ADR 0084). The cipher is identity, so the
         # number only has to advance, not be secret.
         self.pn = 0
-        # TCP accept-and-observe state (ADR 0087): one entry per client source
-        # port, and an initial sequence number that advances per connection.
-        self.tcp: dict[int, dict] = {}
+        # TCP connections (ADR 0089), keyed by (client port, server port); each
+        # holds a real transport (emu/tcp.py). tcp_isn advances per connection so
+        # two do not share an initial sequence number. Frames the transport wants
+        # to send wait in the outbox, because the peer may put only one frame on
+        # the air per guest event (ADR 0064); take() and tick() drain it.
+        self.conns: dict[tuple[int, int], dict] = {}
         self.tcp_isn = 0x1000
+        self.outbox: list[Air] = []
+        # The guest's clock in milliseconds, set on every event, so the TCP
+        # retransmission timer has a clock to run on.
+        self.clock = 0
         log.info("access point %r on channel %d, %s", network.ssid,
                  network.channel,
                  "WPA2 with a master key" if self.master
@@ -321,6 +328,7 @@ class AccessPoint:
         waiting for.
         """
         self.channel = channel or self.channel
+        self.clock = clock
         # Anything owed comes first, and is never held back for a schedule.
         for station in self.stations.values():
             if not (station.owes_first and station.shake is not None):
@@ -338,6 +346,12 @@ class AccessPoint:
             self.last_beacon = clock
             return Air(self.data(station.address, station.shake.first()),
                        awaited=True)
+        # TCP retransmissions, and any frames a connection still owes, go before a
+        # beacon: a connected station is waiting on them, and another beacon is
+        # milliseconds away (ADR 0089).
+        self._tcp_tick(clock)
+        if self.outbox:
+            return self.outbox.pop(0)
         # A beacon only when one is due. Offering one on every opportunity is
         # what filled the driver's descriptors and left none for the frames
         # that matter.
@@ -399,12 +413,17 @@ class AccessPoint:
         the station is waiting for it by construction and it is marked so.
         """
         answer = self._answer(frame, channel, clock)
-        return Air(answer, awaited=True) if answer else None
+        if answer:
+            return Air(answer, awaited=True)
+        # A TCP exchange puts its frames in the outbox rather than returning one
+        # (ADR 0089); hand back the first now, the rest follow on ticks.
+        return self.outbox.pop(0) if self.outbox else None
 
     def _answer(self, frame: bytes, channel: int,
                 clock: int = 0) -> bytes | None:
         """Which frame answers this one, as bytes."""
         self.channel = channel or self.channel
+        self.clock = clock
         if len(frame) < 24:
             return None
         # Bits zero and one of the first octet are the protocol version and
@@ -723,53 +742,85 @@ class AccessPoint:
         packet = udp4_packet(SERVER_IP, CLIENT_IP, 123, src_port, reply)
         return self.data_protected(station.address, b"\x08\x00", packet)
 
-    def _tcp(self, station: "Station", tcp: bytes) -> bytes | None:
-        """Accept a connection on the observed port and read its opening bytes,
-        nothing more (ADR 0087). Not a TCP stack: handshake, then acknowledge
-        the client's first data so it stops retransmitting, and log it."""
-        if len(tcp) < 20:
-            return None
-        src_port = int.from_bytes(tcp[0:2], "big")
-        dst_port = int.from_bytes(tcp[2:4], "big")
-        if dst_port != TCP_OBSERVE_PORT:
-            return None
-        seq = int.from_bytes(tcp[4:8], "big")
-        flags = tcp[13]
-        offset = (tcp[12] >> 4) * 4
-        payload = tcp[offset:]
+    def _tcp(self, station: "Station", segment: bytes) -> bytes | None:
+        """A TCP segment from the station, carried by a real transport (ADR 0089).
 
-        def send(fl, ack, opts=b""):
-            seg = tcp_segment(SERVER_IP, CLIENT_IP, dst_port, src_port,
-                              conn["snd"], ack, fl, options=opts)
-            return self.data_protected(station.address, b"\x08\x00", seg)
-
-        if flags & 0x04:                         # RST -- forget it
-            self.tcp.pop(src_port, None)
+        The transport is fed the segment and asked what to send; the answers go
+        into the outbox, because there may be more than one and the peer sends
+        only one frame per event. This returns nothing: `take`/`tick` drain the
+        outbox. Connections are keyed by (client port, server port), so more than
+        one at a time is fine.
+        """
+        if len(segment) < 20:
             return None
-        if (flags & 0x02) and not (flags & 0x10):   # SYN -- open, send SYN-ACK
+        client_port = int.from_bytes(segment[0:2], "big")
+        server_port = int.from_bytes(segment[2:4], "big")
+        seq = int.from_bytes(segment[4:8], "big")
+        ack = int.from_bytes(segment[8:12], "big")
+        data_off = (segment[12] >> 4) * 4
+        flags = segment[13]
+        window = int.from_bytes(segment[14:16], "big")
+        payload = segment[data_off:]
+
+        key = (client_port, server_port)
+        entry = self.conns.get(key)
+        if entry is None:
+            if not (flags & tcp.SYN):
+                return None             # not a known connection, and not an open
             self.tcp_isn = (self.tcp_isn + 0x10000) & 0xFFFFFFFF
-            conn = {"snd": self.tcp_isn, "rcv": (seq + 1) & 0xFFFFFFFF,
-                    "seen": False}
-            self.tcp[src_port] = conn
-            self._count("tcp syn to %d" % dst_port)
-            frame = send(0x12, conn["rcv"],          # SYN+ACK
-                         opts=bytes([2, 4]) + struct.pack(">H", 1460))
-            conn["snd"] = (conn["snd"] + 1) & 0xFFFFFFFF   # the SYN takes a seq
-            return frame
-        conn = self.tcp.get(src_port)
-        if conn is None:
-            return None                          # ACK/data for an unknown one
-        advance = len(payload) + (1 if flags & 0x01 else 0)   # payload, plus FIN
-        if advance == 0:
-            return None                          # a bare ACK needs no reply
-        if payload and not conn["seen"]:
-            conn["seen"] = True
-            self._count("tcp opening on %d" % dst_port)
-            log.info("tcp opening on :%d from %s, %d byte(s): %s", dst_port,
-                     station.address.hex(":"), len(payload), payload[:96].hex())
-            log.info("tcp opening as text: %r", payload[:96])
-        conn["rcv"] = (conn["rcv"] + advance) & 0xFFFFFFFF
-        return send(0x10, conn["rcv"])           # bare ACK
+            entry = {"conn": tcp.Connection(iss=self.tcp_isn),
+                     "client_port": client_port, "server_port": server_port,
+                     "station": station, "greeted": False}
+            self.conns[key] = entry
+            self._count("tcp connection to %d" % server_port)
+        conn = entry["conn"]
+        out = conn.on_segment(seq, ack, flags, window, payload, self.clock)
+        self._tcp_service(entry)                 # let a service read and answer
+        out += conn.pump(self.clock)             # send anything the service wrote
+        for seg in out:
+            self.outbox.append(self._tcp_frame(entry, seg))
+        if conn.closed:
+            self.conns.pop(key, None)
+        return None
+
+    def _tcp_service(self, entry: dict) -> None:
+        """What sits above the transport. For now it only observes: it reads the
+        stream and logs the opening, the way ADR 0087 did, but over a real
+        connection. Serving a protocol -- answering the factory-test server on
+        8896 -- is the next workstream (ADR 0088); when it lands it lives here,
+        calling `conn.write` and `conn.close`.
+        """
+        conn = entry["conn"]
+        data = conn.read()
+        if data and not entry["greeted"]:
+            entry["greeted"] = True
+            self._count("tcp opening on %d" % entry["server_port"])
+            log.info("tcp opening on :%d from %s, %d byte(s): %s",
+                     entry["server_port"], entry["station"].address.hex(":"),
+                     len(data), data[:96].hex())
+            log.info("tcp opening as text: %r", data[:96])
+
+    def _tcp_frame(self, entry: dict, seg: "tcp.Segment") -> Air:
+        """Turn a transport segment into a frame on the air: an IPv4/TCP datagram
+        from the gateway to the station, behind a data frame. Marked awaited so
+        the radio sends it even if the station's receiver reads as off."""
+        opts = (bytes([2, 4]) + struct.pack(">H", seg.mss)) \
+            if seg.mss is not None else b""
+        datagram = tcp_segment(SERVER_IP, CLIENT_IP, entry["server_port"],
+                               entry["client_port"], seg.seq, seg.ack, seg.flags,
+                               window=seg.window, payload=seg.payload, options=opts)
+        return Air(self.data_protected(entry["station"].address, b"\x08\x00",
+                                       datagram), awaited=True)
+
+    def _tcp_tick(self, clock: int) -> None:
+        """Give every connection the clock, so its retransmission timer can fire
+        and anything a service queued can go, and forget those that have closed."""
+        for key, entry in list(self.conns.items()):
+            conn = entry["conn"]
+            for seg in conn.on_tick(clock):
+                self.outbox.append(self._tcp_frame(entry, seg))
+            if conn.closed:
+                self.conns.pop(key, None)
 
     def _arp(self, station: "Station", arp: bytes) -> bytes | None:
         """An ARP request. Answer one that asks for the gateway."""
