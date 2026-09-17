@@ -88,3 +88,4 @@ superseded ADR is marked superseded and points forward.
 | [0080](0080-message-three-fails-mic-verification-in-the-firmware.md) | Message three fails MIC verification in the firmware | Accepted (its RX-delivery suspicion disproved by 0081) |
 | [0081](0081-message-three-mic-dump.md) | The message-three MIC buffers, dumped: a clean frame, a wrong MIC | Accepted |
 | [0082](0082-the-firmware-miscomputes-the-mic.md) | The firmware miscomputes the MIC: a SHA-accelerator emulation defect | Accepted |
+| [0083](0083-the-gdma-could-not-reach-psram.md) | The GDMA could not reach PSRAM, so DMA SHA over a received frame failed | Accepted (fixes the defect 0082 located) |

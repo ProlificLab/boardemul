@@ -111,13 +111,14 @@ fi
 #   spi1-dummy-lanes.patch    ADR 0022  issue 169, offered as PR 177
 #   system-bt-lpck-regs.patch ADR 0023  issue 171, offered as PR 178
 #   tlb-flush-owning-thread.patch ADR 0066  issue 175, offered as PR 179
+#   gdma-reaches-psram.patch      ADR 0083  (GDMA could not DMA from PSRAM)
 # Each PR is the same diff as the patch beside it, against esp-develop, from
 # github.com/ProlificLab/qemu. When one is merged and the pinned tag moves past
 # it, delete the patch and supersede its ADR rather than carrying it on.
 # Applied from patch files rather than by hand so that they are declared,
 # reviewed like anything else, and fail loudly if a tag bump moves the code.
 for name in gdma-out-eof-desc.patch spi1-dummy-lanes.patch system-bt-lpck-regs.patch \
-            tlb-flush-owning-thread.patch; do
+            tlb-flush-owning-thread.patch gdma-reaches-psram.patch; do
     PATCH="${REPO_ROOT}/qemu-patch/${name}"
     if git -C "${SRC}" apply --reverse --check "${PATCH}" 2>/dev/null; then
         echo "==> ${name} already applied"
