@@ -104,6 +104,29 @@ time is a defect to be measured and closed on its own.
   exactly. A stale nonce from a previous attempt is the obvious candidate and
   it is unexamined.
 
+## Addendum, measured the same day: it idles, it does not spin
+
+The obvious next guess was the ADR 0019 pattern -- a driver polling a register
+the device does not model, which is how the radio's four bring-up waits were
+each found. **It is excluded.** `tools/hot_before.py` censuses the trace before
+the disassociation arm, and a spin would show as a handful of program counters
+taking most of the window. Instead the heaviest twelve are one cluster of
+scheduler and watchdog blocks (0x42065e33..0x42066404) at a uniform 3.8% each
+over ~2000 distinct blocks -- the idle path, executing evenly.
+
+So the station is **waiting on an event that never arrives and timing out**,
+not spinning on a register that never answers. The firmware agrees: the UART
+shows no connected event and no address, only `Connecting Failed (6)`.
+
+That changes how to look. A poll can be found by tracing, because the guest
+tells you what it is reading. A missing event cannot, so the next step is the
+register traffic itself -- which needs a diagnostic in `esp_wifi_mac.c` and a
+QEMU rebuild, since the WiFi MAC is modelled in C and its accesses never reach
+the Python bus that `-v` logs.
+
+(The same run completed the handshake twice more, a third consecutive run, for
+five completions across three runs. The result is not a fluke.)
+
 ## Alternatives rejected
 
 **Chase the supplicant disassembly ADR 0073 pointed at.** There is nothing
