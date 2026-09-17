@@ -76,3 +76,4 @@ superseded ADR is marked superseded and points forward.
 | [0068](0068-a-frame-the-station-is-waiting-for.md) | A frame the station is waiting for | Accepted |
 | [0069](0069-the-transmit-frame-is-dma-descriptor.md) | The transmitted frame is where the DMA descriptor points | Accepted |
 | [0070](0070-the-eapol-frame-ends-where-it-says.md) | The EAPOL frame ends where it says it does | Accepted |
+| [0071](0071-message-four-leaves-by-a-path-the-device-cannot-see.md) | Message four leaves by a path the device cannot see | Accepted |
