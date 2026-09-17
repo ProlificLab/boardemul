@@ -32,7 +32,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from emu import dns, tcp, wpa2
+from emu import dhcp, dns, tcp, wpa2
 
 log = logging.getLogger("wifi")
 
@@ -110,13 +110,15 @@ RSN_ELEMENT = bytes.fromhex(
     "0000")                 # no capabilities
 
 
-# The little network the peer hands out once a station connects (ADR 0084).
-# There is one station, so a "DHCP server" here is a table of one: a fixed
-# address, with the access point as gateway and DNS.
+# The little network the peer hands out (ADR 0084, pooled by ADR 0091). The
+# access point is the gateway and DNS at .1; stations are leased from .2 up by
+# hardware address, so a second station gets its own address. CLIENT_IP is what
+# the first station is leased, kept named for the tests that build its packets.
 SERVER_IP = bytes([192, 168, 4, 1])
 CLIENT_IP = bytes([192, 168, 4, 2])
 NETMASK = bytes([255, 255, 255, 0])
 LEASE_SECONDS = 7200
+DHCP_FIRST, DHCP_LAST = 2, 254          # the host numbers the pool may lease
 # The peer accepts a TCP connection on any port and carries it with a real
 # transport (emu/tcp.py, ADR 0089); which ports have a service behind them is the
 # service layer's business, not the transport's.
@@ -167,30 +169,6 @@ def tcp_segment(src_ip: bytes, dst_ip: bytes, src_port: int, dst_port: int,
     pseudo = src_ip + dst_ip + bytes([0, 6]) + struct.pack(">H", len(tcp))
     tcp = tcp[:16] + struct.pack(">H", ip_checksum(pseudo + tcp)) + tcp[18:]
     return ipv4_wrap(src_ip, dst_ip, 6, tcp)
-
-
-def dhcp_reply(xid: bytes, chaddr: bytes, message_type: int,
-               yiaddr: bytes) -> bytes:
-    """A BOOTP reply: an OFFER (type 2) or an ACK (type 5).
-
-    The client's transaction id and hardware address are echoed, the offered
-    address goes in yiaddr, and the options carry what the DISCOVER asked for:
-    the mask, the router, the DNS and a lease.
-    """
-    bootp = bytes([2, 1, 6, 0])                           # op reply, ethernet, hlen 6, hops 0
-    bootp += xid + struct.pack(">HH", 0, 0)               # xid, secs, flags
-    bootp += bytes(4) + yiaddr + SERVER_IP + bytes(4)     # ciaddr, yiaddr, siaddr, giaddr
-    bootp += chaddr + bytes(16 - len(chaddr))             # chaddr, padded to 16
-    bootp += bytes(64) + bytes(128)                       # sname, file
-    bootp += bytes.fromhex("63825363")                    # magic cookie
-    opts = bytes([53, 1, message_type])
-    opts += bytes([54, 4]) + SERVER_IP                    # server identifier
-    opts += bytes([51, 4]) + struct.pack(">I", LEASE_SECONDS)
-    opts += bytes([1, 4]) + NETMASK                       # subnet mask
-    opts += bytes([3, 4]) + SERVER_IP                     # router
-    opts += bytes([6, 4]) + SERVER_IP                     # DNS
-    opts += bytes([255])                                  # end
-    return bootp + opts
 
 
 def header(kind: int, to: bytes, sequence: int, frm: bytes = AP_ADDRESS,
@@ -257,6 +235,8 @@ class Station:
     address: bytes
     authenticated: bool = False
     associated: bool = False
+    # The address DHCP leased it (ADR 0091), or None before it has one.
+    ip: bytes | None = None
     shake: wpa2.Handshake | None = None
     # Message one is sent on a tick rather than in reply to the association
     # request, because a real access point does not answer a frame twice.
@@ -304,6 +284,9 @@ class AccessPoint:
             "pool.ntp.org": SERVER_IP,
             "time.nist.gov": SERVER_IP,
         }
+        # The DHCP lease pool (ADR 0091): addresses on the gateway's /24, leased
+        # by hardware address so each station gets its own and keeps it.
+        self.leases = dhcp.Pool(SERVER_IP[:3], first=DHCP_FIRST, last=DHCP_LAST)
         # The guest's clock in milliseconds, set on every event, so the TCP
         # retransmission timer has a clock to run on.
         self.clock = 0
@@ -622,8 +605,12 @@ class AccessPoint:
         # does not read them as payload. UDP self-trims by its own length.
         ip = ip[:int.from_bytes(ip[2:4], "big")]
         ihl = (ip[0] & 0x0F) * 4
+        # Reply to whoever sent it, not to a fixed client (ADR 0091): the source
+        # address is the station's own, leased by DHCP, so a second station's
+        # traffic is answered at its own address without any of this changing.
+        src_ip = ip[12:16]
         if ip[9] == 6:                          # TCP
-            return self._tcp(station, ip[ihl:])
+            return self._tcp(station, src_ip, ip[ihl:])
         if ip[9] != 17:                         # not UDP
             return None
         udp = ip[ihl:]
@@ -634,57 +621,55 @@ class AccessPoint:
         if dst_port == 67:                      # DHCP
             return self._dhcp(station, payload)
         if dst_port == 53:                      # DNS
-            return self._dns(station, src_port, payload)
+            return self._dns(station, src_ip, src_port, payload)
         if dst_port == 123:                     # NTP
-            return self._ntp(station, src_port, payload)
+            return self._ntp(station, src_ip, src_port, payload)
         if dst_port == 5353:                    # mDNS (.local lookups)
-            return self._mdns(station, src_port, payload)
+            return self._mdns(station, src_ip, src_port, payload)
         self._count("udp, unanswered to %d" % dst_port)
         return None
 
-    def _dhcp(self, station: "Station", dhcp: bytes) -> bytes | None:
-        """A BOOTP request: answer a DISCOVER with an OFFER, a REQUEST with ACK."""
-        cookie = dhcp.find(bytes.fromhex("63825363"))
-        if cookie < 0:
+    def _dhcp(self, station: "Station", bootp: bytes) -> bytes | None:
+        """A BOOTP request: answer a DISCOVER with an OFFER, a REQUEST with ACK.
+
+        The address comes from the pool, keyed by the client's hardware address
+        (ADR 0091), so a second station gets its own; a renewing station gets the
+        one it had. The reply is broadcast, because the client has no address to
+        receive it at yet.
+        """
+        parsed = dhcp.request(bootp)
+        if parsed is None:
             return None
-        xid = dhcp[4:8]
-        chaddr = dhcp[28:34]
-        message_type = None
-        opts = dhcp[cookie + 4:]
-        i = 0
-        while i < len(opts):
-            code = opts[i]
-            if code == 255:                     # end
-                break
-            if code == 0:                       # pad
-                i += 1
-                continue
-            length = opts[i + 1]
-            if code == 53:                      # DHCP message type
-                message_type = opts[i + 2]
-            i += 2 + length
-        if message_type == 1:                   # DISCOVER
-            kind, name = 2, "dhcp offer"
-        elif message_type == 3:                 # REQUEST
-            kind, name = 5, "dhcp ack"
+        xid, chaddr, message_type = parsed
+        if message_type == dhcp.DISCOVER:
+            kind, name = dhcp.OFFER, "dhcp offer"
+        elif message_type == dhcp.REQUEST:
+            kind, name = dhcp.ACK, "dhcp ack"
         else:
             return None
+        yiaddr = self.leases.allocate(chaddr)
+        if yiaddr is None:                      # the pool is used up
+            self._count("dhcp pool exhausted")
+            return None
+        station.ip = yiaddr
         self._count(name)
-        log.info("dhcp %s to %s: %s", "OFFER" if kind == 2 else "ACK",
-                 station.address.hex(":"), ".".join(map(str, CLIENT_IP)))
-        bootp = dhcp_reply(xid, chaddr, kind, CLIENT_IP)
-        packet = udp4_packet(SERVER_IP, bytes([255, 255, 255, 255]), 67, 68, bootp)
+        log.info("dhcp %s to %s: %s", "OFFER" if kind == dhcp.OFFER else "ACK",
+                 station.address.hex(":"), ".".join(map(str, yiaddr)))
+        frame = dhcp.reply(xid, chaddr, kind, yiaddr, SERVER_IP, NETMASK,
+                           SERVER_IP, LEASE_SECONDS)
+        packet = udp4_packet(SERVER_IP, bytes([255, 255, 255, 255]), 67, 68, frame)
         return self.data_protected(station.address, b"\x08\x00", packet)
 
-    def _resolve(self, station: "Station", src_port: int, query: bytes,
-                 kind: str, reply_port: int) -> bytes | None:
+    def _resolve(self, station: "Station", dst_ip: bytes, src_port: int,
+                 query: bytes, kind: str, reply_port: int) -> bytes | None:
         """Answer a DNS or mDNS A query against the zone (ADR 0090).
 
         A name the LAN hosts gets its record; a name it does not gets NXDOMAIN,
         which is the difference between an authoritative resolver and the captive
         one this replaces. A DNS query and the firmware's unicast-shaped `.local`
         mDNS query have the same body, so both come through here; only the port
-        the reply leaves from differs.
+        the reply leaves from differs. The reply goes back to the querier's own
+        address (ADR 0091).
         """
         reply = dns.respond(query, self.zone)
         if reply is None:
@@ -697,23 +682,24 @@ class AccessPoint:
         log.info("%s A %s -> %s for %s", kind, name,
                  ".".join(map(str, held)) if held else "NXDOMAIN",
                  station.address.hex(":"))
-        packet = udp4_packet(SERVER_IP, CLIENT_IP, reply_port, src_port, reply)
+        packet = udp4_packet(SERVER_IP, dst_ip, reply_port, src_port, reply)
         return self.data_protected(station.address, b"\x08\x00", packet)
 
-    def _dns(self, station: "Station", src_port: int,
+    def _dns(self, station: "Station", dst_ip: bytes, src_port: int,
              query: bytes) -> bytes | None:
         """A DNS query. The station resolves its NTP servers this way and then
         talks NTP to the address that comes back; those names are in the zone and
         point at the gateway, which is where NTP is answered (ADR 0085/0090)."""
-        return self._resolve(station, src_port, query, "dns", 53)
+        return self._resolve(station, dst_ip, src_port, query, "dns", 53)
 
-    def _mdns(self, station: "Station", src_port: int,
+    def _mdns(self, station: "Station", dst_ip: bytes, src_port: int,
               query: bytes) -> bytes | None:
         """An mDNS A query (the firmware's `.local` lookups), answered like DNS
         but unicast back from port 5353 (ADR 0086)."""
-        return self._resolve(station, src_port, query, "mdns", 5353)
+        return self._resolve(station, dst_ip, src_port, query, "mdns", 5353)
 
-    def _ntp(self, station: "Station", src_port: int, ntp: bytes) -> bytes | None:
+    def _ntp(self, station: "Station", dst_ip: bytes, src_port: int,
+             ntp: bytes) -> bytes | None:
         """An NTP request. Answer with the host's clock as the server's time."""
         if len(ntp) < 48:
             return None
@@ -727,17 +713,18 @@ class AccessPoint:
         reply += ntp[40:48]                       # originate = the client's transmit stamp
         reply += stamp                            # receive timestamp
         reply += stamp                            # transmit timestamp
-        packet = udp4_packet(SERVER_IP, CLIENT_IP, 123, src_port, reply)
+        packet = udp4_packet(SERVER_IP, dst_ip, 123, src_port, reply)
         return self.data_protected(station.address, b"\x08\x00", packet)
 
-    def _tcp(self, station: "Station", segment: bytes) -> bytes | None:
+    def _tcp(self, station: "Station", client_ip: bytes,
+             segment: bytes) -> bytes | None:
         """A TCP segment from the station, carried by a real transport (ADR 0089).
 
         The transport is fed the segment and asked what to send; the answers go
         into the outbox, because there may be more than one and the peer sends
         only one frame per event. This returns nothing: `take`/`tick` drain the
-        outbox. Connections are keyed by (client port, server port), so more than
-        one at a time is fine.
+        outbox. Connections are keyed by (client address, client port, server
+        port), so more than one at a time, from more than one station, is fine.
         """
         if len(segment) < 20:
             return None
@@ -750,15 +737,16 @@ class AccessPoint:
         window = int.from_bytes(segment[14:16], "big")
         payload = segment[data_off:]
 
-        key = (client_port, server_port)
+        key = (client_ip, client_port, server_port)
         entry = self.conns.get(key)
         if entry is None:
             if not (flags & tcp.SYN):
                 return None             # not a known connection, and not an open
             self.tcp_isn = (self.tcp_isn + 0x10000) & 0xFFFFFFFF
             entry = {"conn": tcp.Connection(iss=self.tcp_isn),
-                     "client_port": client_port, "server_port": server_port,
-                     "station": station, "greeted": False}
+                     "client_ip": client_ip, "client_port": client_port,
+                     "server_port": server_port, "station": station,
+                     "greeted": False}
             self.conns[key] = entry
             self._count("tcp connection to %d" % server_port)
         conn = entry["conn"]
@@ -794,7 +782,7 @@ class AccessPoint:
         the radio sends it even if the station's receiver reads as off."""
         opts = (bytes([2, 4]) + struct.pack(">H", seg.mss)) \
             if seg.mss is not None else b""
-        datagram = tcp_segment(SERVER_IP, CLIENT_IP, entry["server_port"],
+        datagram = tcp_segment(SERVER_IP, entry["client_ip"], entry["server_port"],
                                entry["client_port"], seg.seq, seg.ack, seg.flags,
                                window=seg.window, payload=seg.payload, options=opts)
         return Air(self.data_protected(entry["station"].address, b"\x08\x00",

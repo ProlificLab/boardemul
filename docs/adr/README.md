@@ -96,3 +96,4 @@ superseded ADR is marked superseded and points forward.
 | [0088](0088-a-faithful-lan-not-a-captive-one.md) | The peer becomes a faithful LAN, not a captive one | Accepted (direction) |
 | [0089](0089-a-real-tcp-transport.md) | A real TCP transport, driven a segment at a time | Accepted |
 | [0090](0090-an-authoritative-resolver.md) | An authoritative resolver: a zone, and NXDOMAIN outside it | Accepted |
+| [0091](0091-a-dhcp-pool-and-replies-to-the-source.md) | A DHCP pool, and replies to the source | Accepted |

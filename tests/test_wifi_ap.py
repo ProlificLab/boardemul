@@ -41,12 +41,12 @@ def _connected() -> AccessPoint:
     return point
 
 
-def _sta_frame(ip: bytes) -> bytes:
-    """A Protected data frame from the station to the access point, carrying an
+def _sta_frame(ip: bytes, src: bytes = STATION) -> bytes:
+    """A Protected data frame from a station to the access point, carrying an
     IPv4 packet: ToDS and Protected set, an eight-byte CCMP header (identity
     cipher, ADR 0084), then the LLC/SNAP header and the IPv4 ethertype."""
     head = (bytes([0x08, 0x41, 0x00, 0x00])          # data, ToDS+Protected
-            + AP_ADDRESS + STATION + AP_ADDRESS       # addr1 BSSID, addr2 SA, addr3 DA
+            + AP_ADDRESS + src + AP_ADDRESS           # addr1 BSSID, addr2 SA, addr3 DA
             + b"\x00\x00")                            # sequence control
     return head + bytes(8) + bytes.fromhex("aaaa03000000") + b"\x08\x00" + ip
 
@@ -118,8 +118,41 @@ def _dns_query(name: str, txn: bytes = b"\xab\xcd") -> bytes:
     return txn + struct.pack(">HHHHH", 0x0100, 1, 0, 0, 0) + qname + b"\x00\x01\x00\x01"
 
 
-def _udp_frame(dst_port: int, payload: bytes, src_port: int = 5000) -> bytes:
-    return _sta_frame(udp4_packet(CLIENT_IP, SERVER_IP, src_port, dst_port, payload))
+def _udp_frame(dst_port: int, payload: bytes, src_port: int = 5000,
+               src: bytes = STATION, src_ip: bytes = CLIENT_IP) -> bytes:
+    return _sta_frame(udp4_packet(src_ip, SERVER_IP, src_port, dst_port, payload),
+                      src=src)
+
+
+def _dhcp_discover(mac: bytes, message_type: int = 1,
+                   xid: bytes = b"\x11\x22\x33\x44") -> bytes:
+    bootp = bytes([1, 1, 6, 0]) + xid + struct.pack(">HH", 0, 0) + bytes(16)
+    bootp += mac + bytes(16 - len(mac)) + bytes(64) + bytes(128)
+    return bootp + bytes.fromhex("63825363") + bytes([53, 1, message_type, 255])
+
+
+def _seat(point: AccessPoint, mac: bytes) -> None:
+    """Put an associated station with an armed handshake on the peer."""
+    station = Station(mac, authenticated=True, associated=True)
+    station.shake = wpa2.Handshake(master=bytes(32), ap=AP_ADDRESS, station=mac)
+    point.stations[mac] = station
+
+
+def test_two_stations_each_get_their_own_address() -> None:
+    """The one-station shortcut is gone (ADR 0091): a DISCOVER from a second
+    station's hardware address is leased a different address from the first."""
+    point = _connected()                             # STATION already seated
+    second = bytes.fromhex("0254444d0002")
+    _seat(point, second)
+
+    def offer(mac: bytes) -> bytes:
+        frame = _udp_frame(67, _dhcp_discover(mac), src_port=68, src=mac,
+                           src_ip=bytes(4))
+        return _udp_payload(point.take(frame, 1, 100).frame)[16:20]  # yiaddr
+
+    first_ip, second_ip = offer(STATION), offer(second)
+    assert first_ip == bytes([192, 168, 4, 2]), "the first lease is .2"
+    assert second_ip == bytes([192, 168, 4, 3]), "the second is a different one"
 
 
 def _udp_payload(frame: bytes) -> bytes:
