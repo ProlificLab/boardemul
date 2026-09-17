@@ -389,6 +389,11 @@ struct EspWifiMac {
     /* How many accesses to log after the first frame. BOARDEMUL_WIFI_TRACE. */
     unsigned trace_window;
     bool trace_from_start;
+    /* A data-frame length that opens the window instead, when a frame of
+     * exactly that length is delivered -- 187 is the handshake's message
+     * three, and the second after it is where the station falls silent.
+     * BOARDEMUL_WIFI_TRACE_DATA. ADR 0075. */
+    unsigned trace_on_data;
     /* Words of the receive header the run has been told to override, and
      * which of them. BOARDEMUL_WIFI_HEADER, as offset:value pairs. */
     uint32_t header_words[RX_HEADER / 4];
@@ -1007,6 +1012,9 @@ static void wifi_deliver(void *opaque)
                       "byte(s) was delivered into descriptor 0x%08llx%c",
                       (unsigned)(qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) / 1000000),
                       (unsigned)frame_len, (unsigned long long)desc, 10);
+        if (s->trace_on_data && frame_len == s->trace_on_data) {
+            s->trace_left = s->trace_window;
+        }
     }
     if (s->deliveries <= 2) {
     qemu_log_mask(LOG_UNIMP, "esp-wifi-mac: put %u byte(s) into the buffer at "
@@ -1066,9 +1074,10 @@ static void wifi_trace(EspWifiMac *s, const char *what, hwaddr offset,
     if (current_cpu) {
         pc = CPU_GET_CLASS(current_cpu)->get_pc(current_cpu);
     }
-    qemu_log_mask(LOG_UNIMP, "esp-wifi-mac: after the frame, %s +0x%03x "
-                  "= 0x%08x from pc 0x%08" PRIx64 "%c", what,
-                  (unsigned)offset, value, pc, 10);
+    qemu_log_mask(LOG_UNIMP, "esp-wifi-mac: at %u ms, after the frame, %s "
+                  "+0x%03x = 0x%08x from pc 0x%08" PRIx64 "%c",
+                  (unsigned)(qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) / 1000000),
+                  what, (unsigned)offset, value, pc, 10);
 }
 
 static uint64_t wifi_read(void *opaque, hwaddr offset, unsigned size)
@@ -1458,6 +1467,8 @@ static void wifi_realize(DeviceState *dev, Error **errp)
     s->trace_from_start = getenv("BOARDEMUL_WIFI_TRACE_AT") != NULL;
     const char *window = getenv("BOARDEMUL_WIFI_TRACE");
     s->trace_window = window ? (unsigned)strtoul(window, NULL, 0) : 120;
+    const char *on_data = getenv("BOARDEMUL_WIFI_TRACE_DATA");
+    s->trace_on_data = on_data ? (unsigned)strtoul(on_data, NULL, 0) : 0;
     if (s->trace_from_start) {
         s->trace_left = s->trace_window;
     }

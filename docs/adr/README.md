@@ -80,3 +80,5 @@ superseded ADR is marked superseded and points forward.
 | [0072](0072-message-four-is-abandoned-at-the-idle-check.md) | Message four is abandoned at the idle check, not the cipher | Superseded by 0073 |
 | [0073](0073-message-four-is-never-submitted.md) | Message four is never submitted, and the transmit path is sound | Accepted (central measurement amended by 0074) |
 | [0074](0074-the-four-way-handshake-completes.md) | The four-way handshake completes, and the station leaves anyway | Accepted |
+| [0075](0075-the-register-trace-opens-on-a-chosen-frame.md) | The register trace opens on a chosen frame | Accepted |
+| [0076](0076-message-one-waits-for-the-station.md) | Message one waits for the station to be ready | Hypothesis refuted by its own test; knob kept, default off |
