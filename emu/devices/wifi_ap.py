@@ -85,6 +85,14 @@ DEAUTH_REASONS = {
 # nothing buffers it (ADR 0067), so the peer has to be the thing that retries;
 # a real access point retries this message on about this period too.
 FIRST_RETRY_MS = 100
+# How long after the association response to hold message one back, as an
+# experiment knob only -- default 0, no hold. The idea was that a message one
+# arriving before the station's supplicant finished setting up was answered
+# from state that was then wiped; holding it should have fixed the handshake.
+# It did not: the completion rate was the same held and unheld (ADR 0076).
+# The sensitivity that is real is to GUEST speed, which a peer-side delay
+# cannot touch, so the knob is kept off. Do not raise it expecting a fix.
+FIRST_HOLD_MS = int(os.environ.get("BOARDEMUL_WIFI_FIRST_MS", "0"))
 BROADCAST = b"\xff" * 6
 # This access point's own address. Locally administered, so it cannot collide
 # with a real one, and stable so a scan result stays valid across a retry.
@@ -173,6 +181,9 @@ class Station:
     # evidence it was heard (ADR 0067).
     owes_first: bool = False
     first_at: int = 0
+    # When the association response went, so message one can be held back
+    # until the station is ready for it (ADR 0076).
+    associated_at: int = 0
 
 
 class AccessPoint:
@@ -213,6 +224,8 @@ class AccessPoint:
         for station in self.stations.values():
             if not (station.owes_first and station.shake is not None):
                 continue
+            if clock - station.associated_at < FIRST_HOLD_MS:
+                continue                # not ready for it yet; see ADR 0076
             again = station.first_at != 0
             if again and clock - station.first_at < FIRST_RETRY_MS:
                 continue                # sent recently; give it time to reply
@@ -357,6 +370,7 @@ class AccessPoint:
                 master=self.master, ap=AP_ADDRESS, station=station.address,
                 rsn_element=RSN_ELEMENT)
             station.owes_first = True
+            station.associated_at = clock
             # A fresh handshake, so its first message is a first send and must
             # not wait out the previous one's retry deadline.
             station.first_at = 0
@@ -412,6 +426,14 @@ class AccessPoint:
         if len(eap) >= 4:
             eap = eap[:4 + int.from_bytes(eap[2:4], "big")]
         reply = station.shake.take(eap)
+        # Every EAPOL frame in full, because there are a handful per run and
+        # whether a message that does not verify has the wrong bytes or the
+        # wrong key can only be told by reading the bytes.
+        log.info("eapol in from %s, %d byte(s), header %s, key_info 0x%04x, "
+                 "%s: %s", station.address.hex(":"), len(frame),
+                 frame[:at].hex(), wpa2.key_info(eap),
+                 "verified" if reply is not None or station.shake.done
+                 else "NOT verified", eap.hex())
         if reply is not None:
             # Message two verified, so message one arrived and is no longer
             # owed. Anything that did not verify leaves it owed, and the
@@ -430,6 +452,8 @@ class AccessPoint:
                 self._count("message two, mic did not verify")
             return None
         self._count("eapol 3")
+        log.info("eapol out to %s, message three: %s",
+                 station.address.hex(":"), reply.hex())
         return self.data(station.address, reply)
 
 
