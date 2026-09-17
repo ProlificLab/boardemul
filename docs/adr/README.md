@@ -94,3 +94,4 @@ superseded ADR is marked superseded and points forward.
 | [0086](0086-answer-mdns-to-see-what-comes-next.md) | Answer mDNS, to see what the app reaches for next | Accepted |
 | [0087](0087-accept-a-tcp-connection-and-read-its-opening.md) | Accept a TCP connection and read its opening, nothing more | Accepted |
 | [0088](0088-a-faithful-lan-not-a-captive-one.md) | The peer becomes a faithful LAN, not a captive one | Accepted (direction) |
+| [0089](0089-a-real-tcp-transport.md) | A real TCP transport, driven a segment at a time | Accepted |
