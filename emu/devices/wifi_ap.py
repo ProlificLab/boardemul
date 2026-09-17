@@ -110,6 +110,67 @@ RSN_ELEMENT = bytes.fromhex(
     "0000")                 # no capabilities
 
 
+# The little network the peer hands out once a station connects (ADR 0084).
+# There is one station, so a "DHCP server" here is a table of one: a fixed
+# address, with the access point as gateway and DNS.
+SERVER_IP = bytes([192, 168, 4, 1])
+CLIENT_IP = bytes([192, 168, 4, 2])
+NETMASK = bytes([255, 255, 255, 0])
+LEASE_SECONDS = 7200
+
+
+def ip_checksum(data: bytes) -> int:
+    """The one's-complement sum an IPv4 or UDP header carries."""
+    if len(data) % 2:
+        data += b"\x00"
+    total = sum(int.from_bytes(data[i:i + 2], "big") for i in range(0, len(data), 2))
+    total = (total >> 16) + (total & 0xFFFF)
+    total += total >> 16
+    return (~total) & 0xFFFF
+
+
+def udp4_packet(src_ip: bytes, dst_ip: bytes, src_port: int, dst_port: int,
+                payload: bytes) -> bytes:
+    """An IPv4/UDP datagram with both checksums filled in.
+
+    The station's stack verifies both, so a reply with either wrong is dropped
+    as silently as if it never came.
+    """
+    udp_len = 8 + len(payload)
+    udp = struct.pack(">HHHH", src_port, dst_port, udp_len, 0) + payload
+    pseudo = src_ip + dst_ip + bytes([0, 17]) + struct.pack(">H", udp_len)
+    udp = udp[:6] + struct.pack(">H", ip_checksum(pseudo + udp)) + udp[8:]
+    total = 20 + len(udp)
+    ip = (struct.pack(">BBHHHBBH", 0x45, 0, total, 0, 0x4000, 64, 17, 0)
+          + src_ip + dst_ip)
+    ip = ip[:10] + struct.pack(">H", ip_checksum(ip)) + ip[12:]
+    return ip + udp
+
+
+def dhcp_reply(xid: bytes, chaddr: bytes, message_type: int,
+               yiaddr: bytes) -> bytes:
+    """A BOOTP reply: an OFFER (type 2) or an ACK (type 5).
+
+    The client's transaction id and hardware address are echoed, the offered
+    address goes in yiaddr, and the options carry what the DISCOVER asked for:
+    the mask, the router, the DNS and a lease.
+    """
+    bootp = bytes([2, 1, 6, 0])                           # op reply, ethernet, hlen 6, hops 0
+    bootp += xid + struct.pack(">HH", 0, 0)               # xid, secs, flags
+    bootp += bytes(4) + yiaddr + SERVER_IP + bytes(4)     # ciaddr, yiaddr, siaddr, giaddr
+    bootp += chaddr + bytes(16 - len(chaddr))             # chaddr, padded to 16
+    bootp += bytes(64) + bytes(128)                       # sname, file
+    bootp += bytes.fromhex("63825363")                    # magic cookie
+    opts = bytes([53, 1, message_type])
+    opts += bytes([54, 4]) + SERVER_IP                    # server identifier
+    opts += bytes([51, 4]) + struct.pack(">I", LEASE_SECONDS)
+    opts += bytes([1, 4]) + NETMASK                       # subnet mask
+    opts += bytes([3, 4]) + SERVER_IP                     # router
+    opts += bytes([6, 4]) + SERVER_IP                     # DNS
+    opts += bytes([255])                                  # end
+    return bootp + opts
+
+
 def header(kind: int, to: bytes, sequence: int, frm: bytes = AP_ADDRESS,
            bssid: bytes = AP_ADDRESS) -> bytes:
     """Twenty-four bytes of management header.
@@ -198,6 +259,10 @@ class AccessPoint:
         self.counts: dict[str, int] = {}
         self.channel = network.channel
         self.last_beacon = 0
+        # A monotonic packet number for the CCMP header on frames we send once
+        # the station is connected (ADR 0084). The cipher is identity, so the
+        # number only has to advance, not be secret.
+        self.pn = 0
         log.info("access point %r on channel %d, %s", network.ssid,
                  network.channel,
                  "WPA2 with a master key" if self.master
@@ -272,6 +337,24 @@ class AccessPoint:
                 + ((self._next() & 0xFFF) << 4).to_bytes(2, "little"))
         llc = bytes.fromhex("aaaa03000000888e")
         return head + llc + payload
+
+    def data_protected(self, to: bytes, ethertype: bytes, payload: bytes) -> bytes:
+        """A From-DS data frame with the Protected bit and a CCMP header.
+
+        The mirror of what the station sends once it is connected (ADR 0084):
+        the cipher is identity, so the payload rides plaintext behind an
+        eight-byte CCMP header, and an eight-byte trailer stands in for the MIC
+        the station strips. Only the packet number has to advance.
+        """
+        fc = bytes([DATA, 0x42])        # data, From-DS, Protected
+        head = (fc + b"\x00\x00" + to + AP_ADDRESS + AP_ADDRESS
+                + ((self._next() & 0xFFF) << 4).to_bytes(2, "little"))
+        self.pn += 1
+        pn = self.pn
+        ccmp = bytes([pn & 0xFF, (pn >> 8) & 0xFF, 0x00, 0x20,
+                      (pn >> 16) & 0xFF, (pn >> 24) & 0xFF, 0x00, 0x00])
+        llc = bytes.fromhex("aaaa03000000") + ethertype
+        return head + ccmp + llc + payload + bytes(8)
 
     def take(self, frame: bytes, channel: int, clock: int = 0) -> Air | None:
         """A frame the guest transmitted. What to send back, or nothing.
@@ -409,11 +492,25 @@ class AccessPoint:
         # fixed offset put the LLC check two bytes out and dropped the frame
         # for looking wrong.
         at = 26 if frame[0] & 0x80 else 24
-        body = frame[at:]
-        if body[:8] != bytes.fromhex("aaaa03000000888e"):
+        # A Protected frame carries an eight-byte CCMP header before the LLC.
+        # The cipher is identity here (ADR 0084), so the payload after it is
+        # plaintext -- just skip the header. EAPOL is sent unprotected, before
+        # a key exists, so it has no CCMP header.
+        body = frame[at + 8:] if (frame[1] & 0x40) else frame[at:]
+        if body[:6] != bytes.fromhex("aaaa03000000"):
             self._count("data frame that is not EAPOL")
-            log.info("a 0x%02x data frame from %s carried %s, not EAPOL",
+            log.info("a 0x%02x data frame from %s carried %s, not LLC",
                      frame[0], frame[10:16].hex(":"), body[:8].hex())
+            return None
+        ethertype = body[6:8]
+        if ethertype == b"\x08\x00":            # IPv4 -- DHCP lives here
+            return self._ip(station, body[8:])
+        if ethertype == b"\x08\x06":            # ARP
+            return self._arp(station, body[8:])
+        if ethertype != b"\x88\x8e":            # not EAPOL either
+            self._count("data frame that is not EAPOL")
+            log.info("a 0x%02x data frame from %s: ethertype %s",
+                     frame[0], frame[10:16].hex(":"), ethertype.hex())
             return None
         eap = body[8:]
         # Truncate to the EAPOL frame's own declared length before anything
@@ -459,6 +556,68 @@ class AccessPoint:
         log.info("eapol out to %s, message three: %s",
                  station.address.hex(":"), reply.hex())
         return self.data(station.address, reply)
+
+    def _ip(self, station: "Station", ip: bytes) -> bytes | None:
+        """An IPv4 packet from the station. DHCP is the one it needs answered."""
+        if len(ip) < 28 or (ip[0] >> 4) != 4 or ip[9] != 17:
+            return None                         # not IPv4/UDP
+        ihl = (ip[0] & 0x0F) * 4
+        udp = ip[ihl:]
+        src_port = int.from_bytes(udp[0:2], "big")
+        dst_port = int.from_bytes(udp[2:4], "big")
+        if src_port != 68 or dst_port != 67:    # not a DHCP client -> server
+            self._count("ip, not dhcp")
+            return None
+        udp_len = int.from_bytes(udp[4:6], "big")
+        return self._dhcp(station, udp[8:udp_len])
+
+    def _dhcp(self, station: "Station", dhcp: bytes) -> bytes | None:
+        """A BOOTP request: answer a DISCOVER with an OFFER, a REQUEST with ACK."""
+        cookie = dhcp.find(bytes.fromhex("63825363"))
+        if cookie < 0:
+            return None
+        xid = dhcp[4:8]
+        chaddr = dhcp[28:34]
+        message_type = None
+        opts = dhcp[cookie + 4:]
+        i = 0
+        while i < len(opts):
+            code = opts[i]
+            if code == 255:                     # end
+                break
+            if code == 0:                       # pad
+                i += 1
+                continue
+            length = opts[i + 1]
+            if code == 53:                      # DHCP message type
+                message_type = opts[i + 2]
+            i += 2 + length
+        if message_type == 1:                   # DISCOVER
+            kind, name = 2, "dhcp offer"
+        elif message_type == 3:                 # REQUEST
+            kind, name = 5, "dhcp ack"
+        else:
+            return None
+        self._count(name)
+        log.info("dhcp %s to %s: %s", "OFFER" if kind == 2 else "ACK",
+                 station.address.hex(":"), ".".join(map(str, CLIENT_IP)))
+        bootp = dhcp_reply(xid, chaddr, kind, CLIENT_IP)
+        packet = udp4_packet(SERVER_IP, bytes([255, 255, 255, 255]), 67, 68, bootp)
+        return self.data_protected(station.address, b"\x08\x00", packet)
+
+    def _arp(self, station: "Station", arp: bytes) -> bytes | None:
+        """An ARP request. Answer one that asks for the gateway."""
+        if len(arp) < 28 or int.from_bytes(arp[6:8], "big") != 1:
+            return None                         # not a request
+        sender_mac, sender_ip = arp[8:14], arp[14:18]
+        target_ip = arp[24:28]
+        if target_ip != SERVER_IP:              # only the gateway is ours
+            return None
+        self._count("arp reply")
+        reply = (arp[:6] + b"\x00\x02"          # htype/ptype/hlen/plen, op reply
+                 + AP_ADDRESS + SERVER_IP       # sender: the gateway
+                 + sender_mac + sender_ip)      # target: the asker
+        return self.data_protected(station.address, b"\x08\x06", reply)
 
 
 class FrameChannel:
