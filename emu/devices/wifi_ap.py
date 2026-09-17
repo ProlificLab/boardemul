@@ -401,7 +401,17 @@ class AccessPoint:
             log.info("a 0x%02x data frame from %s carried %s, not EAPOL",
                      frame[0], frame[10:16].hex(":"), body[:8].hex())
             return None
-        reply = station.shake.take(body[8:])
+        eap = body[8:]
+        # Truncate to the EAPOL frame's own declared length before anything
+        # reads it. The radio hands over the whole transmit buffer, which can
+        # carry a few trailing bytes past the frame -- a 0xdeadbeef marker was
+        # measured -- and the station computes its integrity code over exactly
+        # the EAPOL frame, four bytes plus the length field. Include the trailing
+        # bytes and the code never matches, which is precisely what stalled the
+        # handshake with every other input already correct (ADR 0070).
+        if len(eap) >= 4:
+            eap = eap[:4 + int.from_bytes(eap[2:4], "big")]
+        reply = station.shake.take(eap)
         if reply is not None:
             # Message two verified, so message one arrived and is no longer
             # owed. Anything that did not verify leaves it owed, and the
@@ -414,16 +424,10 @@ class AccessPoint:
                      station.address.hex(":"))
         if reply is None:
             # A signed message two that produced no reply means the integrity
-            # code did not verify -- a key-schedule mismatch, not a malformed
-            # frame. Log the nonces so it is visible which input disagrees.
-            eap = body[8:]
+            # code did not verify -- a key-schedule mismatch. Count it so the
+            # difference from "the station never replied" stays visible.
             if wpa2.key_info(eap) & wpa2.KI_MIC:
                 self._count("message two, mic did not verify")
-                if self.counts["message two, mic did not verify"] <= 6:
-                    log.info("mic fail: anonce %s snonce %s replay %s carried "
-                             "mic %s", station.shake.anonce.hex()[:20],
-                             wpa2.nonce_of(eap).hex()[:20], eap[9:17].hex(),
-                             eap[wpa2.MIC_OFFSET:wpa2.MIC_OFFSET + 16].hex())
             return None
         self._count("eapol 3")
         return self.data(station.address, reply)
