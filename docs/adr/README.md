@@ -84,3 +84,4 @@ superseded ADR is marked superseded and points forward.
 | [0076](0076-message-one-waits-for-the-station.md) | Message one waits for the station to be ready | Hypothesis refuted by its own test; superseded context by 0078 |
 | [0077](0077-there-are-no-hardware-key-slots-to-model.md) | There are no hardware key slots to model; the crypto is software | Accepted (corrects 0076's addendum) |
 | [0078](0078-the-handshake-never-completed.md) | The handshake never completed; the peer miscounted a retransmit | Accepted (retracts 0074) |
+| [0079](0079-message-three-is-dropped-in-the-wrong-state.md) | Message three is dropped because the supplicant is in the wrong state | Accepted (finishes correcting 0071) |
