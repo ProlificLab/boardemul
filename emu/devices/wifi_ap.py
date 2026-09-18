@@ -32,7 +32,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from emu import dhcp, dns, tcp, wpa2
+from emu import ccmp, dhcp, dns, tcp, wpa2
 
 log = logging.getLogger("wifi")
 
@@ -47,6 +47,11 @@ REPLY = struct.Struct("<HH")
 # milliseconds. See ADR 0068; the device learns that a frame is awaited and
 # nothing about what it is.
 AWAITED = 1
+# A second reply flag: the sixteen octets after the reply header, before the
+# frame, are the pairwise temporal key for the MAC model to encrypt and decrypt
+# data frames with (ADR 0094). Sent once, on the first reply after the handshake
+# completes, because the key install never reaches MMIO for the device to see.
+REPLY_KEY = 2
 
 # 802.11 subtypes, as the first octet of a frame carries them.
 PROBE_REQUEST = 0x40
@@ -237,6 +242,9 @@ class Station:
     associated: bool = False
     # The address DHCP leased it (ADR 0091), or None before it has one.
     ip: bytes | None = None
+    # The pairwise temporal key, once the handshake completes (ADR 0094); until
+    # then None, and the data cipher is identity.
+    tk: bytes | None = None
     shake: wpa2.Handshake | None = None
     # Message one is sent on a tick rather than in reply to the association
     # request, because a real access point does not answer a frame twice.
@@ -290,6 +298,9 @@ class AccessPoint:
         # The guest's clock in milliseconds, set on every event, so the TCP
         # retransmission timer has a clock to run on.
         self.clock = 0
+        # The temporal key waiting to be handed to the MAC model, set when a
+        # handshake completes and cleared once it goes out on a reply (ADR 0094).
+        self.pending_key: bytes | None = None
         log.info("access point %r on channel %d, %s", network.ssid,
                  network.channel,
                  "WPA2 with a master key" if self.master
@@ -375,20 +386,25 @@ class AccessPoint:
     def data_protected(self, to: bytes, ethertype: bytes, payload: bytes) -> bytes:
         """A From-DS data frame with the Protected bit and a CCMP header.
 
-        The mirror of what the station sends once it is connected (ADR 0084):
-        the cipher is identity, so the payload rides plaintext behind an
-        eight-byte CCMP header, and an eight-byte trailer stands in for the MIC
-        the station strips. Only the packet number has to advance.
+        The mirror of what the station sends once it is connected. Once the
+        handshake has given the station a key (ADR 0094), the body is really
+        encrypted with it: the CCMP header carries the packet number, and the
+        eight-octet trailer is a real MIC, not a stand-in -- the MAC model in
+        QEMU holds the same key and decrypts it before the driver sees it. Until
+        then (no key yet, an open network) the cipher is identity, as ADR 0084
+        left it, and the trailer is eight zeros.
         """
         fc = bytes([DATA, 0x42])        # data, From-DS, Protected
         head = (fc + b"\x00\x00" + to + AP_ADDRESS + AP_ADDRESS
                 + ((self._next() & 0xFFF) << 4).to_bytes(2, "little"))
         self.pn += 1
-        pn = self.pn
-        ccmp = bytes([pn & 0xFF, (pn >> 8) & 0xFF, 0x00, 0x20,
-                      (pn >> 16) & 0xFF, (pn >> 24) & 0xFF, 0x00, 0x00])
-        llc = bytes.fromhex("aaaa03000000") + ethertype
-        return head + ccmp + llc + payload + bytes(8)
+        ccmp_header = ccmp.build_header(self.pn)
+        body = bytes.fromhex("aaaa03000000") + ethertype + payload
+        station = self.stations.get(to)
+        if station is not None and station.tk is not None:
+            sealed = ccmp.encrypt(station.tk, head, ccmp_header, body)
+            return head + ccmp_header + sealed
+        return head + ccmp_header + body + bytes(8)
 
     def take(self, frame: bytes, channel: int, clock: int = 0) -> Air | None:
         """A frame the guest transmitted. What to send back, or nothing.
@@ -531,11 +547,25 @@ class AccessPoint:
         # fixed offset put the LLC check two bytes out and dropped the frame
         # for looking wrong.
         at = 26 if frame[0] & 0x80 else 24
-        # A Protected frame carries an eight-byte CCMP header before the LLC.
-        # The cipher is identity here (ADR 0084), so the payload after it is
-        # plaintext -- just skip the header. EAPOL is sent unprotected, before
-        # a key exists, so it has no CCMP header.
-        body = frame[at + 8:] if (frame[1] & 0x40) else frame[at:]
+        # A Protected frame carries an eight-byte CCMP header before the body.
+        # Once the station has a key, the MAC model has really encrypted the
+        # body (ADR 0094), so decrypt it with the key and verify its MIC; a frame
+        # whose MIC does not check is dropped, not read. Before the key exists
+        # the cipher is identity (ADR 0084) and the body is plaintext behind the
+        # header; EAPOL is sent unprotected and has no CCMP header at all.
+        if frame[1] & 0x40:                         # Protected
+            if station.tk is not None:
+                body = ccmp.decrypt(station.tk, frame[:at], frame[at:at + 8],
+                                    frame[at + 8:])
+                if body is None:
+                    self._count("data frame failed its MIC")
+                    log.info("a data frame from %s did not decrypt (bad MIC)",
+                             station.address.hex(":"))
+                    return None
+            else:
+                body = frame[at + 8:]               # identity, before the key
+        else:
+            body = frame[at:]
         if body[:6] != bytes.fromhex("aaaa03000000"):
             self._count("data frame that is not EAPOL")
             log.info("a 0x%02x data frame from %s carried %s, not LLC",
@@ -581,6 +611,13 @@ class AccessPoint:
             self._count("handshake done")
             log.info("the station %s completed the four-way handshake",
                      station.address.hex(":"))
+            # The data cipher is now real (ADR 0094): keep the temporal key to
+            # encrypt and decrypt the station's frames, and hand a copy to the
+            # MAC model on the next reply, since the key install it would read
+            # never reaches MMIO (ADR 0077).
+            if station.shake.keys is not None:
+                station.tk = station.shake.keys.tk
+                self.pending_key = station.shake.keys.tk
             return None
         # Anything else here is a message two -- the first, or a retransmit
         # because the station has not accepted message three.
@@ -890,7 +927,15 @@ class FrameChannel:
                     out = None
                 payload = out.frame if out else b""
                 flags = AWAITED if (out and out.awaited) else 0
-                conn.sendall(REPLY.pack(len(payload), flags) + payload)
+                # Hand the temporal key to the MAC model when one is waiting
+                # (ADR 0094): it rides between the reply header and the frame, so
+                # the header's length still counts only the frame.
+                key = self.point.pending_key
+                self.point.pending_key = None
+                if key is not None:
+                    flags |= REPLY_KEY
+                conn.sendall(REPLY.pack(len(payload), flags)
+                             + (key or b"") + payload)
                 # How long the device waits on us, against how often it asks.
                 # A round trip happens inside a QEMU timer callback, so time
                 # spent here is time the guest is stopped and the beacon

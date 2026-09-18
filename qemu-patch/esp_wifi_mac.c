@@ -50,6 +50,7 @@
 
 #include <sys/socket.h>
 #include <sys/un.h>
+#include <gcrypt.h>
 
 #define TYPE_ESP_WIFI_MAC "esp-wifi-mac"
 OBJECT_DECLARE_SIMPLE_TYPE(EspWifiMac, ESP_WIFI_MAC)
@@ -283,6 +284,12 @@ OBJECT_DECLARE_SIMPLE_TYPE(EspWifiMac, ESP_WIFI_MAC)
  * excuse a held MAC -- that is a radio tuned elsewhere, and a frame delivered
  * into it never happened. ADR 0068. */
 #define REPLY_AWAITED     0x0001u
+/* And a second: the sixteen octets between the reply header and the frame are
+ * the pairwise temporal key, handed over so this device can encrypt and decrypt
+ * data frames the way the hardware crypto engine does (ADR 0094). The key
+ * install never reaches MMIO for the device to read (ADR 0077), so the peer --
+ * which derived the same key from the handshake -- sends it here instead. */
+#define REPLY_KEY         0x0002u
 /* Why the handler was woken. Found by raising the interrupt with nothing to
  * say and watching what it went and read: it reads this, gets nothing, and
  * returns -- then comes straight back, because the line is still asserted.
@@ -455,6 +462,11 @@ struct EspWifiMac {
     /* Descriptors delivered into and not yet seen handed back. */
     hwaddr awaiting[DESC_MAX];
     int frames_fd;
+    /* The pairwise temporal key, once the peer has handed it over (ADR 0094),
+     * and whether it has. Until then data frames cross the air in the clear,
+     * which is the identity cipher ADR 0084 lived with. */
+    uint8_t tk[16];
+    bool have_key;
     int64_t mark_at;
     uint32_t ring;              /* what the driver handed us */
     unsigned deliveries;
@@ -488,6 +500,139 @@ static void wifi_raise(EspWifiMac *s, int level)
 /* Defined below, beside the walk it shares its reading of the chain with. */
 static unsigned wifi_free_count(EspWifiMac *s);
 
+/* Real CCMP (ADR 0094). The pairwise data cipher lives here, in the MAC, the
+ * way the hardware crypto engine's does: the body of a Protected data frame is
+ * encrypted before it goes on the air and decrypted when it comes off, while the
+ * driver only ever sees plaintext. The key is the peer's -- the same key it
+ * derived from the handshake, since the install never reaches MMIO (ADR 0077).
+ * The nonce and additional-authenticated-data are built exactly as emu/ccmp.py
+ * builds them, so the two ends agree, and to 802.11-2016 so a capture decodes.
+ * This network has no fourth-address (WDS) frames, so that case is left out. */
+
+static size_t ccmp_hdr_len(const uint8_t *f)
+{
+    return ((f[0] & 0x0C) == 0x08 && (f[0] & 0x80)) ? 26 : 24;   /* QoS: +2 */
+}
+
+static bool ccmp_is_protected_data(const uint8_t *f, size_t len)
+{
+    return (f[0] & 0x0C) == 0x08 && (f[1] & 0x40)
+        && len >= ccmp_hdr_len(f) + 8;
+}
+
+static uint64_t ccmp_pn(const uint8_t *h)
+{
+    return (uint64_t)h[0] | ((uint64_t)h[1] << 8) | ((uint64_t)h[4] << 16)
+        | ((uint64_t)h[5] << 24) | ((uint64_t)h[6] << 32) | ((uint64_t)h[7] << 40);
+}
+
+static void ccmp_nonce(const uint8_t *f, size_t hdrlen, uint64_t pn, uint8_t out[13])
+{
+    uint8_t priority = (hdrlen == 26) ? (f[24] & 0x0F) : 0;   /* the QoS TID */
+    out[0] = priority;                          /* a data frame: no management bit */
+    memcpy(out + 1, f + 10, 6);                 /* address two, the transmitter */
+    for (int i = 0; i < 6; i++) {
+        out[7 + i] = (uint8_t)(pn >> (8 * (5 - i)));   /* packet number, big-endian */
+    }
+}
+
+static size_t ccmp_aad(const uint8_t *f, size_t hdrlen, uint8_t out[30])
+{
+    uint8_t fc0 = f[0] & ~0x70;                 /* a data frame: subtype bits masked */
+    uint8_t fc1 = (uint8_t)((f[1] & ~0x38) | 0x40);  /* Retry/PM/MoreData off, Protected on */
+    size_t n = 0;
+    out[n++] = fc0;
+    out[n++] = fc1;
+    memcpy(out + n, f + 4, 18);                 /* A1, A2, A3 */
+    n += 18;
+    out[n++] = f[22] & 0x0F;                    /* Sequence Control, sequence masked */
+    out[n++] = 0;
+    if (hdrlen == 26) {
+        out[n++] = f[24] & 0x0F;                /* QoS Control, only the TID kept */
+        out[n++] = 0;
+    }
+    return n;
+}
+
+/* One CCM operation over gcrypt (the same libgcrypt esp_aes.c links), M=8, L=2,
+ * matching emu/aes.py. For decryption, false means the MIC did not verify. */
+static bool ccmp_ccm(const uint8_t *key, const uint8_t *nonce,
+                     const uint8_t *aad, size_t aadlen,
+                     uint8_t *data, size_t datalen, uint8_t *tag, bool encrypt)
+{
+    gcry_cipher_hd_t h;
+    if (gcry_cipher_open(&h, GCRY_CIPHER_AES128, GCRY_CIPHER_MODE_CCM, 0)) {
+        return false;
+    }
+    bool ok = false;
+    uint64_t lengths[3] = { datalen, aadlen, 8 };
+    if (gcry_cipher_setkey(h, key, 16)
+        || gcry_cipher_setiv(h, nonce, 13)
+        || gcry_cipher_ctl(h, GCRYCTL_SET_CCM_LENGTHS, lengths, sizeof(lengths))
+        || gcry_cipher_authenticate(h, aad, aadlen)) {
+        goto out;
+    }
+    if (encrypt) {
+        ok = !gcry_cipher_encrypt(h, data, datalen, NULL, 0)
+            && !gcry_cipher_gettag(h, tag, 8);
+    } else {
+        ok = !gcry_cipher_decrypt(h, data, datalen, NULL, 0)
+            && !gcry_cipher_checktag(h, tag, 8);
+    }
+out:
+    gcry_cipher_close(h);
+    return ok;
+}
+
+/* Seal a frame before the air: encrypt the body in place and append its MIC,
+ * returning the new length (eight more). A frame that is not a Protected data
+ * frame, or one sent before the key arrived, is left as it is. The buffer must
+ * have eight octets of room past `len`. */
+static size_t wifi_ccmp_seal(EspWifiMac *s, uint8_t *f, size_t len)
+{
+    if (!s->have_key || !ccmp_is_protected_data(f, len)) {
+        return len;
+    }
+    size_t hdr = ccmp_hdr_len(f);
+    uint8_t nonce[13], aad[30];
+    ccmp_nonce(f, hdr, ccmp_pn(f + hdr), nonce);
+    size_t aadlen = ccmp_aad(f, hdr, aad);
+    if (!ccmp_ccm(s->tk, nonce, aad, aadlen, f + hdr + 8, len - hdr - 8,
+                  f + len, true)) {
+        qemu_log_mask(LOG_UNIMP, "esp-wifi-mac: CCMP seal failed%c", 10);
+        return len;
+    }
+    return len + 8;
+}
+
+/* Open a frame off the air: verify its MIC and decrypt the body in place. The
+ * length is left as it is, the eight-octet MIC still on the end -- the driver
+ * strips it, exactly as it did the eight-zero placeholder the identity cipher
+ * left there (ADR 0084), so what it reads is the frame's own body. A MIC that
+ * does not check is logged and the frame left encrypted, so the driver rejects
+ * it rather than this passing garbage on -- with both ends ours it should never
+ * happen. */
+static size_t wifi_ccmp_open(EspWifiMac *s, uint8_t *f, size_t len)
+{
+    if (!s->have_key || !ccmp_is_protected_data(f, len)) {
+        return len;
+    }
+    size_t hdr = ccmp_hdr_len(f);
+    if (len < hdr + 8 + 8) {
+        return len;
+    }
+    size_t bodylen = len - hdr - 8 - 8;
+    uint8_t nonce[13], aad[30];
+    ccmp_nonce(f, hdr, ccmp_pn(f + hdr), nonce);
+    size_t aadlen = ccmp_aad(f, hdr, aad);
+    if (!ccmp_ccm(s->tk, nonce, aad, aadlen, f + hdr + 8, bodylen,
+                  f + hdr + 8 + bodylen, false)) {
+        qemu_log_mask(LOG_UNIMP, "esp-wifi-mac: a data frame failed its MIC%c", 10);
+        return len;
+    }
+    return len;
+}
+
 /* One request, one reply. Blocking, like every unmodelled access the bus
  * bridge forwards: the guest tolerates that already and this happens once per
  * beacon rather than once per load. A peer that has gone away closes the
@@ -500,6 +645,16 @@ static size_t wifi_ask(EspWifiMac *s, uint16_t type, unsigned channel,
     if (s->frames_fd < 0) {
         return 0;
     }
+    /* A transmitted data frame is sealed before it goes on the air (ADR 0094):
+     * the body is encrypted and a MIC appended, into a copy because the caller's
+     * frame is const and grows by eight. Everything else goes as it is. */
+    uint8_t sealed[FRAME_MAX + 16];
+    if (type == FRAME_TX && frame && len && len <= FRAME_MAX && s->have_key
+        && ccmp_is_protected_data(frame, len)) {
+        memcpy(sealed, frame, len);
+        len = wifi_ccmp_seal(s, sealed, len);
+        frame = sealed;
+    }
     uint8_t head[12];
     stw_le_p(head + 0, type);
     stw_le_p(head + 2, (uint16_t)channel);
@@ -511,15 +666,26 @@ static size_t wifi_ask(EspWifiMac *s, uint16_t type, unsigned channel,
         || (len && qemu_write_full(s->frames_fd, frame, len) != len)) {
         goto gone;
     }
-    /* length, then flags. The only flag so far says a station is waiting for
-     * this frame, which is the one thing about it the radio needs (ADR 0068). */
+    /* length, then flags. One flag says a station is waiting for this frame
+     * (ADR 0068); another says the sixteen octets that follow the header, before
+     * the frame, are the pairwise key to install (ADR 0094). */
     uint8_t reply[4];
     if (recv(s->frames_fd, reply, sizeof(reply), MSG_WAITALL) != sizeof(reply)) {
         goto gone;
     }
     size_t back = lduw_le_p(reply);
+    uint16_t reply_flags = lduw_le_p(reply + 2);
     if (flags) {
-        *flags = lduw_le_p(reply + 2);
+        *flags = reply_flags;
+    }
+    if (reply_flags & REPLY_KEY) {
+        if (recv(s->frames_fd, s->tk, sizeof(s->tk), MSG_WAITALL)
+            != (ssize_t)sizeof(s->tk)) {
+            goto gone;
+        }
+        s->have_key = true;
+        qemu_log_mask(LOG_UNIMP, "esp-wifi-mac: the pairwise key is in; data "
+                      "frames are encrypted from here%c", 10);
     }
     if (!back) {
         return 0;
@@ -533,7 +699,9 @@ static size_t wifi_ask(EspWifiMac *s, uint16_t type, unsigned channel,
     if (recv(s->frames_fd, out, back, MSG_WAITALL) != (ssize_t)back) {
         goto gone;
     }
-    return back;
+    /* A received data frame is opened: its MIC verified and its body decrypted,
+     * so what reaches the driver is plaintext, as from a real MAC (ADR 0094). */
+    return wifi_ccmp_open(s, out, back);
 
 gone:
     qemu_log_mask(LOG_UNIMP, "esp-wifi-mac: the frame channel closed; "
@@ -1379,6 +1547,10 @@ static void wifi_reset(void *opaque)
     s->ring = 0;
     s->tx_pending = 0;
     s->pending_len = 0;
+    /* A reset re-associates and re-handshakes, so the old key is stale and the
+     * peer will send a fresh one; drop it and go back to plaintext until then. */
+    s->have_key = false;
+    memset(s->tk, 0, sizeof(s->tk));
     memset(s->awaiting, 0, sizeof(s->awaiting));
     wifi_raise(s, 0);
 }

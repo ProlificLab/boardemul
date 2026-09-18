@@ -18,7 +18,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from emu import tcp, wpa2  # noqa: E402
+from emu import ccmp, tcp, wpa2  # noqa: E402
 from emu.tcp import ACK, FIN, PSH, SYN  # noqa: E402
 from emu.devices.wifi_ap import (  # noqa: E402
     AP_ADDRESS, CLIENT_IP, SERVER_IP, AccessPoint, Network, Station,
@@ -136,6 +136,53 @@ def _seat(point: AccessPoint, mac: bytes) -> None:
     station = Station(mac, authenticated=True, associated=True)
     station.shake = wpa2.Handshake(master=bytes(32), ap=AP_ADDRESS, station=mac)
     point.stations[mac] = station
+
+
+def _sta_encrypted(tk: bytes, ip: bytes, pn: int = 1, src: bytes = STATION) -> bytes:
+    """A Protected data frame from the station whose body is really CCMP-encrypted
+    with `tk`, the way the MAC model seals it before it reaches the air."""
+    head = bytes([0x08, 0x41, 0, 0]) + AP_ADDRESS + src + AP_ADDRESS + b"\x00\x00"
+    ccmp_header = ccmp.build_header(pn)
+    body = bytes.fromhex("aaaa03000000") + b"\x08\x00" + ip
+    return head + ccmp_header + ccmp.encrypt(tk, head, ccmp_header, body)
+
+
+def _ip_udp_payload(ip: bytes) -> bytes:
+    ip = ip[:int.from_bytes(ip[2:4], "big")]
+    udp = ip[(ip[0] & 0x0F) * 4:]
+    return udp[8:int.from_bytes(udp[4:6], "big")]
+
+
+def test_a_connected_station_is_answered_over_real_ccmp() -> None:
+    """With a key in place (ADR 0094), the station's frame is encrypted, the peer
+    decrypts and verifies it, and its reply comes back encrypted -- the whole
+    exchange over real CCMP, not the identity stand-in."""
+    point = _connected()
+    tk = bytes(range(16))
+    point.stations[STATION].tk = tk                  # the shared pairwise key
+    ip = udp4_packet(CLIENT_IP, SERVER_IP, 68, 67, _dhcp_discover(STATION))
+    air = point.take(_sta_encrypted(tk, ip), 1, 100)
+    assert air is not None, "the encrypted DISCOVER was not answered"
+
+    reply = air.frame
+    body = ccmp.decrypt(tk, reply[:24], reply[24:32], reply[32:])
+    assert body is not None, "the reply did not decrypt or its MIC failed"
+    assert body[:6] == bytes.fromhex("aaaa03000000"), "an LLC/SNAP header"
+    bootp = _ip_udp_payload(body[8:])
+    assert bootp[16:20] == bytes([192, 168, 4, 2]), "the offered address"
+
+
+def test_a_forged_frame_is_dropped() -> None:
+    """A Protected frame that does not decrypt under the key is not read: a bit
+    flipped in the ciphertext must make the peer drop it, not parse garbage."""
+    point = _connected()
+    tk = bytes(range(16))
+    point.stations[STATION].tk = tk
+    ip = udp4_packet(CLIENT_IP, SERVER_IP, 68, 67, _dhcp_discover(STATION))
+    frame = bytearray(_sta_encrypted(tk, ip))
+    frame[40] ^= 1                                   # flip a ciphertext octet
+    assert point.take(bytes(frame), 1, 100) is None, "a bad MIC was not dropped"
+    assert point.counts.get("data frame failed its MIC") == 1
 
 
 def test_two_stations_each_get_their_own_address() -> None:

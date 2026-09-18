@@ -19,10 +19,12 @@ request it only sends because that reply was accepted, and the response to it.
 
 It no longer stops there. With the cross-thread TLB flush fixed (ADR 0066) and
 the GDMA able to reach PSRAM (ADR 0083), the WPA2 four-way handshake completes,
-and with ARP and a one-station DHCP in the peer (ADR 0084) the firmware gets an
-address: it prints "Obtained IP address" and stays connected. So the run goes
-all the way, under `thread=multi` (the handshake needs it), and the last test
-asserts the address.
+and with ARP and DHCP in the peer (ADR 0084/0091) the firmware gets an address:
+it prints "Obtained IP address" and stays connected. The data that carries that
+DHCP is really encrypted now (ADR 0094): the MAC model holds the pairwise key
+and does AES-CCM on the air, so the last test also asserts the key was installed
+and no frame failed its MIC. The run goes all the way, under `thread=multi` (the
+handshake needs it).
 """
 
 from __future__ import annotations
@@ -208,3 +210,13 @@ def test_the_station_gets_an_ip(connected: Run) -> None:
         "the DHCP exchange did not finish (offer and ack): " + peer[-2000:])
     assert "Obtained IP address" in connected.uart, (
         "the firmware never got an IP: " + connected.uart[-2000:])
+    # And the DHCP that finished rode over real CCMP (ADR 0094): the MAC model
+    # was handed the pairwise key, and no frame failed its MIC. The exchange
+    # completing at all is the proof the cipher round-trips -- a broken one drops
+    # the encrypted OFFER and DHCP never gets past it -- but assert the key install
+    # too, so a silent fall back to the identity cipher would fail here.
+    device = _device_said(connected.outdir)
+    assert "the pairwise key is in" in device, (
+        "the MAC never got the key, so CCMP did not engage: " + device[-2000:])
+    assert "failed its MIC" not in device, (
+        "a data frame failed its CCMP MIC: " + device[-2000:])
