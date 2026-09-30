@@ -32,7 +32,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from emu import ccmp, dhcp, dns, tcp, wpa2
+from emu import ccmp, dhcp, dns, factory, tcp, wpa2
 
 log = logging.getLogger("wifi")
 
@@ -136,9 +136,10 @@ CLIENT_IP = bytes([192, 168, 4, 2])
 NETMASK = bytes([255, 255, 255, 0])
 LEASE_SECONDS = 7200
 DHCP_FIRST, DHCP_LAST = 2, 254          # the host numbers the pool may lease
-# The peer accepts a TCP connection on any port and carries it with a real
-# transport (emu/tcp.py, ADR 0089); which ports have a service behind them is the
-# service layer's business, not the transport's.
+# The TCP ports something serves (ADR 0096); a connection to any other port is
+# refused with a reset, as by a host with no listener there. The transport
+# itself (emu/tcp.py, ADR 0089) knows nothing of ports.
+SERVICES = {factory.PORT: "factory test"}
 
 
 def ip_checksum(data: bytes) -> int:
@@ -320,6 +321,8 @@ class AccessPoint:
         # The station whose message one was the last frame offered on a tick,
         # so a delivery the device reports can be pinned on it (ADR 0095).
         self.last_offered: Station | None = None
+        # What the factory-test service has been told (ADR 0096).
+        self.registrations: list[factory.Report] = []
         log.info("access point %r on channel %d, %s", network.ssid,
                  network.channel,
                  "WPA2 with a master key" if self.master
@@ -818,17 +821,24 @@ class AccessPoint:
         key = (client_ip, client_port, server_port)
         entry = self.conns.get(key)
         if entry is None:
-            if not (flags & tcp.SYN):
-                return None             # not a known connection, and not an open
+            if not (flags & tcp.SYN) or server_port not in SERVICES:
+                # No connection for it to go to: a port nothing serves, or one
+                # already forgotten. Refused as a host in the CLOSED state
+                # refuses it (ADR 0096).
+                return self._tcp_refuse(station, client_ip, client_port,
+                                        server_port, seq, ack, flags, payload)
             self.tcp_isn = (self.tcp_isn + 0x10000) & 0xFFFFFFFF
             entry = {"conn": tcp.Connection(iss=self.tcp_isn),
                      "client_ip": client_ip, "client_port": client_port,
                      "server_port": server_port, "station": station,
-                     "greeted": False}
+                     "stream": b"", "report": None, "closing": False}
             self.conns[key] = entry
             self._count("tcp connection to %d" % server_port)
         conn = entry["conn"]
         out = conn.on_segment(seq, ack, flags, window, payload, self.clock)
+        if flags & tcp.RST:
+            log.info("tcp :%d from %s reset by the client", server_port,
+                     station.address.hex(":"))
         self._tcp_service(entry)                 # let a service read and answer
         out += conn.pump(self.clock)             # send anything the service wrote
         for seg in out:
@@ -837,22 +847,56 @@ class AccessPoint:
             self.conns.pop(key, None)
         return None
 
+    def _tcp_refuse(self, station: "Station", client_ip: bytes,
+                    client_port: int, server_port: int, seq: int, ack: int,
+                    flags: int, payload: bytes) -> None:
+        """Answer a segment with no connection with a reset (RFC 9293's CLOSED
+        state), or with nothing if it was itself a reset."""
+        seg = tcp.refuse(seq, ack, flags, len(payload))
+        if seg is None:
+            return None
+        self._count("tcp refused on %d" % server_port)
+        if flags & tcp.SYN:
+            log.info("tcp :%d refused for %s: nothing serves that port",
+                     server_port, station.address.hex(":"))
+        self.outbox.append(self._tcp_frame(
+            {"client_ip": client_ip, "client_port": client_port,
+             "server_port": server_port, "station": station}, seg))
+        return None
+
     def _tcp_service(self, entry: dict) -> None:
-        """What sits above the transport. For now it only observes: it reads the
-        stream and logs the opening, the way ADR 0087 did, but over a real
-        connection. Serving a protocol -- answering the factory-test server on
-        8896 -- is the next workstream (ADR 0088); when it lands it lives here,
-        calling `conn.write` and `conn.close`.
+        """What sits above the transport: the factory-test server on 8896, the
+        one service this LAN runs (ADR 0096).
+
+        The device sends one JSON report and reads nothing back, so the service
+        collects the stream until it parses, records the report -- checking the
+        MAC it claims against the address the frames came from -- and writes
+        nothing. When the client closes its half, the service closes its own.
         """
         conn = entry["conn"]
-        data = conn.read()
-        if data and not entry["greeted"]:
-            entry["greeted"] = True
-            self._count("tcp opening on %d" % entry["server_port"])
-            log.info("tcp opening on :%d from %s, %d byte(s): %s",
-                     entry["server_port"], entry["station"].address.hex(":"),
-                     len(data), data[:96].hex())
-            log.info("tcp opening as text: %r", data[:96])
+        entry["stream"] += conn.read()
+        if entry["report"] is None and entry["stream"]:
+            report = factory.parse_report(entry["stream"])
+            if report is not None:
+                entry["report"] = report
+                self._register(entry["station"], report)
+        if conn.state == tcp.CLOSE_WAIT and not entry["closing"]:
+            entry["closing"] = True
+            log.info("tcp :%d from %s closed by the client; closing ours",
+                     entry["server_port"], entry["station"].address.hex(":"))
+            conn.close()
+
+    def _register(self, station: "Station", report: "factory.Report") -> None:
+        """Keep a factory-test report and say what it was."""
+        claimed = factory.mac_bytes(report.mac)
+        matches = claimed == station.address
+        self.registrations.append(report)
+        self._count("factory registration")
+        log.info("factory test: %s %s (SKU %s) registered at %s, MAC %s -- %s",
+                 report.product, report.mac, report.sku, report.date,
+                 station.address.hex(":"),
+                 "the address it transmits from" if matches
+                 else "NOT the address it transmits from")
 
     def _tcp_frame(self, entry: dict, seg: "tcp.Segment") -> Air:
         """Turn a transport segment into a frame on the air: an IPv4/TCP datagram

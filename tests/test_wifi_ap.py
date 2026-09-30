@@ -73,44 +73,87 @@ def _parse(frame: bytes) -> dict:
             "flags": t[13], "payload": t[off:]}
 
 
-def test_a_syn_is_answered_with_a_syn_ack_on_any_port() -> None:
-    """Not just 8896: the port gate is gone (ADR 0089). A SYN to an arbitrary
-    port opens a connection and draws a SYN-ACK acknowledging the SYN's octet."""
+# As the vendor firmware sent it to lilygo.local:8896 (ADR 0096).
+REPORT = (b'{\n\t"SKU":\t"NA",\n\t"product":\t"T-Deck",\n\t"mac":\t'
+          b'"02:54:44:4D:00:01",\n\t"date":\t"2026-10-01,00:21"\n}')
+
+
+def _open(point: AccessPoint, port: int = 8896, cport: int = 5000) -> int:
+    """Complete a three-way handshake to the peer; return its initial sequence."""
+    isn = _parse(point.take(_sta_frame(_segment(cport, port, 100, 0, SYN)),
+                            1, 1000).frame)["seq"]
+    point.take(_sta_frame(_segment(cport, port, 101, isn + 1, ACK)), 1, 1001)
+    return isn
+
+
+def test_a_syn_to_the_factory_port_is_answered_with_a_syn_ack() -> None:
     point = _connected()
-    air = point.take(_sta_frame(_segment(5000, 9999, 100, 0, SYN)), 1, 1000)
+    air = point.take(_sta_frame(_segment(5000, 8896, 100, 0, SYN)), 1, 1000)
     assert air is not None, "a SYN was not answered"
     r = _parse(air.frame)
     assert r["flags"] == SYN | ACK
-    assert (r["sport"], r["dport"]) == (9999, 5000), "ports mirrored"
+    assert (r["sport"], r["dport"]) == (8896, 5000), "ports mirrored"
     assert r["ack"] == 101, "the SYN's octet is acknowledged"
 
 
-def test_a_full_exchange_is_carried_and_the_opening_observed() -> None:
+def test_a_syn_to_a_port_nothing_serves_is_refused() -> None:
+    """A host with no listener resets the connection rather than completing
+    it (ADR 0096): RST, acknowledging the SYN so the client accepts it."""
     point = _connected()
-    syn_ack = _parse(point.take(_sta_frame(_segment(5000, 8896, 100, 0, SYN)),
-                                1, 1000).frame)
-    isn = syn_ack["seq"]
-    # The client's ACK completes the open; nothing need come back.
-    assert point.take(_sta_frame(_segment(5000, 8896, 101, isn + 1, ACK)),
-                      1, 1001) is None
-    # Then it sends its opening, which is acknowledged and observed.
-    air = point.take(
-        _sta_frame(_segment(5000, 8896, 101, isn + 1, ACK | PSH, b"hello")),
-        1, 1002)
+    air = point.take(_sta_frame(_segment(5000, 9999, 100, 0, SYN)), 1, 1000)
     r = _parse(air.frame)
-    assert r["flags"] & ACK and r["ack"] == 106, "the data is acknowledged"
-    assert point.counts.get("tcp opening on 8896") == 1, "the opening was seen"
+    assert r["flags"] == tcp.RST | ACK and r["ack"] == 101
+    assert not point.conns, "no connection is kept for a refused port"
 
 
-def test_a_fin_is_acknowledged() -> None:
+def test_the_report_is_registered_and_nothing_is_sent_back() -> None:
+    """The factory-test service takes the report, checks the MAC against the
+    address the frames came from, and writes nothing: the device reads none."""
     point = _connected()
-    isn = _parse(point.take(_sta_frame(_segment(5000, 80, 100, 0, SYN)),
-                            1, 1000).frame)["seq"]
-    point.take(_sta_frame(_segment(5000, 80, 101, isn + 1, ACK)), 1, 1001)
-    air = point.take(_sta_frame(_segment(5000, 80, 101, isn + 1, ACK | FIN)),
+    isn = _open(point)
+    air = point.take(
+        _sta_frame(_segment(5000, 8896, 101, isn + 1, ACK | PSH, REPORT)), 1, 1002)
+    r = _parse(air.frame)
+    assert r["flags"] == ACK and not r["payload"], "only an acknowledgement"
+    assert r["ack"] == 101 + len(REPORT)
+    assert [(x.product, x.mac) for x in point.registrations] == [
+        ("T-Deck", "02:54:44:4D:00:01")]
+    assert point.tick(1, 1003) is None, "and nothing follows it"
+
+
+def test_a_report_split_across_segments_is_registered_once_whole() -> None:
+    point = _connected()
+    isn = _open(point)
+    half = len(REPORT) // 2
+    point.take(_sta_frame(_segment(5000, 8896, 101, isn + 1, ACK | PSH,
+                                   REPORT[:half])), 1, 1002)
+    assert not point.registrations, "half a report is not a report"
+    point.take(_sta_frame(_segment(5000, 8896, 101 + half, isn + 1, ACK | PSH,
+                                   REPORT[half:])), 1, 1003)
+    assert len(point.registrations) == 1
+
+
+def test_the_service_closes_when_the_client_does() -> None:
+    """The client's FIN is acknowledged and answered with the peer's own FIN,
+    so the connection ends in order rather than waiting in CLOSE_WAIT."""
+    point = _connected()
+    isn = _open(point)
+    air = point.take(_sta_frame(_segment(5000, 8896, 101, isn + 1, ACK | FIN)),
                      1, 1002)
     r = _parse(air.frame)
     assert r["flags"] & ACK and r["ack"] == 102, "the FIN's octet is acknowledged"
+    fin = _parse(point.tick(1, 1003).frame)
+    assert fin["flags"] & FIN, "the service closes its half too"
+    point.take(_sta_frame(_segment(5000, 8896, 102, fin["seq"] + 1, ACK)), 1, 1004)
+    assert not point.conns, "and once acknowledged the connection is gone"
+
+
+def test_a_segment_for_a_forgotten_connection_is_reset() -> None:
+    point = _connected()
+    air = point.take(_sta_frame(_segment(5000, 8896, 500, 9000, ACK | PSH, b"x")),
+                     1, 1000)
+    r = _parse(air.frame)
+    assert r["flags"] == tcp.RST and r["seq"] == 9000
 
 
 def _dns_query(name: str, txn: bytes = b"\xab\xcd") -> bytes:
@@ -275,7 +318,7 @@ def test_an_unanswered_syn_ack_is_retransmitted_on_a_tick() -> None:
     """The SYN-ACK went out but no ACK came; the retransmission timer, run on the
     guest clock a tick brings, resends it -- and not before it is due."""
     point = _connected()
-    point.take(_sta_frame(_segment(7000, 80, 1, 0, SYN)), 1, 5000)
+    point.take(_sta_frame(_segment(7000, 8896, 1, 0, SYN)), 1, 5000)
     assert point.tick(1, 5000 + tcp.RTO_MS - 1) is None, "not before the timeout"
     air = point.tick(1, 5000 + tcp.RTO_MS)
     assert air is not None and _parse(air.frame)["flags"] == SYN | ACK, \

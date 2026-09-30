@@ -23,8 +23,9 @@ and with ARP and DHCP in the peer (ADR 0084/0091) the firmware gets an address:
 it prints "Obtained IP address" and stays connected. The data that carries that
 DHCP is really encrypted now (ADR 0094): the MAC model holds the pairwise key
 and does AES-CCM on the air, so the last test also asserts the key was installed
-and no frame failed its MIC. The run goes all the way, under `thread=multi` (the
-handshake needs it).
+and no frame failed its MIC. And once it has the time, it reports itself to the
+factory-test server on lilygo.local:8896 (ADR 0096), which is where the run now
+stops. The run goes all the way, under `thread=multi` (the handshake needs it).
 """
 
 from __future__ import annotations
@@ -99,12 +100,13 @@ def _peer_said(outdir: Path) -> str:
         return ""
 
 
-def _got_ip(outdir: Path):
-    """The whole point now: a run can stop once the firmware has an address.
-    That line is on the UART, unlike association, which only the model's log
-    witnesses -- so this reads what the guest printed."""
+def _reported(outdir: Path):
+    """A run can stop once the firmware has reported itself to the factory-test
+    server and ended the task that did it -- its own last word on the network
+    (ADR 0096). Getting an address comes first, so every earlier assertion is
+    covered too. That line is on the UART, which is what this reads."""
     def check(uart: str, frames: list) -> bool:
-        return "Obtained IP address" in uart
+        return "----------REMOVE TASK----------" in uart
     return check
 
 
@@ -134,7 +136,7 @@ def connected(tmp_path_factory) -> Run:
                            # translation thread and completes under two
                            # (ADR 0066); the full connection needs multi.
                            env={"BOARDEMUL_TCG_THREADS": "multi"},
-                           until=_got_ip(scratch))
+                           until=_reported(scratch))
         keep = tmp_path_factory.mktemp("connect")
         for log in (list(scratch.glob("*.uart.log"))
                     + list(scratch.glob("*.qemu.log"))
@@ -220,3 +222,16 @@ def test_the_station_gets_an_ip(connected: Run) -> None:
         "the MAC never got the key, so CCMP did not engage: " + device[-2000:])
     assert "failed its MIC" not in device, (
         "a data frame failed its CCMP MIC: " + device[-2000:])
+
+
+def test_the_station_reports_to_the_factory_test_server(connected: Run) -> None:
+    """Once it has an address and the time, the firmware connects to
+    lilygo.local:8896 and sends its factory report (ADR 0096). The service
+    registers it, and finds the MAC it claims is the one it transmits from; the
+    firmware prints that it sent it and ends the task."""
+    peer = _peer_said(connected.outdir)
+    assert re.search(r"factory test: T-Deck 02:54:44:4D:00:01 \(SKU NA\) "
+                     r"registered at \d{4}-\d{2}-\d{2},\d{2}:\d{2}, MAC "
+                     r"02:54:44:4d:00:01 -- the address it transmits from", peer), (
+        "the factory report was not registered: " + peer[-2000:])
+    assert "Send mac address success!" in connected.uart, connected.uart[-2000:]

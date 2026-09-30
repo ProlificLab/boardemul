@@ -222,6 +222,32 @@ def test_data_written_before_a_close_is_sent_before_the_fin() -> None:
     assert kinds == [(b"bye", False), (b"", True)], "data first, then the FIN"
 
 
+# -------------------------------------------------- refused (CLOSED state)
+
+def test_a_syn_to_a_closed_port_is_reset_and_its_octet_acknowledged() -> None:
+    """RFC 9293 §3.10.7.1, no ACK on the segment: <SEQ=0><ACK=SEG.SEQ+SEG.LEN>
+    <CTL=RST,ACK>, the SYN counting as one."""
+    seg = tcp.refuse(1000, 0, SYN, 0)
+    assert seg is not None and seg.flags == RST | ACK
+    assert seg.seq == 0 and seg.ack == 1001
+
+
+def test_a_segment_with_an_ack_is_reset_at_that_number() -> None:
+    """With an ACK on it: <SEQ=SEG.ACK><CTL=RST>, so the sender accepts it."""
+    seg = tcp.refuse(1000, 7777, ACK | PSH, 5)
+    assert seg is not None and seg.flags == RST and seg.seq == 7777
+
+
+def test_data_and_a_fin_without_an_ack_are_all_acknowledged() -> None:
+    seg = tcp.refuse(1000, 0, FIN, 5)
+    assert seg is not None and seg.ack == 1006, "five octets and the FIN"
+
+
+def test_a_reset_is_never_answered_with_a_reset() -> None:
+    assert tcp.refuse(1000, 0, RST, 0) is None
+    assert tcp.refuse(1000, 5, RST | ACK, 0) is None
+
+
 # ---------------------------------------------------- sequence-number wrap
 
 def test_sequence_comparison_wraps() -> None:

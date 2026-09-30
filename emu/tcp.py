@@ -408,6 +408,24 @@ class Connection:
         return out
 
 
+def refuse(seq: int, ack: int, flags: int, payload_len: int) -> Segment | None:
+    """The reset a host sends for a segment that has no connection to go to.
+
+    RFC 9293 §3.10.7.1, the CLOSED state -- which is what a port with no service
+    is, and what a connection already forgotten is (ADR 0096). A reset is never
+    answered with a reset. Otherwise the fields are chosen so the sender will
+    accept the reset: if the segment acknowledged something, the reset takes
+    that number as its own sequence; if not, it acknowledges everything the
+    segment occupied, a SYN or a FIN counting as one each.
+    """
+    if flags & RST:
+        return None
+    if flags & ACK:
+        return Segment(seq=ack, ack=0, flags=RST, window=0)
+    occupied = payload_len + (1 if flags & SYN else 0) + (1 if flags & FIN else 0)
+    return Segment(seq=0, ack=_sub(seq + occupied, 0), flags=RST | ACK, window=0)
+
+
 def _coalesce(segments: list[Segment]) -> list[Segment]:
     """Drop a bare duplicate acknowledgement that a later segment already carries.
 
