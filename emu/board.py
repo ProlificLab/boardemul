@@ -198,7 +198,7 @@ def build(outdir: Path, air: str | None = None, ble_air: str | None = None,
           antenna_dbi: float = 0.0, exponent: float = 2.0,
           obstruction_db: float = 0.0,
           gps: tuple[float, float, float] | None = None,
-          wifi_ap: tuple[str, int, int, bool, str] | None = None) -> Board:
+          wifi_ap: tuple[str, int, int, bool, str, bool] | None = None) -> Board:
     """`ble_air` and `wifi_ap` are accepted and do nothing here: this board has
     a radio but no Bluetooth controller and no WiFi MAC modelled, so there is no
     part for either to reach. Every board takes the same arguments on purpose --

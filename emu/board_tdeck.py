@@ -33,6 +33,7 @@ from emu.devices.es7210 import Es7210
 from emu.devices.sdcard import SdCard
 from emu.devices.spi_trace import SpiTrace
 from emu.devices.wifi_ap import AccessPoint, FrameChannel, Network
+from emu.uplink import Uplink
 from emu.devices.sx1262 import Sx1262
 from emu.devices.tdeck_i2c import GT911, TDeckKeyboard
 from emu.peripherals.adc import SarAdc
@@ -237,7 +238,7 @@ def build(outdir: Path, air: str | None = None, ble_air: str | None = None,
           antenna_dbi: float = 0.0, exponent: float = 2.0,
           obstruction_db: float = 0.0,
           gps: tuple[float, float, float] | None = None,
-          wifi_ap: tuple[str, int, int, bool, str] | None = None) -> Board:
+          wifi_ap: tuple[str, int, int, bool, str, bool] | None = None) -> Board:
     outdir = Path(outdir)
     panel = St7789Panel(outdir / "frames")
     gpio = GpioClient(outdir / "gpio.sock")
@@ -319,10 +320,13 @@ def build(outdir: Path, air: str | None = None, ble_air: str | None = None,
     if wifi_ap:
         # The network, and the peer that answers for it. The device asks down
         # this socket; it does not know what a beacon is (ADR 0064).
+        # And, if asked for, the NAT that takes its traffic past the LAN
+        # (ADR 0097); the frame channel starts and stops it.
+        uplink = Uplink() if len(wifi_ap) > 5 and wifi_ap[5] else None
         frames = FrameChannel(outdir / "wifi.sock", AccessPoint(Network(
             ssid=wifi_ap[0], channel=wifi_ap[2] or 1, wpa2=wifi_ap[3],
             passphrase=wifi_ap[4] if len(wifi_ap) > 4 else "",
-            beacon_ms=wifi_ap[1])))
+            beacon_ms=wifi_ap[1]), uplink=uplink))
     board = Board(regions=regions, gpio=gpio, spi=spi, i2c0=i2c0, i2c1=i2c1,
                   panel=panel, gps=receiver, devices=devices, frames=frames)
     board.touch = touch

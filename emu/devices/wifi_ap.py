@@ -33,6 +33,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from emu import ccmp, dhcp, dns, factory, tcp, wpa2
+from emu.uplink import TCP_BUFFER, Uplink
 
 log = logging.getLogger("wifi")
 
@@ -140,6 +141,25 @@ DHCP_FIRST, DHCP_LAST = 2, 254          # the host numbers the pool may lease
 # refused with a reset, as by a host with no listener there. The transport
 # itself (emu/tcp.py, ADR 0089) knows nothing of ports.
 SERVICES = {factory.PORT: "factory test"}
+
+
+LAN_BROADCAST = SERVER_IP[:3] + b"\xff"
+LIMITED_BROADCAST = b"\xff" * 4
+
+
+def _for_the_lan(dst: bytes) -> bool:
+    """Whether a packet is for this network rather than to be routed: the
+    gateway itself, a broadcast, or a multicast group (mDNS's among them)."""
+    return (dst == SERVER_IP or dst in (LAN_BROADCAST, LIMITED_BROADCAST)
+            or 224 <= dst[0] <= 239)
+
+
+def _dotted(ip: bytes) -> str:
+    return ".".join(map(str, ip))
+
+
+def _packed(ip: str) -> bytes:
+    return bytes(int(part) for part in ip.split("."))
 
 
 def ip_checksum(data: bytes) -> int:
@@ -277,8 +297,15 @@ class Station:
 class AccessPoint:
     """Answers what the station sends, and beacons between times."""
 
-    def __init__(self, network: Network):
+    def __init__(self, network: Network, uplink: "Uplink | None" = None):
         self.network = network
+        # The NAT to the real internet, or None for an island (ADR 0097).
+        self.uplink = uplink
+        # UDP flows out through it, by the key the uplink knows them by, and
+        # DNS questions it is answering for the station.
+        self.nat_udp: dict[tuple, dict] = {}
+        self.nat_dns: dict[tuple, tuple] = {}
+        self._dns_seq = 0
         self.sequence = 0
         self.stations: dict[bytes, Station] = {}
         self.master = (wpa2.pmk(network.passphrase, network.ssid)
@@ -290,12 +317,14 @@ class AccessPoint:
         # the station is connected (ADR 0084). The cipher is identity, so the
         # number only has to advance, not be secret.
         self.pn = 0
-        # TCP connections (ADR 0089), keyed by (client port, server port); each
+        # TCP connections (ADR 0089), keyed by (client address, client port,
+        # server address, server port) -- the server is the gateway for a local
+        # service, a remote host for one through the uplink (ADR 0097). Each
         # holds a real transport (emu/tcp.py). tcp_isn advances per connection so
         # two do not share an initial sequence number. Frames the transport wants
         # to send wait in the outbox, because the peer may put only one frame on
         # the air per guest event (ADR 0064); take() and tick() drain it.
-        self.conns: dict[tuple[int, int], dict] = {}
+        self.conns: dict[tuple, dict] = {}
         self.tcp_isn = 0x1000
         self.outbox: list[Air] = []
         # The names this LAN hosts (ADR 0090). Each points at the gateway, which
@@ -303,12 +332,13 @@ class AccessPoint:
         # gets NXDOMAIN, not the gateway, which is what makes the resolver
         # authoritative rather than captive. The set is exactly the names the
         # firmware was seen to look up (logs/{ntp,mdns,tcp}): its two NTP servers
-        # and its own .local name.
-        self.zone: dict[str, bytes] = {
-            "lilygo.local": SERVER_IP,
-            "pool.ntp.org": SERVER_IP,
-            "time.nist.gov": SERVER_IP,
-        }
+        # and its own .local name. With an uplink the NTP servers are real ones
+        # (ADR 0097): their names are looked up through the host instead, and
+        # only the LAN's own name stays here.
+        self.zone: dict[str, bytes] = {"lilygo.local": SERVER_IP}
+        if uplink is None:
+            self.zone.update({"pool.ntp.org": SERVER_IP,
+                              "time.nist.gov": SERVER_IP})
         # The DHCP lease pool (ADR 0091): addresses on the gateway's /24, leased
         # by hardware address so each station gets its own and keeps it.
         self.leases = dhcp.Pool(SERVER_IP[:3], first=DHCP_FIRST, last=DHCP_LAST)
@@ -383,9 +413,11 @@ class AccessPoint:
             self.last_offered = station
             return Air(self.data(station.address, station.shake.first()),
                        awaited=True)
-        # TCP retransmissions, and any frames a connection still owes, go before a
-        # beacon: a connected station is waiting on them, and another beacon is
+        # What came back through the uplink (ADR 0097), then TCP retransmissions
+        # and any frames a connection still owes, go before a beacon: a
+        # connected station is waiting on them, and another beacon is
         # milliseconds away (ADR 0089).
+        self._uplink_events()
         self._tcp_tick(clock)
         if self.outbox:
             return self.outbox.pop(0)
@@ -455,6 +487,7 @@ class AccessPoint:
         the station is waiting for it by construction and it is marked so.
         """
         answer = self._answer(frame, channel, clock)
+        self._uplink_events()           # anything the uplink has brought back
         if answer:
             return Air(answer, awaited=True)
         # A TCP exchange puts its frames in the outbox rather than returning one
@@ -690,6 +723,14 @@ class AccessPoint:
         # address is the station's own, leased by DHCP, so a second station's
         # traffic is answered at its own address without any of this changing.
         src_ip = ip[12:16]
+        dst_ip = ip[16:20]
+        # The gateway routes (ADR 0097). What is for the LAN -- the gateway,
+        # a broadcast, a multicast -- is answered here. Anything else is for the
+        # internet: out through the uplink if there is one, and dropped as
+        # unroutable if not, rather than answered by a local service as if the
+        # gateway were that host.
+        if not _for_the_lan(dst_ip):
+            return self._route_out(station, src_ip, dst_ip, ip[9], ip[ihl:])
         if ip[9] == 6:                          # TCP
             return self._tcp(station, src_ip, ip[ihl:])
         if ip[9] != 17:                         # not UDP
@@ -751,12 +792,26 @@ class AccessPoint:
         mDNS query have the same body, so both come through here; only the port
         the reply leaves from differs. The reply goes back to the querier's own
         address (ADR 0091).
+
+        With an uplink, a DNS name the zone does not hold is looked up through
+        the host instead of refused (ADR 0097), off the guest's path: the answer
+        goes out on a later tick. A `.local` name, asked by mDNS, is link-local
+        and never leaves.
         """
+        parsed = dns.parse_query(query)
+        if (self.uplink is not None and kind == "dns" and parsed is not None
+                and parsed.qtype == dns.TYPE_A and parsed.qclass == dns.CLASS_IN
+                and parsed.name not in self.zone):
+            self._dns_seq += 1
+            key = ("dns", self._dns_seq)
+            self.nat_dns[key] = (station, dst_ip, src_port, parsed, reply_port)
+            self._count("dns forwarded")
+            self.uplink.resolve(key, parsed.name)
+            return None
         reply = dns.respond(query, self.zone)
         if reply is None:
             self._count("%s, not served" % kind)
             return None
-        parsed = dns.parse_query(query)
         name = parsed.name if parsed else "?"
         held = self.zone.get(name)
         self._count("%s reply" % kind if held else "%s nxdomain" % kind)
@@ -818,7 +873,7 @@ class AccessPoint:
         window = int.from_bytes(segment[14:16], "big")
         payload = segment[data_off:]
 
-        key = (client_ip, client_port, server_port)
+        key = (client_ip, client_port, SERVER_IP, server_port)
         entry = self.conns.get(key)
         if entry is None:
             if not (flags & tcp.SYN) or server_port not in SERVICES:
@@ -826,11 +881,13 @@ class AccessPoint:
                 # already forgotten. Refused as a host in the CLOSED state
                 # refuses it (ADR 0096).
                 return self._tcp_refuse(station, client_ip, client_port,
-                                        server_port, seq, ack, flags, payload)
+                                        SERVER_IP, server_port, seq, ack, flags,
+                                        payload)
             self.tcp_isn = (self.tcp_isn + 0x10000) & 0xFFFFFFFF
             entry = {"conn": tcp.Connection(iss=self.tcp_isn),
                      "client_ip": client_ip, "client_port": client_port,
-                     "server_port": server_port, "station": station,
+                     "server_ip": SERVER_IP, "server_port": server_port,
+                     "station": station,
                      "stream": b"", "report": None, "closing": False}
             self.conns[key] = entry
             self._count("tcp connection to %d" % server_port)
@@ -844,24 +901,28 @@ class AccessPoint:
         for seg in out:
             self.outbox.append(self._tcp_frame(entry, seg))
         if conn.closed:
-            self.conns.pop(key, None)
+            self._tcp_forget(key, entry)
         return None
 
     def _tcp_refuse(self, station: "Station", client_ip: bytes,
-                    client_port: int, server_port: int, seq: int, ack: int,
-                    flags: int, payload: bytes) -> None:
+                    client_port: int, server_ip: bytes, server_port: int,
+                    seq: int, ack: int, flags: int, payload: bytes,
+                    why: str = "nothing serves that port") -> None:
         """Answer a segment with no connection with a reset (RFC 9293's CLOSED
-        state), or with nothing if it was itself a reset."""
+        state), or with nothing if it was itself a reset. It comes from the
+        address the segment was sent to: the gateway, or a remote host the
+        uplink could not reach."""
         seg = tcp.refuse(seq, ack, flags, len(payload))
         if seg is None:
             return None
         self._count("tcp refused on %d" % server_port)
         if flags & tcp.SYN:
-            log.info("tcp :%d refused for %s: nothing serves that port",
-                     server_port, station.address.hex(":"))
+            log.info("tcp %s:%d refused for %s: %s", _dotted(server_ip),
+                     server_port, station.address.hex(":"), why)
         self.outbox.append(self._tcp_frame(
             {"client_ip": client_ip, "client_port": client_port,
-             "server_port": server_port, "station": station}, seg))
+             "server_ip": server_ip, "server_port": server_port,
+             "station": station}, seg))
         return None
 
     def _tcp_service(self, entry: dict) -> None:
@@ -900,25 +961,224 @@ class AccessPoint:
 
     def _tcp_frame(self, entry: dict, seg: "tcp.Segment") -> Air:
         """Turn a transport segment into a frame on the air: an IPv4/TCP datagram
-        from the gateway to the station, behind a data frame. Marked awaited so
-        the radio sends it even if the station's receiver reads as off."""
+        from the server -- the gateway, or the remote host behind the uplink --
+        to the station, behind a data frame. Marked awaited so the radio sends
+        it even if the station's receiver reads as off."""
         opts = (bytes([2, 4]) + struct.pack(">H", seg.mss)) \
             if seg.mss is not None else b""
-        datagram = tcp_segment(SERVER_IP, entry["client_ip"], entry["server_port"],
-                               entry["client_port"], seg.seq, seg.ack, seg.flags,
-                               window=seg.window, payload=seg.payload, options=opts)
+        datagram = tcp_segment(entry["server_ip"], entry["client_ip"],
+                               entry["server_port"], entry["client_port"],
+                               seg.seq, seg.ack, seg.flags, window=seg.window,
+                               payload=seg.payload, options=opts)
         return Air(self.data_protected(entry["station"].address, b"\x08\x00",
                                        datagram), awaited=True)
 
     def _tcp_tick(self, clock: int) -> None:
         """Give every connection the clock, so its retransmission timer can fire
-        and anything a service queued can go, and forget those that have closed."""
+        and anything a service queued can go, and forget those that have closed.
+        A connection through the uplink first takes what the remote end has
+        sent, as much as the guest has room for (ADR 0097)."""
         for key, entry in list(self.conns.items()):
             conn = entry["conn"]
+            if conn is None:
+                continue                         # still connecting on the host
+            if entry.get("nat"):
+                self._nat_pull(key, entry)
             for seg in conn.on_tick(clock):
                 self.outbox.append(self._tcp_frame(entry, seg))
             if conn.closed:
-                self.conns.pop(key, None)
+                self._tcp_forget(key, entry)
+
+    def _tcp_forget(self, key: tuple, entry: dict) -> None:
+        self.conns.pop(key, None)
+        if entry.get("nat") and self.uplink is not None:
+            self.uplink.tcp_close(key)
+
+    # ------------------------------------------------------------ the uplink
+
+    def _route_out(self, station: "Station", src_ip: bytes, dst_ip: bytes,
+                   proto: int, l4: bytes) -> None:
+        """A packet for somewhere other than this LAN (ADR 0097)."""
+        if dst_ip[:3] == SERVER_IP[:3]:
+            # Another station's address. Station-to-station traffic through the
+            # access point is not modelled; nothing in the firmware sends any.
+            self._count("ip to another host on the LAN, not forwarded")
+            return None
+        if self.uplink is None:
+            self._count("ip with no route (no uplink)")
+            return None
+        if proto == 17:
+            return self._nat_udp(station, src_ip, dst_ip, l4)
+        if proto == 6:
+            return self._nat_tcp(station, src_ip, dst_ip, l4)
+        self._count("ip protocol %d not forwarded" % proto)
+        return None
+
+    def _nat_udp(self, station: "Station", src_ip: bytes, dst_ip: bytes,
+                 udp: bytes) -> None:
+        """A datagram out through the uplink, on its flow's own host socket."""
+        if len(udp) < 8:
+            return None
+        sport = int.from_bytes(udp[0:2], "big")
+        dport = int.from_bytes(udp[2:4], "big")
+        payload = udp[8:int.from_bytes(udp[4:6], "big")]
+        flow = ("udp", src_ip, sport, dst_ip, dport)
+        if flow not in self.nat_udp:
+            self.nat_udp[flow] = {"station": station, "guest_ip": src_ip,
+                                  "guest_port": sport}
+            log.info("uplink: udp %s:%d -> %s:%d", _dotted(src_ip), sport,
+                     _dotted(dst_ip), dport)
+        self._count("uplink udp out")
+        self.uplink.udp_send(flow, (_dotted(dst_ip), dport), payload)
+        return None
+
+    def _nat_tcp(self, station: "Station", src_ip: bytes, dst_ip: bytes,
+                 segment: bytes) -> None:
+        """A segment for a remote host. The guest's connection is terminated
+        here and spliced to a host socket (ADR 0097); its SYN is not answered
+        until the host's own connect is."""
+        if len(segment) < 20:
+            return None
+        cport = int.from_bytes(segment[0:2], "big")
+        dport = int.from_bytes(segment[2:4], "big")
+        seq = int.from_bytes(segment[4:8], "big")
+        ack = int.from_bytes(segment[8:12], "big")
+        flags = segment[13]
+        window = int.from_bytes(segment[14:16], "big")
+        payload = segment[(segment[12] >> 4) * 4:]
+        key = (src_ip, cport, dst_ip, dport)
+        entry = self.conns.get(key)
+        if entry is None:
+            if not flags & tcp.SYN or flags & (tcp.ACK | tcp.RST):
+                return self._tcp_refuse(station, src_ip, cport, dst_ip, dport,
+                                        seq, ack, flags, payload,
+                                        why="no such connection")
+            self.conns[key] = {"conn": None, "nat": True, "station": station,
+                               "client_ip": src_ip, "client_port": cport,
+                               "server_ip": dst_ip, "server_port": dport,
+                               "syn": (seq, window), "fin_passed": False,
+                               "eof_passed": False}
+            self._count("uplink tcp open")
+            log.info("uplink: tcp %s:%d -> %s:%d, connecting on the host",
+                     _dotted(src_ip), cport, _dotted(dst_ip), dport)
+            self.uplink.tcp_open(key, (_dotted(dst_ip), dport))
+            return None
+        conn = entry["conn"]
+        if conn is None:
+            if flags & tcp.RST:                  # given up before we answered
+                self._tcp_forget(key, entry)
+            return None                          # else a SYN retransmitted
+        out = conn.on_segment(seq, ack, flags, window, payload, self.clock)
+        if flags & tcp.RST:
+            log.info("uplink: tcp to %s:%d reset by the client",
+                     _dotted(dst_ip), dport)
+            self._tcp_forget(key, entry)
+            return None
+        data = conn.read()
+        if data:
+            self.uplink.tcp_send(key, data)
+        if not entry["fin_passed"] and conn.state in (
+                tcp.CLOSE_WAIT, tcp.LAST_ACK, tcp.CLOSING, tcp.TIME_WAIT):
+            entry["fin_passed"] = True           # the guest is done sending
+            self.uplink.tcp_shutdown(key)
+        out += conn.pump(self.clock)
+        for seg in out:
+            self.outbox.append(self._tcp_frame(entry, seg))
+        if conn.closed:
+            self._tcp_forget(key, entry)
+        return None
+
+    def _nat_pull(self, key: tuple, entry: dict) -> None:
+        """Move what the remote end sent into the guest's connection, no more
+        than keeps 64 KiB waiting on its window, and close the guest's side
+        once the remote end has closed and everything it sent is across."""
+        conn = entry["conn"]
+        if entry["eof_passed"] or conn.state not in (tcp.ESTABLISHED,
+                                                      tcp.CLOSE_WAIT):
+            return
+        room = TCP_BUFFER - len(conn.send_buf)
+        if room <= 0:
+            return
+        data, finished = self.uplink.tcp_take(key, room)
+        if data:
+            conn.write(data)
+        if finished:
+            entry["eof_passed"] = True
+            conn.close()
+
+    def _uplink_events(self) -> None:
+        """Turn what came back through the uplink into frames for the station."""
+        if self.uplink is None:
+            return
+        for event in self.uplink.events():
+            kind = event[0]
+            if kind == "udp":
+                _, flow, (rip, rport), payload = event
+                info = self.nat_udp.get(flow)
+                if info is None:
+                    continue
+                packet = udp4_packet(_packed(rip), info["guest_ip"], rport,
+                                     info["guest_port"], payload)
+                self._count("uplink udp in")
+                self.outbox.append(Air(self.data_protected(
+                    info["station"].address, b"\x08\x00", packet), awaited=True))
+            elif kind == "tcp-connected":
+                key = event[1]
+                entry = self.conns.get(key)
+                if entry is None or entry["conn"] is not None:
+                    continue
+                self.tcp_isn = (self.tcp_isn + 0x10000) & 0xFFFFFFFF
+                conn = entry["conn"] = tcp.Connection(iss=self.tcp_isn)
+                seq, window = entry["syn"]
+                log.info("uplink: tcp to %s:%d connected; answering the SYN",
+                         _dotted(entry["server_ip"]), entry["server_port"])
+                for seg in conn.on_segment(seq, 0, tcp.SYN, window, b"",
+                                           self.clock):
+                    self.outbox.append(self._tcp_frame(entry, seg))
+            elif kind == "tcp-failed":
+                _, key, reason = event
+                entry = self.conns.pop(key, None)
+                if entry is None:
+                    continue
+                self._tcp_refuse(entry["station"], entry["client_ip"],
+                                 entry["client_port"], entry["server_ip"],
+                                 entry["server_port"], entry["syn"][0], 0,
+                                 tcp.SYN, b"",
+                                 why="the host could not connect: " + reason)
+            elif kind == "tcp-reset":
+                _, key, reason = event
+                entry = self.conns.pop(key, None)
+                if entry is None or entry["conn"] is None:
+                    continue
+                log.info("uplink: tcp to %s:%d broke on the host (%s); "
+                         "resetting the station's end",
+                         _dotted(entry["server_ip"]), entry["server_port"], reason)
+                seg = entry["conn"].abort()
+                if seg is not None:
+                    self.outbox.append(self._tcp_frame(entry, seg))
+            elif kind == "resolved":
+                self._nat_dns_answer(*event[1:])
+
+    def _nat_dns_answer(self, key: tuple, name: str,
+                        ips: list[str] | None) -> None:
+        """The host's answer to a forwarded name, as the gateway's reply."""
+        pending = self.nat_dns.pop(key, None)
+        if pending is None:
+            return
+        station, querier_ip, src_port, parsed, reply_port = pending
+        if ips is None:
+            reply, what = dns.servfail(parsed), "SERVFAIL"
+        elif not ips:
+            reply, what = dns.nxdomain(parsed), "NXDOMAIN"
+        else:
+            reply, what = dns.answer(parsed, [_packed(ip) for ip in ips]), \
+                ", ".join(ips)
+        self._count("dns reply through the host")
+        log.info("dns A %s -> %s for %s (through the host)", name, what,
+                 station.address.hex(":"))
+        packet = udp4_packet(SERVER_IP, querier_ip, reply_port, src_port, reply)
+        self.outbox.append(Air(self.data_protected(station.address, b"\x08\x00",
+                                                   packet), awaited=True))
 
     def _arp(self, station: "Station", arp: bytes) -> bytes | None:
         """An ARP request. Answer one that asks for the gateway."""
@@ -955,9 +1215,13 @@ class FrameChannel:
         self._listener.bind(self.path)
         self._listener.listen(1)
         threading.Thread(target=self._serve, name="wifi-ap", daemon=True).start()
+        if self.point.uplink is not None:
+            self.point.uplink.start()
 
     def stop(self) -> None:
         self._stop.set()
+        if self.point.uplink is not None:
+            self.point.uplink.stop()
         for sock in (self._conn, self._listener):
             if sock is not None:
                 try:

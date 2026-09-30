@@ -323,3 +323,153 @@ def test_an_unanswered_syn_ack_is_retransmitted_on_a_tick() -> None:
     air = point.tick(1, 5000 + tcp.RTO_MS)
     assert air is not None and _parse(air.frame)["flags"] == SYN | ACK, \
         "the SYN-ACK is resent once the timer fires"
+
+
+# ------------------------------------------------------------- the uplink
+# ADR 0097. The internet is played by servers on localhost, which the guest
+# addresses as 127.0.0.1 -- not the LAN, so the gateway routes it out.
+
+import socket  # noqa: E402
+import threading  # noqa: E402
+import time  # noqa: E402
+
+import pytest  # noqa: E402
+
+from emu.uplink import Uplink  # noqa: E402
+
+LOOPBACK = bytes([127, 0, 0, 1])
+
+
+@pytest.fixture
+def uplinked():
+    up = Uplink()
+    up.start()
+    point = AccessPoint(Network(ssid="x", channel=1, beacon_ms=10 ** 9,
+                                wpa2=True, passphrase="p"), uplink=up)
+    _seat(point, STATION)
+    yield point
+    up.stop()
+
+
+def _udp_to(dst_ip: bytes, dport: int, payload: bytes, sport: int = 5000) -> bytes:
+    return _sta_frame(udp4_packet(CLIENT_IP, dst_ip, sport, dport, payload))
+
+
+def _tcp_to(dst_ip: bytes, dport: int, seq: int, ack: int, flags: int,
+            payload: bytes = b"", sport: int = 6000) -> bytes:
+    return _sta_frame(tcp_segment(CLIENT_IP, dst_ip, sport, dport, seq, ack,
+                                  flags, window=64000, payload=payload))
+
+
+def _src_ip(frame: bytes) -> bytes:
+    return frame[40 + 12:40 + 16]
+
+
+def _until(point: AccessPoint, want, timeout: float = 5.0):
+    """Tick until a frame `want` accepts goes out; the uplink answers late."""
+    clock, deadline = 10_000, time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        clock += 10
+        air = point.tick(1, clock)
+        if air is not None and want(air.frame):
+            return air.frame
+        if air is None:
+            time.sleep(0.01)
+    raise AssertionError(f"nothing wanted went out; counts {point.counts}")
+
+
+def _listen_tcp(handler) -> tuple[socket.socket, int]:
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.bind(("127.0.0.1", 0))
+    listener.listen()
+
+    def serve():
+        try:
+            conn, _ = listener.accept()
+        except OSError:
+            return
+        with conn:
+            handler(conn)
+    threading.Thread(target=serve, daemon=True).start()
+    return listener, listener.getsockname()[1]
+
+
+def test_without_an_uplink_a_foreign_address_is_not_answered_locally() -> None:
+    """Offline, a DNS query sent to someone else's resolver is unroutable -- not
+    answered by the gateway's own resolver as if it were that host."""
+    point = _connected()
+    assert point.take(_udp_to(bytes([8, 8, 8, 8]), 53, _dns_query("lilygo.local")),
+                      1, 100) is None
+    assert point.counts.get("ip with no route (no uplink)") == 1
+
+
+def test_a_datagram_goes_out_and_the_answer_comes_back_from_the_remote(uplinked) -> None:
+    server = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    server.bind(("127.0.0.1", 0))
+    port = server.getsockname()[1]
+    threading.Thread(target=lambda: (lambda d, a: server.sendto(d[::-1], a))(
+        *server.recvfrom(2048)), daemon=True).start()
+    try:
+        assert uplinked.take(_udp_to(LOOPBACK, port, b"abc"), 1, 100) is None
+        frame = _until(uplinked, lambda f: _src_ip(f) == LOOPBACK)
+        ip = frame[40:]
+        udp = ip[20:]
+        assert int.from_bytes(udp[0:2], "big") == port, "from the remote port"
+        assert int.from_bytes(udp[2:4], "big") == 5000, "to the guest's port"
+        assert _udp_payload(frame) == b"cba"
+    finally:
+        server.close()
+
+
+def test_a_tcp_connection_opens_only_when_the_host_connect_does(uplinked) -> None:
+    def echo(conn):
+        while data := conn.recv(4096):
+            conn.sendall(data.upper())
+    listener, port = _listen_tcp(echo)
+    try:
+        assert uplinked.take(_tcp_to(LOOPBACK, port, 100, 0, SYN), 1, 100) is None, \
+            "no SYN-ACK before the host has connected"
+        sa = _parse(_until(uplinked, lambda f: _src_ip(f) == LOOPBACK))
+        assert sa["flags"] == SYN | ACK and sa["ack"] == 101
+        assert sa["sport"] == port, "from the remote host's port"
+        isn = sa["seq"]
+        uplinked.take(_tcp_to(LOOPBACK, port, 101, isn + 1, ACK), 1, 200)
+        uplinked.take(_tcp_to(LOOPBACK, port, 101, isn + 1, ACK | PSH, b"hi there"),
+                      1, 210)
+        data = _parse(_until(uplinked, lambda f: bool(_parse(f)["payload"])))
+        assert data["payload"] == b"HI THERE", "spliced both ways"
+        # The guest closes; the echo sees EOF and closes; the gateway's FIN follows.
+        uplinked.take(_tcp_to(LOOPBACK, port, 109, isn + 9, ACK | FIN), 1, 300)
+        fin = _parse(_until(uplinked, lambda f: bool(_parse(f)["flags"] & FIN)))
+        assert fin["flags"] & FIN
+    finally:
+        listener.close()
+
+
+def test_a_host_that_cannot_be_reached_resets_the_guest(uplinked) -> None:
+    closed = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    closed.bind(("127.0.0.1", 0))
+    port = closed.getsockname()[1]
+    closed.close()
+    uplinked.take(_tcp_to(LOOPBACK, port, 100, 0, SYN), 1, 100)
+    r = _parse(_until(uplinked, lambda f: _src_ip(f) == LOOPBACK))
+    assert r["flags"] == tcp.RST | ACK and r["ack"] == 101
+    assert not uplinked.conns
+
+
+def test_a_name_off_the_lan_is_looked_up_through_the_host(uplinked) -> None:
+    """With an uplink the NTP names are no longer the gateway's, and a name the
+    zone does not hold is forwarded; the answer comes a tick later."""
+    assert "pool.ntp.org" not in uplinked.zone and "lilygo.local" in uplinked.zone
+    assert uplinked.take(_udp_frame(53, _dns_query("localhost")), 1, 100) is None
+    reply = _udp_payload(_until(uplinked, lambda f: _src_ip(f) == SERVER_IP))
+    assert int.from_bytes(reply[2:4], "big") & 0x0F == 0
+    assert bytes([127, 0, 0, 1]) in reply
+
+
+def test_a_local_name_is_never_sent_to_the_internet(uplinked) -> None:
+    """mDNS is link-local: an unknown .local name is refused on the spot, with
+    an uplink or without."""
+    air = uplinked.take(_udp_frame(5353, _dns_query("nothing-here.local")), 1, 100)
+    assert int.from_bytes(_udp_payload(air.frame)[2:4], "big") & 0x0F == 3
+    assert uplinked.counts.get("dns forwarded") is None

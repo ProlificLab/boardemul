@@ -27,6 +27,7 @@ CLASS_IN = 1
 # Response flags. QR set, recursion available, and the response code in the low
 # four bits: 0 for an answer, 3 (NXDOMAIN) for a name the zone does not hold.
 _FLAGS_OK = 0x8180
+_FLAGS_SERVFAIL = 0x8182
 _FLAGS_NXDOMAIN = 0x8183
 
 
@@ -88,9 +89,25 @@ def a_answer(query: Query, ip: bytes, ttl: int = 60) -> bytes:
     return head + query.question + answer
 
 
+def answer(query: Query, ips: list[bytes], ttl: int = 60) -> bytes:
+    """A response carrying one A record per address, in the order given -- what
+    a name forwarded to the host's resolver comes back with (ADR 0097)."""
+    head = query.id + struct.pack(">HHHHH", _FLAGS_OK, 1, len(ips), 0, 0)
+    records = b"".join(b"\xC0\x0C" + struct.pack(">HHI", TYPE_A, CLASS_IN, ttl)
+                       + struct.pack(">H", len(ip)) + ip for ip in ips)
+    return head + query.question + records
+
+
 def nxdomain(query: Query) -> bytes:
     """A response that says the name does not exist."""
     head = query.id + struct.pack(">HHHHH", _FLAGS_NXDOMAIN, 1, 0, 0, 0)
+    return head + query.question
+
+
+def servfail(query: Query) -> bytes:
+    """A response that says the lookup itself failed, which is not the same as
+    the name not existing: a client may try again."""
+    head = query.id + struct.pack(">HHHHH", _FLAGS_SERVFAIL, 1, 0, 0, 0)
     return head + query.question
 
 

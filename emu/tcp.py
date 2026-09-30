@@ -197,6 +197,19 @@ class Connection:
         The FIN it turns into occupies a sequence number of its own."""
         self._closing = True
 
+    def abort(self) -> Segment | None:
+        """End the connection at once with a reset -- what the uplink does when
+        the remote end behind it breaks (ADR 0097). Nothing is left to send or
+        to wait for. None if there was never a connection to reset."""
+        if self.state in (CLOSED, LISTEN):
+            self.state = CLOSED
+            return None
+        self.state = CLOSED
+        self.unacked.clear()
+        self.send_buf.clear()
+        return Segment(seq=self.snd_nxt, ack=self.rcv_nxt, flags=RST | ACK,
+                       window=0)
+
     # ------------------------------------------------------------- the engine
 
     def on_segment(self, seq: int, ack: int, flags: int, window: int,

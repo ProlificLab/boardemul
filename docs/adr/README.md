@@ -102,3 +102,4 @@ superseded ADR is marked superseded and points forward.
 | [0094](0094-real-ccmp-on-the-air.md) | Real CCMP on the air: the MAC encrypts, keyed by the peer | Accepted |
 | [0095](0095-a-delivered-message-one-is-not-retried-at-once.md) | A delivered message one is not retried at once | Accepted (fixes 0094's flaky handshake) |
 | [0096](0096-the-factory-test-service.md) | The factory-test service on lilygo.local:8896 | Accepted |
+| [0097](0097-the-uplink-a-nat-to-the-real-internet.md) | The uplink: a NAT from the LAN to the real internet | Accepted |

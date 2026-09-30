@@ -265,6 +265,11 @@ def main(argv: list[str] | None = None) -> int:
                     help="the passphrase of a WPA2 network, which the four-way "
                          "handshake derives its keys from together with the "
                          "name; required with --wifi-wpa2")
+    ap.add_argument("--wifi-uplink", action="store_true",
+                    help="route what the station sends beyond the LAN to the "
+                         "real internet through this host's sockets, and look "
+                         "names up through its resolver (ADR 0097). Off by "
+                         "default: guest traffic then never leaves the machine")
     ap.add_argument("--ble-air", default=None, metavar="DIR",
                     help="share a directory so this board's Bluetooth can be "
                          "heard by others; a different band from --air, so a "
@@ -323,7 +328,10 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit(", ".join(given) + " needs --bus: without it no board "
                          "is built, so nothing would answer")
 
-    access_point: tuple[str, int, int, bool, str] | None = None
+    access_point: tuple[str, int, int, bool, str, bool] | None = None
+    if args.wifi_uplink and not args.wifi_ap:
+        raise SystemExit("--wifi-uplink connects an access point to the "
+                         "internet; --wifi-ap says there is one")
     if args.wifi_ap:
         parts = args.wifi_ap.split(",")
         if not parts[0]:
@@ -340,7 +348,8 @@ def main(argv: list[str] | None = None) -> int:
         access_point = (parts[0],
                         int(parts[1]) if len(parts) > 1 and parts[1] else 100,
                         int(parts[2]) if len(parts) > 2 and parts[2] else 0,
-                        bool(args.wifi_wpa2), args.wifi_pass or "")
+                        bool(args.wifi_wpa2), args.wifi_pass or "",
+                        bool(args.wifi_uplink))
     elif args.wifi_wpa2:
         raise SystemExit("--wifi-wpa2 says how the access point is secured; "
                          "--wifi-ap says there is one")
@@ -397,7 +406,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"wifi-ap : {access_point[0]!r} every {access_point[1]} ms on "
               + (f"channel {access_point[2]}" if access_point[2]
                  else "whichever channel the controller is tuned to")
-              + (", WPA2-PSK" if access_point[3] else ", open"))
+              + (", WPA2-PSK" if access_point[3] else ", open")
+              + (", uplinked to the internet" if access_point[5] else ""))
     if hw_module.SOC_DEVICES:
         print(f"soc     : {', '.join(hw_module.SOC_DEVICES)}")
     print(f"uart    : {uart}")

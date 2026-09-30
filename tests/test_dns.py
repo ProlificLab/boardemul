@@ -85,6 +85,21 @@ def test_a_malformed_query_is_not_answered() -> None:
     assert dns.respond(two + b"\x00\x00\x01\x00\x01", ZONE) is None
 
 
+def test_a_forwarded_answer_carries_every_address() -> None:
+    """What the host's resolver returned, one A record each, in order (ADR 0097)."""
+    q = dns.parse_query(_query("pool.ntp.org"))
+    ips = [bytes([1, 2, 3, 4]), bytes([5, 6, 7, 8])]
+    reply = dns.answer(q, ips)
+    assert _rcode(reply) == 0 and int.from_bytes(reply[6:8], "big") == 2
+    body = reply[12 + len(q.question):]
+    assert body[12:16] == ips[0] and body[28:32] == ips[1]
+
+
+def test_a_failed_lookup_is_servfail_not_nxdomain() -> None:
+    q = dns.parse_query(_query("pool.ntp.org"))
+    assert _rcode(dns.servfail(q)) == 2
+
+
 def test_the_mdns_query_shape_parses() -> None:
     """The firmware's `.local` lookup is a unicast DNS query in shape (ADR 0086),
     so the same resolver answers it."""

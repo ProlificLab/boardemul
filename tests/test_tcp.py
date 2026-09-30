@@ -222,6 +222,15 @@ def test_data_written_before_a_close_is_sent_before_the_fin() -> None:
     assert kinds == [(b"bye", False), (b"", True)], "data first, then the FIN"
 
 
+def test_an_abort_resets_at_the_next_sequence_and_forgets_everything() -> None:
+    conn = _established()
+    conn.write(b"unsent")
+    seg = conn.abort()
+    assert seg is not None and seg.flags == RST | ACK
+    assert seg.seq == 5001 and seg.ack == 1001
+    assert conn.closed and conn.on_tick(now=10_000) == [], "nothing retransmits"
+
+
 # -------------------------------------------------- refused (CLOSED state)
 
 def test_a_syn_to_a_closed_port_is_reset_and_its_octet_acknowledged() -> None:
