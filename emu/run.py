@@ -30,6 +30,15 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 # Pinned so that a rerun is a rerun. See ADR 0004 decision 4.
 RNG_SEED = 1
+
+
+def rng_seed(mac: str) -> int:
+    """The hardware RNG's seed for one board: the fixed base in the high bits
+    and the board's MAC in the low 48. Fixed per board, so a run is still
+    determined by its inputs (ADR 0004); different between boards, as two real
+    chips' random streams are -- a shared one had two mesh nodes pick the same
+    'random' node number (ADR 0098)."""
+    return (RNG_SEED << 48) | int(mac.replace(":", "").replace("-", ""), 16)
 RTC_BASE = "2020-01-01"
 STRAP_MODE = 0x04  # SPI flash boot
 
@@ -111,7 +120,7 @@ def build_images(firmware: Path, outdir: Path, mac: str, overlays: list[str] = (
 
 def build_argv(qemu: Path, flash: Path, efuse: Path, uart: Path,
                qemu_log: Path, traced: bool, psram_mb: int,
-               psram_octal: bool = False) -> list[str]:
+               psram_octal: bool = False, seed: int = RNG_SEED) -> list[str]:
     debug = ["unimp", "guest_errors"]
     # Escape hatch for one-off investigations (in_asm, exec, int...). Not a
     # supported interface; the supported one is --trace.
@@ -137,7 +146,7 @@ def build_argv(qemu: Path, flash: Path, efuse: Path, uart: Path,
         "-global", f"driver=esp32s3.gpio,property=strap_mode,value=0x{STRAP_MODE:02x}",
         "-serial", f"file:{uart}",
         "-rtc", f"base={RTC_BASE},clock=vm",
-        "-seed", str(RNG_SEED),
+        "-seed", str(seed),
         "-d", ",".join(debug),
         "-D", str(qemu_log),
     ] + passthrough
@@ -293,8 +302,9 @@ def main(argv: list[str] | None = None) -> int:
     uart = args.outdir / f"{tag}.uart.log"
     qlog = args.outdir / f"{tag}.qemu.log"
     elog = args.outdir / f"{tag}.stderr.log"
+    seed = rng_seed(args.mac)
     cmd = build_argv(qemu, flash, efuse, uart, qlog, args.trace, args.psram,
-                     psram_octal=args.psram_octal)
+                     psram_octal=args.psram_octal, seed=seed)
 
     hw_module = {"tdeck-max": board, "tdeck": board_tdeck}[args.board]
     # SoC-level, so it applies with or without --bus: these describe the chip
@@ -445,6 +455,8 @@ def main(argv: list[str] | None = None) -> int:
                     "collisions": getattr(device, "collisions", 0),
                     "out_of_range": getattr(device, "out_of_range", 0),
                     "wrong_frequency": getattr(device, "wrong_frequency", 0),
+                    "deaf": getattr(device, "deaf", 0),
+                    "not_listening": getattr(device, "not_listening", 0),
                 }
         # Every claimed window and what the firmware did with it. The run
         # already prints the busiest few; keeping the whole list in the record
@@ -466,6 +478,7 @@ def main(argv: list[str] | None = None) -> int:
     result = RunResult(
         qemu_version=qemu_version(qemu),
         argv=cmd,
+        seed=seed,
         inputs={p.name: hashlib.sha256(p.read_bytes()).hexdigest()
                 for p in (args.firmware, flash, efuse)},
         exit_reason=reason,

@@ -48,7 +48,8 @@ slowdown.
    mode-switching run would not be.
 
 4. **Determinism is pinned explicitly and recorded per run.** `-seed` for the
-   hardware RNG, `-rtc base=...,clock=vm` for time, `strap_mode` for the boot
+   hardware RNG (derived from the board's MAC since ADR 0098, so two boards
+   do not share a random stream), `-rtc base=...,clock=vm` for time, `strap_mode` for the boot
    pins, and the eFuse blob from ADR 0003 for the MAC. Every run writes a
    manifest containing the input hashes, the full argv, and the QEMU version.
    A result that cannot be tied to its inputs is an anecdote.

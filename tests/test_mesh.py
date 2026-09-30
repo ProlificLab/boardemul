@@ -25,6 +25,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from emu.devices import lora  # noqa: E402
 from emu.devices.air import AirMedium  # noqa: E402
 from tests.support import (  # noqa: E402
     FIRMWARE_MESHTASTIC, MESHTASTIC_LITTLEFS, REPO_ROOT, qemu_available,
@@ -39,12 +40,17 @@ pytestmark = [
 
 CONFIGURED = REPO_ROOT / "build" / "littlefs-configured.bin"
 OVERLAY_AT = 0xC90000
-# A ceiling, not a plan. The test listens on the air and stops the nodes as
-# soon as it has heard both of them, so this only matters on a host slow enough
-# that the first broadcast takes that long -- which under a loaded suite it can
-# (ADR 0040).
+# A ceiling, not a plan. The test stops the nodes as soon as the evidence its
+# assertions need is in (ADR 0040): the listener has heard both of them, and one
+# has received a packet from the other. Both have to be waited for -- two nodes
+# that boot together can put their first broadcasts on top of each other, each
+# deaf while it transmits, so "both have spoken" can come well before "a packet
+# crossed" (ADR 0098). This ceiling only matters on a host too slow for either.
 RUN_SECONDS = 300
-GRACE_SECONDS = 12
+# A moment after the evidence, so a node that has just received is not stopped
+# in the middle of answering.
+GRACE_SECONDS = 2
+RECEIVED = "sx1262: heard a"
 
 
 @pytest.fixture(scope="module")
@@ -78,6 +84,21 @@ def _launch(node: str, work: Path, air: Path, mac: str, overlay: Path):
         cwd=REPO_ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
 
 
+def _a_node_received(work: Path, nodes: dict) -> bool:
+    """Whether either node's radio has logged receiving a packet. The radio
+    writes one line per packet it receives, which is what 'a packet crossed'
+    looks like while the run is still going; its counters only reach the
+    manifest when it stops."""
+    for name in nodes:
+        log = work / name / f"{name}.bus.log"
+        try:
+            if RECEIVED in log.read_text(errors="replace"):
+                return True
+        except OSError:
+            continue
+    return False
+
+
 @pytest.fixture(scope="module")
 def two_nodes(tmp_path_factory, configured_filesystem: Path) -> dict[str, dict]:
     """Boot two boards on one air and report what each radio did.
@@ -103,15 +124,19 @@ def two_nodes(tmp_path_factory, configured_filesystem: Path) -> dict[str, dict]:
         senders: set[bytes] = set()
         while time.monotonic() < deadline:
             for frame in listener.poll():
-                # A mesh packet carries who sent it, four bytes in. Counting
-                # frames instead would stop as soon as one node had spoken
-                # twice, with the other still silent -- which is exactly how
-                # this went flaky under a loaded suite.
-                if len(frame) >= 8:
-                    senders.add(frame[4:8])
-            if len(senders) >= len(nodes):
-                # Both have been on the air; give them a moment to have read
-                # each other before they are stopped.
+                # A mesh packet carries who sent it, four bytes in (Meshtastic's
+                # header is to, from, id...). Counting frames instead would stop
+                # as soon as one node had spoken twice, with the other still
+                # silent -- which is exactly how this went flaky under a loaded
+                # suite. But the air puts a propagation header in front of the
+                # packet (ADR 0037), so the packet has to be decoded out of it
+                # first: reading four bytes into the raw frame read the header's
+                # frequency, the same for both nodes, so two senders were never
+                # counted and every run waited out the whole ceiling.
+                packet = lora.decode(frame)
+                if packet is not None and len(packet.payload) >= 8:
+                    senders.add(packet.payload[4:8])
+            if len(senders) >= len(nodes) and _a_node_received(work, nodes):
                 time.sleep(GRACE_SECONDS)
                 break
             if all(p.poll() is not None for p in running.values()):
@@ -133,26 +158,37 @@ def two_nodes(tmp_path_factory, configured_filesystem: Path) -> dict[str, dict]:
         if not manifest.exists():
             pytest.fail(f"node {name} left no manifest")
         radios[name] = json.loads(manifest.read_text()).get("radio", {})
-    return radios
+    return {"radios": radios, "senders": senders}
 
 
 def test_both_nodes_transmit(two_nodes) -> None:
     """A node with a region set keys its radio on its own. If neither does,
     nothing below this means anything."""
-    for name, radio in two_nodes.items():
+    for name, radio in two_nodes["radios"].items():
         assert radio.get("sent", 0) >= 1, f"node {name} never transmitted: {radio}"
+
+
+def test_the_listener_heard_both_nodes(two_nodes) -> None:
+    """The early stop's own evidence, asserted. If the listener stops telling the
+    two senders apart, the run silently waits out its whole ceiling instead of
+    stopping -- which went unnoticed for three weeks -- so it fails here."""
+    senders = two_nodes["senders"]
+    assert len(senders) == 2, (
+        f"the listener told {len(senders)} sender(s) apart: "
+        f"{sorted(s.hex() for s in senders)}")
 
 
 def test_a_packet_crosses_between_them(two_nodes) -> None:
     """The mesh itself: one board received what the other put on the air."""
-    heard = {name: radio.get("heard", 0) for name, radio in two_nodes.items()}
-    assert sum(heard.values()) >= 1, f"neither node heard the other: {two_nodes}"
+    radios = two_nodes["radios"]
+    heard = {name: radio.get("heard", 0) for name, radio in radios.items()}
+    assert sum(heard.values()) >= 1, f"neither node heard the other: {radios}"
 
 
 def test_nothing_was_lost_to_range_or_tuning(two_nodes) -> None:
     """Standing in the same place and on the same channel, the only reason a
     packet should go missing is a collision -- which is a real thing two nodes
     talking at once do, so it is not asserted against."""
-    for name, radio in two_nodes.items():
+    for name, radio in two_nodes["radios"].items():
         assert radio.get("out_of_range", 0) == 0, f"node {name}: {radio}"
         assert radio.get("wrong_frequency", 0) == 0, f"node {name}: {radio}"

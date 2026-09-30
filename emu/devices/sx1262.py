@@ -126,6 +126,12 @@ class Sx1262(SpiDevice):
         self.collisions = 0
         self.wrong_frequency = 0
         self.out_of_range = 0
+        # Packets that reached this radio while it could not have received
+        # them: transmitting (a radio is deaf while it does, ADR 0037), or not
+        # in receive mode. They used to vanish uncounted, so "sent one, heard
+        # none" could not say whether two nodes had talked over each other.
+        self.deaf = 0
+        self.not_listening = 0
         # Where this board stands, in metres. Supplied by whoever is setting up
         # the scenario; there is no distance between two processes to discover
         # (ADR 0038).
@@ -210,9 +216,11 @@ class Sx1262(SpiDevice):
                 self.wrong_frequency += 1
                 continue
             if self.tx_until:
-                continue        # transmitting, and deaf while it does
+                self.deaf += 1  # transmitting, and deaf while it does
+                continue
             if self.mode != MODE_RX:
-                continue        # not listening
+                self.not_listening += 1
+                continue
 
             # Whether it arrives strongly enough to be decoded at all. The
             # distance is the scenario's, the rest is arithmetic (ADR 0038).
@@ -246,6 +254,10 @@ class Sx1262(SpiDevice):
             self.last_rssi_dbm = arrived
             self.last_snr_db = arrived - lora.noise_floor_dbm(self.bandwidth_code)
             self.heard += 1
+            # One line per packet received: they are rare, and a reception is
+            # the event a mesh run waits for (ADR 0098).
+            log.info("sx1262: heard a %d-byte packet at %.1f dBm",
+                     len(payload), arrived)
             self._raise(IRQ_RX_DONE)
 
     def _raise(self, flag: int) -> None:

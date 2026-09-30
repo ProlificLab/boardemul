@@ -103,3 +103,4 @@ superseded ADR is marked superseded and points forward.
 | [0095](0095-a-delivered-message-one-is-not-retried-at-once.md) | A delivered message one is not retried at once | Accepted (fixes 0094's flaky handshake) |
 | [0096](0096-the-factory-test-service.md) | The factory-test service on lilygo.local:8896 | Accepted |
 | [0097](0097-the-uplink-a-nat-to-the-real-internet.md) | The uplink: a NAT from the LAN to the real internet | Accepted |
+| [0098](0098-each-board-has-its-own-randomness.md) | Each board has its own randomness | Accepted (amends 0004's seed) |
