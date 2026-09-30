@@ -89,7 +89,19 @@ DEAUTH_REASONS = {
 # again. The radio loses a frame sent while the station is not listening and
 # nothing buffers it (ADR 0067), so the peer has to be the thing that retries;
 # a real access point retries this message on about this period too.
-FIRST_RETRY_MS = 100
+FIRST_RETRY_MS = int(os.environ.get("BOARDEMUL_WIFI_FIRST_RETRY_MS", "100"))
+# BOARDEMUL_WIFI_FIRST_RETRY_MS is an experiment knob, like the hold below: set
+# short, it reproduces on demand the flake ADR 0095 chased -- a station slower
+# than the retry, handed several copies of message one. Default unchanged.
+# Once the device reports that message one reached the station, wait this long
+# instead: hostapd's eapol_key_timeout_subseq, which wpa_auth_eapol_key_tx_status
+# switches to on an acknowledged message one, because supplicants handed a
+# retransmitted message one while still deriving keys can fail the handshake --
+# this one then never sends message four (ADR 0095).
+FIRST_RETRY_DELIVERED_MS = 1000
+# The type bit the device sets on the request after a frame the peer offered
+# reached a receive descriptor: the model's transmit acknowledgement (ADR 0095).
+REQ_DELIVERED = 0x8000
 # How long after the association response to hold message one back, as an
 # experiment knob only -- default 0, no hold. The idea was that a message one
 # arriving before the station's supplicant finished setting up was answered
@@ -252,6 +264,10 @@ class Station:
     # evidence it was heard (ADR 0067).
     owes_first: bool = False
     first_at: int = 0
+    # Whether a copy of message one is known to have reached the station, which
+    # the device reports (ADR 0095). Handing it to the radio is no evidence;
+    # this is. It stretches the retry to FIRST_RETRY_DELIVERED_MS.
+    first_delivered: bool = False
     # When the association response went, so message one can be held back
     # until the station is ready for it (ADR 0076).
     associated_at: int = 0
@@ -301,6 +317,9 @@ class AccessPoint:
         # The temporal key waiting to be handed to the MAC model, set when a
         # handshake completes and cleared once it goes out on a reply (ADR 0094).
         self.pending_key: bytes | None = None
+        # The station whose message one was the last frame offered on a tick,
+        # so a delivery the device reports can be pinned on it (ADR 0095).
+        self.last_offered: Station | None = None
         log.info("access point %r on channel %d, %s", network.ssid,
                  network.channel,
                  "WPA2 with a master key" if self.master
@@ -315,6 +334,22 @@ class AccessPoint:
 
     # ---------------------------------------------------------------- ticks
 
+    def delivered(self) -> None:
+        """The device says the last frame offered on a tick reached the station.
+
+        If that frame was a message one, the station has it: from now on it is
+        retried on hostapd's longer timeout, not the short one that exists only
+        because this radio loses offers (ADR 0095). Anything else offered -- a
+        beacon, a TCP segment -- needs nothing done about it.
+        """
+        station, self.last_offered = self.last_offered, None
+        if station is None or not station.owes_first or station.first_delivered:
+            return
+        station.first_delivered = True
+        self._count("eapol 1 delivered")
+        log.info("at %d ms message one reached %s; the next copy waits %d ms",
+                 self.clock, station.address.hex(":"), FIRST_RETRY_DELIVERED_MS)
+
     def tick(self, channel: int, clock: int, free: int = 9) -> Air | None:
         """What to put on the air when nothing was asked.
 
@@ -324,6 +359,7 @@ class AccessPoint:
         """
         self.channel = channel or self.channel
         self.clock = clock
+        self.last_offered = None
         # Anything owed comes first, and is never held back for a schedule.
         for station in self.stations.values():
             if not (station.owes_first and station.shake is not None):
@@ -331,7 +367,9 @@ class AccessPoint:
             if clock - station.associated_at < FIRST_HOLD_MS:
                 continue                # not ready for it yet; see ADR 0076
             again = station.first_at != 0
-            if again and clock - station.first_at < FIRST_RETRY_MS:
+            wait = (FIRST_RETRY_DELIVERED_MS if station.first_delivered
+                    else FIRST_RETRY_MS)
+            if again and clock - station.first_at < wait:
                 continue                # sent recently; give it time to reply
             station.first_at = clock
             self._count("eapol 1 again" if again else "eapol 1")
@@ -339,6 +377,7 @@ class AccessPoint:
                 log.info("at %d ms handshake message one goes to %s", clock,
                          station.address.hex(":"))
             self.last_beacon = clock
+            self.last_offered = station
             return Air(self.data(station.address, station.shake.first()),
                        awaited=True)
         # TCP retransmissions, and any frames a connection still owes, go before a
@@ -510,8 +549,10 @@ class AccessPoint:
             station.owes_first = True
             station.associated_at = clock
             # A fresh handshake, so its first message is a first send and must
-            # not wait out the previous one's retry deadline.
+            # not wait out the previous one's retry deadline -- nor inherit the
+            # previous one's delivery (ADR 0095).
             station.first_at = 0
+            station.first_delivered = False
         return (header(ASSOC_RESPONSE, station.address, self._next())
                 + bytes([0x11 if self.network.wpa2 else 0x01, 0x00,
                          0x00, 0x00, 0x01, 0xC0,
@@ -911,7 +952,13 @@ class FrameChannel:
                 frame = self._recv(conn, length) if length else b""
                 if length and frame is None:
                     break
+                # The high bit acknowledges the last frame offered on a tick
+                # (ADR 0095); it is not part of the request's type.
+                delivered, kind = bool(kind & REQ_DELIVERED), kind & ~REQ_DELIVERED
                 try:
+                    if delivered:
+                        self.point.clock = clock
+                        self.point.delivered()
                     if kind == REQ_TX:
                         out = self.point.take(frame, channel, clock)
                     elif kind == REQ_TICK:

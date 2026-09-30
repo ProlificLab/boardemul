@@ -21,8 +21,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from emu import ccmp, tcp, wpa2  # noqa: E402
 from emu.tcp import ACK, FIN, PSH, SYN  # noqa: E402
 from emu.devices.wifi_ap import (  # noqa: E402
-    AP_ADDRESS, CLIENT_IP, SERVER_IP, AccessPoint, Network, Station,
-    tcp_segment, udp4_packet,
+    AP_ADDRESS, CLIENT_IP, FIRST_RETRY_DELIVERED_MS, FIRST_RETRY_MS, SERVER_IP,
+    AccessPoint, Network, Station, tcp_segment, udp4_packet,
 )
 
 STATION = bytes.fromhex("0254444d0001")
@@ -222,6 +222,53 @@ def test_a_held_name_resolves_and_an_unknown_one_is_refused() -> None:
     refused = _udp_payload(air.frame)
     assert int.from_bytes(refused[2:4], "big") & 0x0F == 3, "an unknown one is NXDOMAIN"
     assert point.counts.get("dns nxdomain") == 1
+
+
+def _owing_message_one() -> AccessPoint:
+    """A peer with a station just associated, owing it message one."""
+    point = _connected()
+    station = point.stations[STATION]
+    station.owes_first = True
+    station.associated_at = 0
+    station.first_at = 0
+    return point
+
+
+def _is_message_one(air) -> bool:
+    return (air is not None and air.frame[0] == 0x08
+            and bytes.fromhex("aaaa03000000888e") in air.frame)
+
+
+def test_an_undelivered_message_one_is_retried_on_the_short_timer() -> None:
+    """This radio loses offers the air would not (ADR 0067), so a message one
+    not known to have arrived is offered again after FIRST_RETRY_MS."""
+    point = _owing_message_one()
+    assert _is_message_one(point.tick(1, 1000))
+    assert point.tick(1, 1000 + FIRST_RETRY_MS - 1) is None
+    assert _is_message_one(point.tick(1, 1000 + FIRST_RETRY_MS))
+
+
+def test_a_delivered_message_one_waits_the_long_timer() -> None:
+    """Once the device says message one reached the station, it is not offered
+    again on the short timer: hostapd's rule for an acknowledged message one,
+    and the fix for the station that skipped message four (ADR 0095)."""
+    point = _owing_message_one()
+    assert _is_message_one(point.tick(1, 1000))
+    point.delivered()
+    assert point.tick(1, 1000 + FIRST_RETRY_MS) is None, "retried too soon"
+    assert point.tick(1, 1000 + FIRST_RETRY_DELIVERED_MS - 1) is None
+    assert _is_message_one(point.tick(1, 1000 + FIRST_RETRY_DELIVERED_MS))
+    assert point.counts.get("eapol 1 delivered") == 1
+
+
+def test_a_delivery_after_something_else_is_not_pinned_on_message_one() -> None:
+    """The acknowledgement is for the last frame offered. If that was not a
+    message one -- here, nothing was offered on the tick -- it changes nothing."""
+    point = _owing_message_one()
+    assert _is_message_one(point.tick(1, 1000))
+    assert point.tick(1, 1050) is None           # nothing offered on this tick
+    point.delivered()
+    assert _is_message_one(point.tick(1, 1000 + FIRST_RETRY_MS))
 
 
 def test_an_unanswered_syn_ack_is_retransmitted_on_a_tick() -> None:

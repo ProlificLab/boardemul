@@ -100,3 +100,4 @@ superseded ADR is marked superseded and points forward.
 | [0092](0092-real-ccmp-the-cipher-is-offloaded-to-the-mac.md) | Real CCMP: the cipher is offloaded to the MAC, not the accelerator | Accepted (plan; corrects 0084's premise) |
 | [0093](0093-the-peers-ccmp-framing.md) | The peer's CCMP framing | Accepted |
 | [0094](0094-real-ccmp-on-the-air.md) | Real CCMP on the air: the MAC encrypts, keyed by the peer | Accepted |
+| [0095](0095-a-delivered-message-one-is-not-retried-at-once.md) | A delivered message one is not retried at once | Accepted (fixes 0094's flaky handshake) |

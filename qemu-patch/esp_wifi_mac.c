@@ -279,6 +279,11 @@ OBJECT_DECLARE_SIMPLE_TYPE(EspWifiMac, ESP_WIFI_MAC)
  * what, if anything, is due. */
 #define FRAME_TX          1u
 #define FRAME_TICK        2u
+/* Or-ed into the type of the next request when the last frame the peer offered
+ * on a tick reached a receive descriptor: the model's transmit acknowledgement.
+ * The peer uses it the way hostapd uses an acknowledged message one -- to stop
+ * retrying it at once (ADR 0095). */
+#define FRAME_DELIVERED   0x8000u
 /* The peer's only reply flag: a station is waiting for this frame, so it may
  * go on the air even while the receive-enable bit reads clear. It does not
  * excuse a held MAC -- that is a radio tuned elsewhere, and a frame delivered
@@ -467,6 +472,9 @@ struct EspWifiMac {
      * which is the identity cipher ADR 0084 lived with. */
     uint8_t tk[16];
     bool have_key;
+    /* The last frame the peer offered reached a descriptor, and the peer has
+     * not been told yet (ADR 0095). */
+    bool offered_delivered;
     int64_t mark_at;
     uint32_t ring;              /* what the driver handed us */
     unsigned deliveries;
@@ -656,7 +664,8 @@ static size_t wifi_ask(EspWifiMac *s, uint16_t type, unsigned channel,
         frame = sealed;
     }
     uint8_t head[12];
-    stw_le_p(head + 0, type);
+    stw_le_p(head + 0, type | (s->offered_delivered ? FRAME_DELIVERED : 0));
+    s->offered_delivered = false;
     stw_le_p(head + 2, (uint16_t)channel);
     stw_le_p(head + 4, (uint16_t)len);
     stl_le_p(head + 6, (uint32_t)(qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL)
@@ -1156,6 +1165,11 @@ static void wifi_deliver(void *opaque)
         }
     }
     s->deliveries++;
+    if (!answered) {
+        /* A frame the peer started made it into the station's receiver: tell
+         * the peer on the next request, as an acknowledgement would. */
+        s->offered_delivered = true;
+    }
     /* A standing access point never reaches the summary below, so it says how
      * it is getting on as it goes. Taken means the driver re-armed the
      * descriptor, which is the only thing the model can see. */
@@ -1349,6 +1363,23 @@ static int wifi_tx_slot(hwaddr offset)
  * that bit to `lmacPostTxComplete`, which is a thunk for `pp_post(23)`, and
  * ppTask then ends the frame exchange and marks the queue idle again. Without
  * this the first frame is the last one. */
+/* The ethertype a data frame carries behind its LLC/SNAP header, and the EAPOL
+ * key information if it is a handshake frame (0xFFFF otherwise). The header is
+ * two octets longer for QoS and eight longer again behind a CCMP header. */
+static void wifi_data_kind(const uint8_t *f, size_t len,
+                           unsigned *ethertype, unsigned *info)
+{
+    size_t llc = ((f[0] & 0x80) ? 26 : 24) + ((f[1] & 0x40) ? 8 : 0);
+    *ethertype = 0;
+    *info = 0xFFFFu;
+    if (len >= llc + 8) {
+        *ethertype = ((unsigned)f[llc + 6] << 8) | f[llc + 7];
+    }
+    if (*ethertype == 0x888E && len >= llc + 15) {
+        *info = ((unsigned)f[llc + 13] << 8) | f[llc + 14];
+    }
+}
+
 static void wifi_tx_complete(void *opaque)
 {
     EspWifiMac *s = opaque;
@@ -1369,7 +1400,35 @@ static void wifi_tx_complete(void *opaque)
          * and waits for its reply before sending the next. */
         uint8_t request[FRAME_MAX];
         size_t length = wifi_read_tx_frame(slot, request, sizeof(request));
-        if (!length || s->pending_len) {
+        unsigned now_ms = (unsigned)(qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) / 1000000);
+        if (!length) {
+            qemu_log_mask(LOG_UNIMP, "esp-wifi-mac: at %u ms the frame armed on "
+                          "slot %u could not be read back; nothing went on the "
+                          "air%c", now_ms, slot, 10);
+            continue;
+        }
+        /* What a data frame carries, logged for every one, because the peer
+         * only speaks up about the kinds it answers: a frame lost between the
+         * driver and the peer, and one the peer quietly ignored, look alike
+         * from its side. ADR 0095. */
+        unsigned ethertype = 0, info = 0xFFFFu;
+        if ((request[0] & 0x0C) == 0x08) {
+            wifi_data_kind(request, length, &ethertype, &info);
+            qemu_log_mask(LOG_UNIMP, "esp-wifi-mac: at %u ms a 0x%02x of %u "
+                          "byte(s) left, ethertype 0x%04x, eapol key_info "
+                          "0x%04x%c", now_ms, request[0], (unsigned)length,
+                          ethertype, info, 10);
+        }
+        if (s->pending_len) {
+            /* Not put on the air, because an answer to an earlier frame has not
+             * been delivered yet. Said out loud, because a frame that silently
+             * never reaches the peer is indistinguishable from one it ignored. */
+            qemu_log_mask(LOG_UNIMP, "esp-wifi-mac: at %u ms a transmitted 0x%02x "
+                          "of %u byte(s) (eapol key_info 0x%04x) was not put on "
+                          "the air: the answer to an earlier frame, a 0x%02x of "
+                          "%u byte(s), is still waiting%c",
+                          now_ms, request[0], (unsigned)length, info,
+                          s->pending[0], (unsigned)s->pending_len, 10);
             continue;
         }
         size_t reply = wifi_ask(s, FRAME_TX, wifi_channel(s),
@@ -1551,6 +1610,7 @@ static void wifi_reset(void *opaque)
      * peer will send a fresh one; drop it and go back to plaintext until then. */
     s->have_key = false;
     memset(s->tk, 0, sizeof(s->tk));
+    s->offered_delivered = false;
     memset(s->awaiting, 0, sizeof(s->awaiting));
     wifi_raise(s, 0);
 }
