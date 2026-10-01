@@ -85,9 +85,13 @@ recurred in the ten runs since, and its logs were not kept. Recorded as open.
 
 **Costs, accepted**
 
-- A single-board run with a non-default MAC now draws a different random stream
-  than it did before this change. Nothing asserts a particular random value; it
-  is recorded here because it is a change in what a given run does.
+- **Every run now draws a different random stream than before this change**,
+  the default MAC included: the seed was 1 for all boards and is now
+  `(1 << 48) | MAC` for each. (An earlier version of this ADR said only
+  non-default MACs were affected; that was wrong.) Nothing asserts a particular
+  random value, and the one counted-clock suite checked against it -- Bluetooth
+  connect, which is deterministic given its inputs -- passes under the new seed,
+  2 runs of 2.
 - Two boards given the same MAC still share a stream -- and a node identity,
   which is already the thing ADR 0036 says to avoid.
 
