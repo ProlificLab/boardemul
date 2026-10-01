@@ -25,8 +25,9 @@ from emu.devices.epaper import EPaperPanel
 from emu.devices.i2c_devices import CST328, TCA8418, tdeck_max_devices
 from emu import sdimage
 from emu.devices.air import AirMedium
-from emu.devices.gps import L76K
+from emu.devices.gps import UBloxM10
 from emu.devices.ledc import Ledc
+from emu.devices.modem import A7682E
 from emu.guest_clock import GuestClock
 from emu.devices.sdcard import SdCard
 from emu.devices.sx1262 import Sx1262
@@ -158,6 +159,11 @@ class Board:
     # It needs no device of ours: the fork's controller already speaks to a
     # character device, so a socket is the whole of it (ADR 0052).
     gps: "SerialServer | None" = None
+    # Which of the machine's UARTs the receiver is on: the second on the
+    # T-Deck (ADR 0052), the third on the Max, whose second carries its modem
+    # (ADR 0105).
+    gps_uart: int = 1
+    modem: "SerialServer | None" = None
     # The guest's clock, for parts that keep the board's time (ADR 0104).
     clock: "GuestClock | None" = None
 
@@ -170,6 +176,8 @@ class Board:
         self.i2c1.start()
         if self.gps:
             self.gps.start()
+        if self.modem:
+            self.modem.start()
         if self.frames:
             self.frames.start()
         # BUSY idles high on this panel. Set before QEMU connects; the client
@@ -178,7 +186,7 @@ class Board:
 
     def stop(self) -> None:
         for link in (self.spi, self.i2c0, self.i2c1, self.gpio,
-                     self.gps, self.frames, self.clock):
+                     self.gps, self.modem, self.frames, self.clock):
             if link:
                 link.stop()
 
@@ -193,10 +201,17 @@ class Board:
         if self.clock:
             args += ["-device", self.clock.device()]
         # The order matters and is the only thing that names the port: the
-        # console is given first, in build_argv, so this one is the machine's
-        # second UART, which is where the board's satellite receiver sits.
+        # console is given first, in build_argv, so these are the machine's
+        # second and third UARTs. A port with nothing on it before one that has
+        # a part is given `null`, so the part lands on its own port.
+        uarts: dict[int, SerialServer] = {}
         if self.gps:
-            args += ["-serial", f"unix:{self.gps.socket_path}"]
+            uarts[self.gps_uart] = self.gps
+        if self.modem:
+            uarts[1] = self.modem
+        for number in range(1, max(uarts, default=0) + 1):
+            link = uarts.get(number)
+            args += ["-serial", f"unix:{link.socket_path}" if link else "null"]
         return args
 
 
@@ -234,12 +249,17 @@ def build(outdir: Path, air: str | None = None, ble_air: str | None = None,
                     {SPI_DISPLAY: panel, SPI_RADIO: radio, SPI_SDCARD: sdcard})
     i2c0 = I2CServer(outdir / "i2c0.sock", i2c_devices(), name="i2c0")
     i2c1 = I2CServer(outdir / "i2c1.sock", [], name="i2c1")
-    # The same receiver on the same UART as the other board. No firmware to
-    # hand exercises it here -- this board's own GPS example gives up before it
-    # touches a UART at all -- so it is plumbed and unproven (ADR 0052).
-    receiver = SerialServer(outdir / "gps.sock",
-                            L76K(latitude=gps[0], longitude=gps[1],
-                                 altitude_m=gps[2]), name="gps") if gps else None
+    # This board's receiver is a u-blox, built in, on the third UART; its
+    # modem is on the second (ADR 0105). Both are always fitted. --gps says
+    # where the board is; without it the receiver is indoors, with no fix.
+    clock = GuestClock(outdir / "clock.sock")
+    receiver = SerialServer(
+        outdir / "gps.sock",
+        UBloxM10(latitude=gps[0] if gps else None,
+                 longitude=gps[1] if gps else None,
+                 altitude_m=gps[2] if gps else 0.0, clock=clock.seconds),
+        name="gps")
+    modem = SerialServer(outdir / "modem.sock", A7682E(), name="modem")
 
     # Most of these windows are claimed only so that an access to them is
     # visible rather than swallowed. The backlight controller is the one
@@ -264,8 +284,8 @@ def build(outdir: Path, air: str | None = None, ble_air: str | None = None,
         f"socket={i2c1.socket_path}",
     ]
     return Board(regions=regions, gpio=gpio, spi=spi, i2c0=i2c0, i2c1=i2c1,
-                 panel=panel, gps=receiver, devices=devices,
-                 clock=GuestClock(outdir / "clock.sock"))
+                 panel=panel, gps=receiver, gps_uart=2, modem=modem, clock=clock,
+                 devices=devices)
 
 
 def attach_input(server: BusServer, board: Board, outdir: Path) -> InputTail:

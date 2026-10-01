@@ -165,27 +165,15 @@ class L76K(SerialDevice):
             self.sentences += 1
         return out
 
-    def _clock(self, stamp: float) -> tuple[str, str]:
-        whole = int(stamp)
-        seconds = whole % 60
-        minutes = (whole // 60) % 60
-        hours = (whole // 3600) % 24
-        days = whole // 86400
-        # Days since 1970 to a calendar date, without importing a timezone
-        # database for a part that only ever reports UTC.
-        year, month, day = _civil_from_days(days)
-        return (f"{hours:02d}{minutes:02d}{seconds:02d}.00",
-                f"{day:02d}{month:02d}{year % 100:02d}")
-
     def _gga(self, stamp: float) -> str:
-        clock, _date = self._clock(stamp)
+        clock, _date = nmea_clock(stamp)
         lat, ns = degrees_to_nmea(self.latitude, "NS")
         lon, ew = degrees_to_nmea(self.longitude, "EW")
         return (f"GNGGA,{clock},{lat},{ns},{lon},{ew},1,{SATELLITES:02d},"
                 f"{HDOP},{self.altitude_m:.1f},M,{GEOID_SEPARATION_M},M,,")
 
     def _rmc(self, stamp: float) -> str:
-        clock, date = self._clock(stamp)
+        clock, date = nmea_clock(stamp)
         lat, ns = degrees_to_nmea(self.latitude, "NS")
         lon, ew = degrees_to_nmea(self.longitude, "EW")
         # Standing still: no speed and so no meaningful course.
@@ -194,6 +182,20 @@ class L76K(SerialDevice):
     def summary(self) -> str:
         asked = ", ".join(sorted(set(self.commands))) or "nothing"
         return (f"L76K: {self.sentences} sentence(s) sent, asked for {asked}")
+
+
+def nmea_clock(stamp: float) -> tuple[str, str]:
+    """A Unix time as NMEA's hhmmss.ss and ddmmyy, in UTC."""
+    whole = int(stamp)
+    seconds = whole % 60
+    minutes = (whole // 60) % 60
+    hours = (whole // 3600) % 24
+    days = whole // 86400
+    # Days since 1970 to a calendar date, without importing a timezone
+    # database for a part that only ever reports UTC.
+    year, month, day = _civil_from_days(days)
+    return (f"{hours:02d}{minutes:02d}{seconds:02d}.00",
+            f"{day:02d}{month:02d}{year % 100:02d}")
 
 
 def _rate(rates: list[str], index: int) -> bool:
@@ -221,3 +223,166 @@ def _civil_from_days(days: int) -> tuple[int, int, int]:
     day = doy - (153 * mp + 2) // 5 + 1
     month = mp + 3 if mp < 10 else mp - 9
     return year + (1 if month <= 2 else 0), month, day
+
+
+# -- the T-Deck Max's receiver ----------------------------------------------
+
+UBX_SYNC = b"\xb5\x62"
+UBX_CFG = 0x06
+UBX_ACK, UBX_ACK_ACK = 0x05, 0x01
+
+
+def ubx_checksum(body: bytes) -> bytes:
+    """u-blox's Fletcher-8, over class, id, length and payload."""
+    a = b = 0
+    for byte in body:
+        a = (a + byte) & 0xFF
+        b = (b + a) & 0xFF
+    return bytes([a, b])
+
+
+def ubx(cls: int, ident: int, payload: bytes = b"") -> bytes:
+    body = bytes([cls, ident]) + len(payload).to_bytes(2, "little") + payload
+    return UBX_SYNC + body + ubx_checksum(body)
+
+
+class UBloxM10(SerialDevice):
+    """The u-blox MIA-M10Q on the T-Deck Max's third UART (ADR 0105).
+
+    Unlike the L76K it is never spoken to first: the factory demo listens, feeds
+    every byte to TinyGPS++, and calls the module missing if fewer than ten
+    characters have arrived after thirty seconds. So it streams from power-on,
+    as the part does, once a second of the *board's* time (ADR 0104) -- on the
+    host's clock a slow guest would be flooded, which is what kept the L76K
+    silent (ADR 0052).
+
+    It answers UBX configuration (class 0x06) with ACK-ACK, which the demo waits
+    for after each command it sends. Without a position it is a receiver indoors:
+    it streams, with no fix and no time, which is what the demo's "Place your
+    board outside" expects. Given one, it has a fix there.
+
+    A configuration message with no payload is a poll, answered with the
+    configuration it names before the acknowledgement. Only CFG-RATE is
+    answered -- a measurement every 1000 ms, one per solution, on GPS time,
+    u-blox's default and the once-a-second this model streams at -- because it
+    is the only poll a firmware here sends. Any other is logged, not invented.
+    """
+
+    CONFIGURATION = {
+        0x08: (1000).to_bytes(2, "little") + (1).to_bytes(2, "little")
+              + (1).to_bytes(2, "little"),        # CFG-RATE
+    }
+
+    def __init__(self, latitude: float | None = None, longitude: float | None = None,
+                 altitude_m: float = 0.0, epoch: float | None = None,
+                 clock=None):
+        self.position = (None if latitude is None or longitude is None
+                         else (latitude, longitude))
+        self.altitude_m = altitude_m
+        self.epoch = 1_767_225_600.0 if epoch is None else epoch  # 2026-01-01Z
+        # The board's clock when there is one; the host's otherwise, which only
+        # a test with no board needs.
+        self._clock = clock
+        self._started = time.monotonic()
+        self._next_fix: float | None = None
+        self._buffer = b""
+        self.sentences = 0
+        self.acknowledged: list[tuple[int, int]] = []
+        self.ignored: list[str] = []
+
+    def _now(self) -> float | None:
+        if self._clock is None:
+            return time.monotonic() - self._started
+        return self._clock()
+
+    # -- what the guest says to it ---------------------------------------
+
+    def receive(self, data: bytes) -> bytes:
+        self._buffer += data
+        answer = b""
+        while True:
+            start = self._buffer.find(UBX_SYNC)
+            if start < 0:
+                self._note_text(self._buffer)
+                self._buffer = b""
+                break
+            if start:
+                self._note_text(self._buffer[:start])
+                self._buffer = self._buffer[start:]
+            if len(self._buffer) < 6:
+                break
+            length = int.from_bytes(self._buffer[4:6], "little")
+            if len(self._buffer) < 8 + length:
+                break
+            frame, self._buffer = self._buffer[:8 + length], self._buffer[8 + length:]
+            body, check = frame[2:6 + length], frame[6 + length:]
+            if ubx_checksum(body) != check:
+                log.warning("u-blox: a UBX frame with a bad checksum, dropped")
+                continue
+            cls, ident = body[0], body[1]
+            if cls == UBX_CFG and length == 0:
+                # A poll: answered with the configuration it names, then
+                # acknowledged. The demo's check after CFG-RATE waits for the
+                # 0x06/0x08 frame itself, not for the acknowledgement.
+                current = self.CONFIGURATION.get(ident)
+                if current is None:
+                    self.ignored.append(f"poll CFG {ident:02x}")
+                    log.info("u-blox: poll of CFG 0x%02x, no model", ident)
+                    continue
+                self.acknowledged.append((cls, ident))
+                answer += ubx(cls, ident, current) + ubx(UBX_ACK, UBX_ACK_ACK,
+                                                         bytes([cls, ident]))
+            elif cls == UBX_CFG:
+                self.acknowledged.append((cls, ident))
+                log.info("u-blox: CFG 0x%02x acknowledged", ident)
+                answer += ubx(UBX_ACK, UBX_ACK_ACK, bytes([cls, ident]))
+            else:
+                self.ignored.append(f"UBX {cls:02x}/{ident:02x}")
+                log.info("u-blox: UBX 0x%02x/0x%02x, no model", cls, ident)
+        return answer
+
+    def _note_text(self, data: bytes) -> None:
+        text = data.decode("ascii", "replace").strip()
+        if text:
+            self.ignored.append(text[:40])
+            log.info("u-blox: %r, no model", text[:80])
+
+    # -- what it says on its own -----------------------------------------
+
+    def poll(self) -> bytes:
+        now = self._now()
+        if now is None:
+            return b""
+        if self._next_fix is None:
+            self._next_fix = now + FIX_INTERVAL
+            return b""
+        if now < self._next_fix:
+            return b""
+        self._next_fix += FIX_INTERVAL
+        if self._next_fix <= now:              # a stalled reader, not a backlog
+            self._next_fix = now + FIX_INTERVAL
+        self.sentences += 2
+        if self.position is None:
+            # No satellites, so no position and no time either.
+            return sentence("GNRMC,,V,,,,,,,,,,N,V") + sentence("GNGGA,,,,,,0,00,99.99,,,,,,")
+        stamp = self.epoch + now
+        return sentence(self._rmc(stamp)) + sentence(self._gga(stamp))
+
+    def _gga(self, stamp: float) -> str:
+        clock, _date = nmea_clock(stamp)
+        lat, ns = degrees_to_nmea(self.position[0], "NS")
+        lon, ew = degrees_to_nmea(self.position[1], "EW")
+        return (f"GNGGA,{clock},{lat},{ns},{lon},{ew},1,{SATELLITES:02d},"
+                f"{HDOP},{self.altitude_m:.1f},M,{GEOID_SEPARATION_M},M,,")
+
+    def _rmc(self, stamp: float) -> str:
+        clock, date = nmea_clock(stamp)
+        lat, ns = degrees_to_nmea(self.position[0], "NS")
+        lon, ew = degrees_to_nmea(self.position[1], "EW")
+        return f"GNRMC,{clock},A,{lat},{ns},{lon},{ew},0.00,0.00,{date},,,A,V"
+
+    def summary(self) -> str:
+        cfg = ", ".join(f"0x{i:02x}" for _c, i in self.acknowledged) or "none"
+        return (f"u-blox M10: {self.sentences} sentence(s) sent, "
+                f"{'a fix' if self.position else 'no fix'}, CFG acknowledged: {cfg}"
+                + (f", ignored {len(self.ignored)}" if self.ignored else ""))

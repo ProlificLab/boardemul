@@ -53,3 +53,17 @@ def test_the_fuel_gauge_is_trusted_and_provisioned(checked: Run) -> None:
     assert "(244) Checking data memory" in checked.usb, checked.usb[-2000:]
     for failure in ("Invalid Device Number", "INITCOMP timeout", "timeout after"):
         assert failure not in checked.usb, checked.usb[-2000:]
+
+
+def test_the_receiver_answers_its_configuration(checked: Run) -> None:
+    """A u-blox on the third UART, answering the CFG-RATE poll the demo waits
+    for (ADR 0105)."""
+    assert "GPS Task Create...!" in checked.usb, checked.usb[-2000:]
+    assert "GPS Connect failed" not in checked.usb
+
+
+def test_the_modem_answers(checked: Run) -> None:
+    """An A7682E on the second UART: it answers AT, so the demo does not give
+    up on it (ADR 0105)."""
+    assert "Start modem..." in checked.usb, checked.usb[-2000:]
+    assert "[A7682E] Init Fail" not in checked.usb, checked.usb[-2000:]

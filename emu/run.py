@@ -594,6 +594,9 @@ def _report_bus(server: BusServer, tail=None, irq=None, hw=None) -> None:
         if hw.gps:
             print(f"  gps: {hw.gps.bytes_in} byte(s) in, {hw.gps.bytes_out} out")
             print(f"    {hw.gps.device.summary()}")
+        if hw.modem:
+            print(f"  modem: {hw.modem.bytes_in} byte(s) in, {hw.modem.bytes_out} out")
+            print(f"    {hw.modem.device.summary()}")
         if hw.clock:
             print(f"  guest clock: {hw.clock.ticks} tick(s)")
 
