@@ -111,3 +111,4 @@ superseded ADR is marked superseded and points forward.
 | [0103](0103-the-max-fuel-gauge-is-provisioned.md) | The Max's fuel gauge is provisioned, as its driver expects | Accepted |
 | [0104](0104-the-parts-can-read-the-guests-clock.md) | The board's parts can read the guest's clock | Accepted |
 | [0105](0105-the-max-serial-parts.md) | The Max's serial parts: a modem and a u-blox receiver | Accepted (carried patch) |
+| [0106](0106-what-the-census-found-harmless.md) | What the hardware census found harmless, and what it left open | Accepted |
