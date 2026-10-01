@@ -224,6 +224,89 @@ class Run:
     def digests(self) -> list[str]:
         return [region_digest(f) for f in self.frames]
 
+    @property
+    def boots(self) -> int:
+        """How many times the chip came out of reset. Once, unless the run let
+        it reboot (ADR 0099) and it did."""
+        return self.uart.count(BOOT_BANNER)
+
+
+# -- boots and panics ---------------------------------------------------------
+
+# The ROM prints this once per boot, with the reset cause after it.
+BOOT_BANNER = "rst:0x"
+
+# The one panic a run may reboot from (ADR 0099, 0114): ipc1's 1024-byte stack
+# overflowing by four bytes as the GPIO ISR-service install ends its heap lock
+# with a tick pending. The overflow is the firmware's, silicon hits it too, and
+# a board that does comes back. Anything else that panics is still a failure.
+IPC1_CANARY = re.compile(
+    r"Guru Meditation Error: Core +1 panic'ed \(Unhandled debug exception\)\.\s*"
+    r"Debug exception reason: Stack canary watchpoint triggered \(ipc1\)")
+
+
+def by_boot(text: str) -> list[str]:
+    """What was said in each boot, in order, each from its ROM banner on.
+
+    The ROM's two lines before a banner go with the boot before it, which is
+    harmless: nothing asserts on them.
+    """
+    starts = [m.start() for m in re.finditer(re.escape(BOOT_BANNER), text)][1:]
+    edges = [0] + starts + [len(text)]
+    return [text[a:b] for a, b in zip(edges, edges[1:])]
+
+
+def last_boot(text: str) -> str:
+    """What was said since the chip last came out of reset. A board that
+    rebooted is judged on this, as the device in a hand would be."""
+    return by_boot(text)[-1]
+
+
+def panics(text: str) -> list[str]:
+    """Each panic, as its opening line and the line after it -- which for a
+    debug exception is the reason, and is what tells one cause from another."""
+    return re.findall(r"Guru Meditation Error:[^\n]*\n?[^\n]*", text)
+
+
+def unforgiven(text: str) -> list[str]:
+    """Each boot's panic, where it is not ADR 0099's ipc1 canary.
+
+    A boot is judged by its first panic, which is why it ended. Any after it in
+    the same boot come from the panic handler itself: on 250620 the canary's
+    core dump faults, prints a second Guru Meditation (LoadProhibited), and
+    says "Re-entered core dump!" before the reset (ADR 0114).
+    """
+    firsts = [found[0] for found in map(panics, by_boot(text)) if found]
+    return [p for p in firsts if not IPC1_CANARY.match(p)]
+
+
+def rom_only(boot: str) -> bool:
+    """Whether a boot said nothing past the ROM's banner.
+
+    That is a reset landing again while the ROM prints it. The panic handler on
+    core 1 resets core 0 and then core 1, and QEMU's ESP32-S3 makes each CPU
+    reset a reset of the whole machine (hw/xtensa/esp32s3.c), so two banners
+    can come from one reboot (ADR 0114).
+    """
+    return all(not line.strip() or line.startswith(("ESP-ROM:", "Build:", BOOT_BANNER))
+               for line in boot.splitlines())
+
+
+def unexplained_resets(text: str) -> list[int]:
+    """The boots, numbered from 1, that ended for a reason other than the
+    forgiven panic. Before a run could reboot, any reset ended it; now each
+    one has to be accounted for (ADR 0114).
+
+    A boot that said nothing past the ROM's banner was ended by the same reset
+    that started it, so it is accounted for by the boot before it.
+    """
+    def ended_in_the_canary(boot: str) -> bool:
+        first = panics(boot)[:1]
+        return bool(first) and IPC1_CANARY.match(first[0]) is not None
+
+    return [n for n, boot in enumerate(by_boot(text)[:-1], 1)
+            if not (ended_in_the_canary(boot) or (n > 1 and rom_only(boot)))]
+
 
 def _uart(outdir: Path) -> str:
     """Whatever the guest has said so far. Read again each time: a run being
