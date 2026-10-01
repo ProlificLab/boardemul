@@ -51,21 +51,21 @@ IRQ_I2C_EXT0 = 42
 IRQ_I2C_EXT1 = 43
 
 # Board pins, from lib/TDeckMaxBoard/src/TDeckMaxBoard.h
-# The three parts on SPI2. The display's select was already named; the other
-# two were read off the firmware rather than guessed (ADR 0043): with the GPIO
-# trace on, pin 8 is pulled low immediately before the burst of SPI that fails
-# to mount a card, and pin 9 before an earlier burst, which is the radio being
-# probed. The firmware carries drivers for both -- it has "SD Card Size" and
-# "[SX1262] Received packet!" in it -- and 9 is the T-Deck's radio select too.
+# The three parts on SPI2. The card's select was read off the firmware (ADR
+# 0043): pin 8 goes low before the burst of SPI that mounts it, and the card
+# mounts there although the header's current revision says 48. The radio's is
+# the header's, and the factory image confirms it by driving pin 3 over a
+# thousand times while it initialises the radio (ADR 0102). Pin 9, which ADR
+# 0043 inferred was the radio, is the panel's reset: one pulse per boot.
 SD_CS_PIN = 8
-RADIO_CS_PIN = 9
+RADIO_CS_PIN = 3
 EPD_CS_PIN = 34
 EPD_DC_PIN = 35
 EPD_BUSY_PIN = 37
 KEYBOARD_INT_PIN = 15
-# The radio's interrupt line. Not yet observed on this board; the T-Deck's
-# number is used, and nothing depends on it until the firmware waits on it.
-RADIO_DIO1_PIN = 45
+# The radio's interrupt line (BOARD_LORA_INT). Its BUSY line, pin 6, is left
+# undriven and reads low -- idle -- as on the T-Deck (ADR 0102).
+RADIO_DIO1_PIN = 5
 
 # Which device each chip select carries, and which of them drive MISO back.
 # The panel says nothing; the card and the radio both answer (ADR 0032).
