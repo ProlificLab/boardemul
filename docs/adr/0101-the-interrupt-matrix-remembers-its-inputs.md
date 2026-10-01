@@ -48,8 +48,14 @@ behaviour the S3 needs too.
    - a reset of the matrix clears its map but not the input mirror. The inputs
      are wires from other devices, and they keep their level through it.
 
-2. **It is reported upstream and offered as a pull request**, as ADR 0017
-   says, once the user has seen it. Until it lands it is carried.
+2. **Upstream already has it.** By the time this was ready to report, another
+   user had filed the same defect as espressif/qemu#184 (2026-09-30) and
+   offered a fix as #185. That fix makes the same choices this patch does,
+   including forwarding only changes for the edge-triggered lines. So nothing
+   was filed twice. Our independent reproduction, HWCDC's enable-then-route
+   order, was added to #184 as a comment. The patch is carried until #185
+   lands and the pinned tag moves past it; then it is deleted and this ADR
+   superseded, as ADR 0017 says.
 
 ## Consequences
 

@@ -43,8 +43,9 @@ is modelled.
 ## Decision
 
 1. **`qemu-patch/uart2-chardev.patch`** restores those two lines, so UART2 is
-   `-serial`'s third port, as UART0 and UART1 are its first two. Carried, and
-   to be reported upstream with ADR 0101's patch.
+   `-serial`'s third port, as UART0 and UART1 are its first two. Reported as
+   espressif/qemu#186 and offered as #187, the same two lines against
+   `esp-develop`, from ProlificLab/qemu. Carried until it lands.
 
 2. **The receiver is a u-blox M10 (`UBloxM10` in `emu/devices/gps.py`) on the
    third UART**, built in and always fitted, as it is on this board:
