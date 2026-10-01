@@ -8,6 +8,9 @@ command followed by its payload -- not a stream of single bytes.
 Segment header, matching esp_spi_master.c:
 
     u8 type   0 = write only, no reply    1 = duplex, reply of `len` expected
+              2 = the chip select went high
+              3 = the same, for a part with a BUSY line: answer BUSY below
+              4 = the part's reset pin moved, `dc` its level: answer BUSY
     u8 dc     level of the data/command pin while these bytes were clocked
     u8 cs     which device on the bus was selected (ADR 0032)
     u8 pad
@@ -29,6 +32,13 @@ SEGMENT = struct.Struct("<BBBBI")
 SEG_WRITE = 0
 SEG_DUPLEX = 1
 SEG_RELEASE = 2         # the chip select went high; the window is over
+SEG_RELEASE_BUSY = 3    # the same, and the part has a BUSY line (ADR 0111)
+SEG_RESET = 4           # the part's reset pin moved; dc is its new level
+
+# How long a part's BUSY line stays high, in guest nanoseconds: from now, and
+# when that is BUSY_HELD, from the next time its select falls (ADR 0111).
+BUSY = struct.Struct("<II")
+BUSY_HELD = 0xFFFFFFFF
 
 
 class SpiDevice:
@@ -46,6 +56,19 @@ class SpiDevice:
         length is decided by the host cannot: it is the only thing that says a
         command has ended.
         """
+
+    def on_reset(self, asserted: bool) -> None:
+        """The part's reset pin moved: `asserted` while it is held low. Only a
+        select the controller was given a reset pin for hears this."""
+
+    def busy(self) -> tuple[int, int]:
+        """How long this part's BUSY line stays high now that a window has
+        closed or its reset pin has moved: `(high_ns, wake_ns)` on the guest's
+        clock. `high_ns` of BUSY_HELD keeps it high until the select next
+        falls, and it falls `wake_ns` after that edge. Asked only for a select
+        the controller was given a BUSY pin for (ADR 0111). A part that is
+        never busy says so."""
+        return (0, 0)
 
     def flush(self) -> None:
         """Called once the run is over. A panel with nothing pending does
@@ -122,12 +145,18 @@ class SpiServer:
             self.segments += 1
             self.bytes_in += len(payload)
             device = self.devices.get(cs)
-            if kind == SEG_RELEASE:
+            if kind in (SEG_RELEASE, SEG_RELEASE_BUSY, SEG_RESET):
                 if device is not None:
                     try:
-                        device.on_deselect()
+                        if kind == SEG_RESET:
+                            device.on_reset(asserted=not dc)
+                        else:
+                            device.on_deselect()
                     except Exception:
-                        log.exception("spi device raised on deselect")
+                        log.exception("spi device raised on %s",
+                                      "reset" if kind == SEG_RESET else "deselect")
+                if kind != SEG_RELEASE and not self._answer_busy(conn, device):
+                    return
                 continue
             if device is None:
                 # A chip select with nothing on it. Real hardware clocks the
@@ -149,6 +178,23 @@ class SpiServer:
                     conn.sendall(out)
                 except OSError:
                     return
+
+    @staticmethod
+    def _answer_busy(conn: socket.socket, device: SpiDevice | None) -> bool:
+        """The controller is waiting to hear how long BUSY stays high, so it
+        always gets an answer: from a part that raises, or from no part, that
+        is "not busy", which is what the line was before it was modelled."""
+        high_ns, wake_ns = 0, 0
+        if device is not None:
+            try:
+                high_ns, wake_ns = device.busy()
+            except Exception:
+                log.exception("spi device raised saying how long it is busy")
+        try:
+            conn.sendall(BUSY.pack(min(high_ns, BUSY_HELD), min(wake_ns, BUSY_HELD)))
+        except OSError:
+            return False
+        return True
 
     @staticmethod
     def _recv(conn: socket.socket, count: int) -> bytes | None:

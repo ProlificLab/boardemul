@@ -35,4 +35,12 @@ typedef void (*EspGpioWatchFn)(void *opaque, unsigned pin, int level);
 void esp_gpio_watch(DeviceState *dev, unsigned pin,
                     EspGpioWatchFn fn, void *opaque);
 
+/*
+ * Drive an input pin from inside the machine, as the host socket does from
+ * outside it but on the guest's clock. For a line whose timing the guest
+ * measures in microseconds -- a part's BUSY (ADR 0111) -- a message from the
+ * host would race the guest's read.
+ */
+void esp_gpio_drive(DeviceState *dev, unsigned pin, int level);
+
 #endif /* ESP_BOARD_GLUE_H */

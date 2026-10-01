@@ -367,13 +367,32 @@ static const MemoryRegionOps gpio_hi_ops = {
     .impl.max_access_size = 4,
 };
 
+/* An input pin driven from outside the guest: by the host over the socket, or
+ * by another device in the machine (esp_gpio_drive). Either way it overrides
+ * whatever the guest left in the output register, and edges latch. */
+static void gpio_drive_input(EspGpioBlock *s, unsigned pin, int level)
+{
+    uint64_t before;
+
+    if (pin >= GPIO_PIN_COUNT) {
+        return;
+    }
+    before = gpio_levels(s);
+    s->in_driven |= 1ULL << pin;
+    if (level) {
+        s->in_level |= 1ULL << pin;
+    } else {
+        s->in_level &= ~(1ULL << pin);
+    }
+    gpio_levels_changed(s, before);
+}
+
 static void gpio_host_readable(void *opaque)
 {
     EspGpioBlock *s = opaque;
     EspGpioInputMessage msg;
     uint8_t *p = (uint8_t *)&msg;
     size_t left = sizeof(msg);
-    uint64_t before;
 
     while (left) {
         ssize_t n = recv(s->fd, p, left, 0);
@@ -389,17 +408,16 @@ static void gpio_host_readable(void *opaque)
         p += n;
         left -= n;
     }
-    if (msg.pin >= GPIO_PIN_COUNT) {
-        return;
+    gpio_drive_input(s, msg.pin, msg.level);
+}
+
+void esp_gpio_drive(DeviceState *dev, unsigned pin, int level)
+{
+    EspGpioBlock *s = dev ? ESP_GPIO_BLOCK(dev) : the_block;
+
+    if (s) {
+        gpio_drive_input(s, pin, level);
     }
-    before = gpio_levels(s);
-    s->in_driven |= 1ULL << msg.pin;
-    if (msg.level) {
-        s->in_level |= 1ULL << msg.pin;
-    } else {
-        s->in_level &= ~(1ULL << msg.pin);
-    }
-    gpio_levels_changed(s, before);
 }
 
 static void gpio_realize(DeviceState *dev, Error **errp)

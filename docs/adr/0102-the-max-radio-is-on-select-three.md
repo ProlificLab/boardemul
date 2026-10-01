@@ -3,6 +3,11 @@
 **Status:** Accepted — 2026-10-01. Corrects ADR 0043's radio pins, which that
 ADR itself marked as inferred.
 
+**Amended 2026-10-01:** decision 2 is superseded by
+[ADR 0111](0111-the-radio-says-when-it-is-busy.md). BUSY on pin 6 is now held
+on the guest's clock for as long as each command keeps the radio busy, and
+reset on pin 4 is watched, on both boards.
+
 ## Context
 
 ADR 0043 gave the T-Deck Max's radio chip select 9 and interrupt 45. It said

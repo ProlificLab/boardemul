@@ -17,7 +17,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from tests.support import (  # noqa: E402
-    FIRMWARE, Run, qemu_available, run_emulator, usb_text,
+    FIRMWARE, Run, qemu_available, radio_busy, run_emulator, usb_text,
 )
 
 pytestmark = [
@@ -45,6 +45,16 @@ def test_the_radio_is_found(checked: Run) -> None:
     """On chip select 3, where the vendor's pin map and the firmware put it,
     not 9, where it was once inferred to be (ADR 0102)."""
     assert "[SX1262] Initializing ... success!" in checked.usb, checked.usb[-2000:]
+
+
+def test_the_radio_held_its_busy_line_and_was_waited_for(checked: Run) -> None:
+    """BUSY on pin 6 and reset on pin 4, kept on the guest's clock (ADR 0111).
+    A reset holds it for the datasheet's 3.5 ms start-up, and the demo found
+    the radio after it, so it waited."""
+    busy = radio_busy(checked.outdir)
+    assert busy is not None, "the controller never reported the radio's BUSY line"
+    holds, longest = busy
+    assert holds >= 1 and longest >= 3500, busy
 
 
 def test_the_fuel_gauge_is_trusted_and_provisioned(checked: Run) -> None:

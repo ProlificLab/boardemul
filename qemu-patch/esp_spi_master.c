@@ -20,6 +20,7 @@
 #include "qemu/osdep.h"
 #include "qemu/cutils.h"
 #include "qemu/error-report.h"
+#include "qemu/timer.h"
 #include "hw/qdev-properties.h"
 #include "hw/qdev-core.h"
 #include "exec/address-spaces.h"
@@ -72,6 +73,45 @@ typedef struct QEMU_PACKED {
 #define SEGMENT_WRITE  0
 #define SEGMENT_DUPLEX 1
 #define SEGMENT_RELEASE 2   /* chip select went high; no bytes follow */
+/* The same, for a select whose part has a BUSY line: the part answers how long
+ * it is now busy (ADR 0111). */
+#define SEGMENT_RELEASE_BUSY 3
+/* The part's reset pin moved; `dc` carries its new level. Answered the same
+ * way, and the answer replaces whatever hold was running. */
+#define SEGMENT_RESET 4
+
+#define SPI_SELECTS 3
+
+/* What the part answers: BUSY stays high `high_ns` from now. BUSY_HELD keeps
+ * it high until the select next falls, and it then falls `wake_ns` after that
+ * edge -- a chip asleep, woken by NSS. A `wake_ns` of BUSY_HELD means a select
+ * does not wake it either: a chip held in reset. */
+typedef struct QEMU_PACKED {
+    uint32_t high_ns;
+    uint32_t wake_ns;
+} EspSpiBusyReply;
+
+#define BUSY_HELD 0xFFFFFFFFu
+
+/* A part's BUSY line, kept on the guest's clock (ADR 0111). The part decides
+ * how long each hold is; this only keeps the time, which the host cannot: a
+ * level it sent would arrive on its own clock, and RadioLib reads the pin a
+ * microsecond after the select rises. */
+typedef struct {
+    int32_t pin;                /* -1: this select has no BUSY line */
+    int32_t reset_pin;          /* -1: no reset line is watched */
+    QEMUTimer *timer;
+    bool high;
+    bool held;                  /* high until the select next falls */
+    uint32_t wake_ns;           /* when held: how long after that edge */
+    int64_t since;              /* when it last went high, virtual ns */
+    unsigned holds;
+    unsigned opened_high;       /* windows opened while high, not to wake it */
+    uint64_t longest_ns;
+    uint64_t total_ns;
+    const char *bus;            /* for the report */
+    int cs;
+} EspSpiBusyLine;
 
 struct EspSpiMaster {
     DeviceState parent_obj;
@@ -86,6 +126,9 @@ struct EspSpiMaster {
     int32_t cs1_gpio;
     int32_t cs2_gpio;
     int32_t dc_gpio;
+    int32_t busy_gpio[SPI_SELECTS];
+    int32_t reset_gpio[SPI_SELECTS];
+    EspSpiBusyLine busy[SPI_SELECTS];
     bool miso;
     uint32_t miso_mask;         /* which devices drive the shared MISO line */
 
@@ -173,6 +216,120 @@ static void spi_fail(EspSpiMaster *s, const char *what)
         error_report("esp-spi-master(%s): %s; transfers are discarded from now on",
                      s->region_name ? s->region_name : "?", what);
     }
+}
+
+/* Which select a chip-select or reset pin belongs to. A pin that is neither is
+ * select zero, which is what a controller told about one device reports. */
+static int spi_select_of(EspSpiMaster *s, unsigned pin)
+{
+    if (s->cs1_gpio >= 0 && (unsigned)s->cs1_gpio == pin) {
+        return 1;
+    }
+    if (s->cs2_gpio >= 0 && (unsigned)s->cs2_gpio == pin) {
+        return 2;
+    }
+    for (int i = 0; i < SPI_SELECTS; i++) {
+        if (s->reset_gpio[i] >= 0 && (unsigned)s->reset_gpio[i] == pin) {
+            return i;
+        }
+    }
+    return 0;
+}
+
+/* How the line is getting on, after the 1st, 2nd, 4th, 8th hold and so on:
+ * enough to see a bring-up hold by hold, never enough to flood a long run. */
+static void spi_busy_report(EspSpiBusyLine *line)
+{
+    qemu_log_mask(LOG_UNIMP, "esp-spi-master(%s): select %d's busy line: "
+                  "%u hold(s), the longest %" PRIu64 " us, %" PRIu64 " us in "
+                  "all; %u window(s) opened while it was high\n",
+                  line->bus, line->cs, line->holds, line->longest_ns / 1000,
+                  line->total_ns / 1000, line->opened_high);
+}
+
+static void spi_busy_set(EspSpiBusyLine *line, bool high)
+{
+    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+
+    if (high == line->high) {
+        return;
+    }
+    line->high = high;
+    if (high) {
+        line->since = now;
+    } else {
+        uint64_t lasted = now - line->since;
+
+        line->holds++;
+        line->total_ns += lasted;
+        line->longest_ns = MAX(line->longest_ns, lasted);
+        if (!(line->holds & (line->holds - 1))) {
+            spi_busy_report(line);
+        }
+    }
+    esp_gpio_drive(NULL, line->pin, high);
+}
+
+static void spi_busy_fall(void *opaque)
+{
+    EspSpiBusyLine *line = opaque;
+
+    line->held = false;
+    spi_busy_set(line, false);
+}
+
+/* What the part answered. A release only lengthens a hold: the bytes a host
+ * clocks into a waking chip do not cut its wake short. A reset edge replaces
+ * it, because the reset is what decides the chip's state. */
+static void spi_busy_apply(EspSpiBusyLine *line, EspSpiBusyReply reply,
+                           bool replace)
+{
+    int64_t until;
+
+    if (reply.high_ns == BUSY_HELD) {
+        timer_del(line->timer);
+        line->held = true;
+        line->wake_ns = reply.wake_ns;
+        spi_busy_set(line, true);
+        return;
+    }
+    if (replace) {
+        line->held = false;
+        timer_del(line->timer);
+        if (!reply.high_ns) {
+            spi_busy_set(line, false);
+            return;
+        }
+    } else if (!reply.high_ns || line->held) {
+        return;
+    }
+    until = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + reply.high_ns;
+    /* timer_expire_time_ns() is unsigned and says -1 for "not pending", so
+     * ask whether it is pending first or every hold looks longer already. */
+    if (timer_pending(line->timer)
+        && (int64_t)timer_expire_time_ns(line->timer) >= until) {
+        return;
+    }
+    timer_mod_ns(line->timer, until);
+    spi_busy_set(line, true);
+}
+
+/* Send one header and wait for the part's answer about its BUSY line. A
+ * controller that has lost its peer answers "not busy", which is what the
+ * line did before it was modelled. */
+static EspSpiBusyReply spi_ask_busy(EspSpiMaster *s, EspSpiSegment *seg)
+{
+    EspSpiBusyReply reply = { 0, 0 };
+
+    if (s->broken || s->fd < 0) {
+        return reply;
+    }
+    if (!spi_write_all(s, seg, sizeof(*seg)) ||
+        !spi_read_all(s, &reply, sizeof(reply))) {
+        spi_fail(s, "busy exchange failed");
+        reply.high_ns = reply.wake_ns = 0;
+    }
+    return reply;
 }
 
 /* Hand the accumulated bytes to the model. Nothing is expected back: a
@@ -283,22 +440,31 @@ static void spi_cs_changed(void *opaque, unsigned pin, int level)
 {
     EspSpiMaster *s = opaque;
     EspSpiSegment seg;
-    int cs;
+    /* Which device's select moved. The level has already changed, so ask the
+     * pin rather than spi_selected(), which would answer -1 on a release. */
+    int cs = spi_select_of(s, pin);
+    EspSpiBusyLine *line = &s->busy[cs];
 
-    /* Chip-select is active low, so a rising edge ends the transaction. */
+    /* Chip-select is active low. A falling edge opens a window: it wakes a
+     * part that is asleep, and a host that opens one while BUSY is otherwise
+     * high has not waited for it. */
     if (!level) {
+        if (line->pin < 0) {
+            return;
+        }
+        if (line->held) {
+            if (line->wake_ns != BUSY_HELD) {
+                line->held = false;
+                timer_mod_ns(line->timer,
+                             qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + line->wake_ns);
+            }
+        } else if (line->high) {
+            line->opened_high++;
+        }
         return;
     }
 
-    /* Which device just stopped being selected. The level has already changed,
-     * so ask the pin rather than spi_selected(), which would answer -1. */
-    cs = 0;
-    if (s->cs1_gpio >= 0 && (unsigned)s->cs1_gpio == pin) {
-        cs = 1;
-    } else if (s->cs2_gpio >= 0 && (unsigned)s->cs2_gpio == pin) {
-        cs = 2;
-    }
-
+    /* A rising edge ends the transaction. */
     spi_flush(s);
 
     /* A device whose commands vary in length needs the end of the window; one
@@ -306,13 +472,36 @@ static void spi_cs_changed(void *opaque, unsigned pin, int level)
     if (s->broken || s->fd < 0) {
         return;
     }
-    seg.type = SEGMENT_RELEASE;
+    seg.type = line->pin >= 0 ? SEGMENT_RELEASE_BUSY : SEGMENT_RELEASE;
     seg.dc = 0;
     seg.cs = (uint8_t)cs;
     seg.pad = 0;
     seg.len = 0;
+    if (line->pin >= 0) {
+        spi_busy_apply(line, spi_ask_busy(s, &seg), false);
+        return;
+    }
     if (!spi_write_all(s, &seg, sizeof(seg))) {
         spi_fail(s, "send failed");
+    }
+}
+
+/* A part's reset pin moved. The part is told, since a reset is what returns
+ * it to its reset state, and says how long it is busy coming out of it. */
+static void spi_reset_changed(void *opaque, unsigned pin, int level)
+{
+    EspSpiMaster *s = opaque;
+    int cs = spi_select_of(s, pin);
+    EspSpiSegment seg = {
+        .type = SEGMENT_RESET, .dc = (uint8_t)(level & 1),
+        .cs = (uint8_t)cs, .pad = 0, .len = 0,
+    };
+    EspSpiBusyReply reply;
+
+    spi_flush(s);
+    reply = spi_ask_busy(s, &seg);
+    if (s->busy[cs].pin >= 0) {
+        spi_busy_apply(&s->busy[cs], reply, true);
     }
 }
 
@@ -413,6 +602,20 @@ static void spi_realize(DeviceState *dev, Error **errp)
     if (s->cs2_gpio >= 0) {
         esp_gpio_watch(NULL, s->cs2_gpio, spi_cs_changed, s);
     }
+    for (int i = 0; i < SPI_SELECTS; i++) {
+        EspSpiBusyLine *line = &s->busy[i];
+
+        line->pin = s->busy_gpio[i];
+        line->reset_pin = s->reset_gpio[i];
+        line->bus = s->region_name ? s->region_name : "?";
+        line->cs = i;
+        if (line->pin >= 0) {
+            line->timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, spi_busy_fall, line);
+        }
+        if (line->reset_pin >= 0) {
+            esp_gpio_watch(NULL, line->reset_pin, spi_reset_changed, s);
+        }
+    }
 
     memory_region_init_io(&s->iomem, OBJECT(s), &spi_ops, s,
                           s->region_name ? s->region_name : TYPE_ESP_SPI_MASTER,
@@ -431,6 +634,14 @@ static Property spi_props[] = {
     DEFINE_PROP_INT32("cs1_gpio", EspSpiMaster, cs1_gpio, -1),
     DEFINE_PROP_INT32("cs2_gpio", EspSpiMaster, cs2_gpio, -1),
     DEFINE_PROP_INT32("dc_gpio", EspSpiMaster, dc_gpio, -1),
+    /* A part's BUSY and reset pins, per select (ADR 0111). Wiring, like the
+     * selects: what the part does with them is the part's to say. */
+    DEFINE_PROP_INT32("busy_gpio", EspSpiMaster, busy_gpio[0], -1),
+    DEFINE_PROP_INT32("busy1_gpio", EspSpiMaster, busy_gpio[1], -1),
+    DEFINE_PROP_INT32("busy2_gpio", EspSpiMaster, busy_gpio[2], -1),
+    DEFINE_PROP_INT32("reset_gpio", EspSpiMaster, reset_gpio[0], -1),
+    DEFINE_PROP_INT32("reset1_gpio", EspSpiMaster, reset_gpio[1], -1),
+    DEFINE_PROP_INT32("reset2_gpio", EspSpiMaster, reset_gpio[2], -1),
     DEFINE_PROP_BOOL("miso", EspSpiMaster, miso, true),
     /* One bit per chip-select index: whether that part drives MISO. */
     DEFINE_PROP_UINT32("miso_mask", EspSpiMaster, miso_mask, 0),

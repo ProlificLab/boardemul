@@ -65,9 +65,12 @@ EPD_CS_PIN = 34
 EPD_DC_PIN = 35
 EPD_BUSY_PIN = 37
 KEYBOARD_INT_PIN = 15
-# The radio's interrupt line (BOARD_LORA_INT). Its BUSY line, pin 6, is left
-# undriven and reads low -- idle -- as on the T-Deck (ADR 0102).
+# The radio's interrupt line (BOARD_LORA_INT), and its BUSY and reset lines
+# (BOARD_LORA_BUSY, BOARD_LORA_RST). The controller keeps BUSY on the guest's
+# clock, for as long as the radio says each command keeps it busy (ADR 0111).
 RADIO_DIO1_PIN = 5
+RADIO_BUSY_PIN = 6
+RADIO_RST_PIN = 4
 
 # Which device each chip select carries, and which of them drive MISO back.
 # The panel says nothing; the card and the radio both answer (ADR 0032).
@@ -276,6 +279,7 @@ def build(outdir: Path, air: str | None = None, ble_air: str | None = None,
         # The panel drives nothing back; the card and radio do, so MISO is
         # per device rather than per bus.
         f"cs_gpio={EPD_CS_PIN},cs1_gpio={RADIO_CS_PIN},cs2_gpio={SD_CS_PIN},"
+        f"busy1_gpio={RADIO_BUSY_PIN},reset1_gpio={RADIO_RST_PIN},"
         f"dc_gpio={EPD_DC_PIN},miso=off,miso_mask={MISO_MASK},"
         f"socket={spi.socket_path}",
         f"esp-i2c-master,name=i2c0,base=0x{I2C0_BASE:x},irq={IRQ_I2C_EXT0},"

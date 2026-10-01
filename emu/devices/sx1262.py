@@ -15,6 +15,11 @@ that is not there. That is precisely what both firmwares concluded.
 There is no radio here and nothing is transmitted. What this models is the
 conversation: the firmware configures a radio, is told the configuration took,
 and hears no traffic, which is what a real node alone in a room experiences.
+
+It also says how long each command keeps it busy, which the SPI controller
+holds its BUSY pin high for on the guest's clock (ADR 0111). The times are the
+datasheet's -- Semtech DS.SX1261-2.W.APP, Rev. 1.2 -- and where the datasheet
+gives none, there is none.
 """
 
 from __future__ import annotations
@@ -24,7 +29,7 @@ import math
 import time
 
 from emu.devices import lora
-from emu.spi_link import SpiDevice
+from emu.spi_link import BUSY_HELD, SpiDevice
 
 log = logging.getLogger("spi")
 
@@ -86,6 +91,34 @@ MODE_TX = 6
 # reacts to, so a working part reports none of them.
 COMMAND_OK = 2
 
+# How long BUSY stays high after a window that asks for a mode, by the mode the
+# chip was in and the mode asked for: Table 8-2, typical, in microseconds. A
+# switch the table does not list has no published time and is given none.
+SWITCH_US = {
+    (MODE_STANDBY_RC, MODE_STANDBY_XOSC): 31,
+    (MODE_STANDBY_RC, MODE_FS): 50,
+    (MODE_STANDBY_RC, MODE_RX): 83,
+    (MODE_STANDBY_RC, MODE_TX): 126,
+    (MODE_STANDBY_XOSC, MODE_FS): 40,
+    (MODE_STANDBY_XOSC, MODE_TX): 105,
+    (MODE_STANDBY_XOSC, MODE_RX): 62,
+    (MODE_FS, MODE_RX): 41,
+    (MODE_FS, MODE_TX): 76,
+    (MODE_RX, MODE_FS): 15,
+    (MODE_RX, MODE_TX): 92,
+}
+# Leaving sleep, from NSS falling to STBY_RC: Table 8-2. A cold start is also
+# what a reset costs, since start-up runs the same power-on calibration (8.2.2,
+# 9.1, 9.2).
+WAKE_WARM_US = 340
+WAKE_COLD_US = 3500
+SLEEP_WARM = 0x04               # sleepConfig bit 2 (Table 13-2)
+# Calibrating every block (13.1.12). No time is given for fewer.
+CALIBRATE_US = 3500
+# SetDIO3AsTCXOCtrl's delay is in these units, and a switch out of STBY_RC
+# into a mode that needs the clock waits that long for it (13.3.6).
+TCXO_STEP_US = 15.625
+
 # Where the part keeps the string a host reads to find out what it is talking
 # to. RadioLib compares the first characters against the model it expects, and
 # a mismatch is reported as no chip at all.
@@ -116,10 +149,6 @@ class Sx1262(SpiDevice):
         # part nudges the processor, which it does on a line of its own.
         self.air = air
         self.signal = signal
-        self.tx_base = 0
-        self.rx_base = 0
-        self.payload_length = 0
-        self.received_length = 0
         self.sent = 0
         self.heard = 0
         self.cad_sweeps = 0
@@ -143,22 +172,22 @@ class Sx1262(SpiDevice):
         self.antenna_dbi = antenna_dbi
         self.exponent = exponent
         self.obstruction_db = obstruction_db
-        # What the host asked the part to transmit at, in dBm.
-        self.transmit_dbm = 22.0
         # What the last packet arrived at, which the host reads back.
         self.last_rssi_dbm = -157.0
         self.last_snr_db = -20.0
-        # The modulation the host programs, which is what decides how long a
-        # packet of a given length occupies the channel (ADR 0037).
-        self.spreading = 7
-        self.bandwidth_code = 0x04
-        self.coding_rate = 1
-        self.low_data_rate = False
-        self.preamble = 8
-        # While transmitting, this part is deaf; while a packet is arriving,
-        # a second one lands on top of it and neither survives.
-        self.tx_until = 0.0
-        self.rx_until = 0.0
+        self.frame = bytearray()
+        self.commands = 0
+        self.unknown: set[int] = set()
+        # What the BUSY line owes for the window that just closed, collected
+        # by busy() (ADR 0111).
+        self._busy = (0, 0)
+        self._power_on()
+
+    def _power_on(self) -> None:
+        """The chip as a reset or a cold start leaves it: STBY_RC, nothing
+        flagged or routed, no TCXO, and registers, buffer and modulation as
+        the model first had them. The run's own records -- what was sent and
+        heard -- are not the chip's and are kept."""
         self.registers = bytearray(REGISTER_SPACE)
         self.registers[VERSION_ADDRESS:VERSION_ADDRESS + len(VERSION_STRING)] = VERSION_STRING
         self.buffer = bytearray(BUFFER_SIZE)
@@ -167,9 +196,30 @@ class Sx1262(SpiDevice):
         self.irq_mask = 0
         self.packet_type = 0
         self.frequency = 0
-        self.frame = bytearray()
-        self.commands = 0
-        self.unknown: set[int] = set()
+        self.tx_base = 0
+        self.rx_base = 0
+        self.payload_length = 0
+        self.received_length = 0
+        # What the host asked the part to transmit at, in dBm.
+        self.transmit_dbm = 22.0
+        # The modulation the host programs, which is what decides how long a
+        # packet of a given length occupies the channel (ADR 0037).
+        self.spreading = 7
+        self.bandwidth_code = 0x04
+        self.coding_rate = 1
+        self.low_data_rate = False
+        self.preamble = 8
+        # While transmitting, this part is deaf; while a packet is arriving,
+        # a second one lands on top of it and neither survives. A reset ends
+        # both, and with them the TxDone a transmission would have raised.
+        self.tx_until = 0.0
+        self.rx_until = 0.0
+        # The TCXO's start-up, once the host has said there is one: added to
+        # a switch out of STBY_RC (ADR 0111).
+        self.tcxo_us = 0.0
+        self.asleep = False
+        self.sleep_warm = False
+        self.in_reset = False
 
     # -- the bus ------------------------------------------------------------
 
@@ -178,6 +228,12 @@ class Sx1262(SpiDevice):
         return ((self.mode & 0x7) << 4) | ((COMMAND_OK & 0x7) << 1)
 
     def on_segment(self, dc: int, data: bytes, duplex: bool) -> bytes | None:
+        if self.asleep:
+            # The select falling is what wakes it (13.1.1). A cold start is
+            # a power-on: what the chip was told before sleeping is gone.
+            self.asleep = False
+            if not self.sleep_warm:
+                self._power_on()
         reply = bytearray()
         for byte in data:
             reply.append(self._reply_at(len(self.frame)))
@@ -185,9 +241,36 @@ class Sx1262(SpiDevice):
         return bytes(reply) if duplex else None
 
     def on_deselect(self) -> None:
-        if self.frame:
+        self._busy = (0, 0)
+        if self.frame and not self.in_reset:
             self._apply(bytes(self.frame))
         self.frame = bytearray()
+
+    def on_reset(self, asserted: bool) -> None:
+        """NRESET moved. Held low, the chip is in reset and BUSY is high
+        (Table 8-3); released, it starts up and BUSY falls once it is in
+        STBY_RC, a cold start's time later (ADR 0111)."""
+        self._power_on()
+        self.in_reset = asserted
+        self._drive_line()
+        if asserted:
+            self._busy = (BUSY_HELD, BUSY_HELD)
+        else:
+            self._busy = (WAKE_COLD_US * 1000, 0)
+
+    def busy(self) -> tuple[int, int]:
+        owed, self._busy = self._busy, (0, 0)
+        return owed
+
+    def _switch(self, to: int) -> None:
+        """Owe BUSY the time Table 8-2 gives for going from the mode the chip
+        is in to `to`, and the TCXO's start-up on top when the clock was off.
+        Then be in that mode."""
+        us = SWITCH_US.get((self.mode, to), 0)
+        if us and self.mode == MODE_STANDBY_RC and self.tcxo_us:
+            us += self.tcxo_us
+        self._busy = (int(us * 1000), 0)
+        self.mode = to
 
     def pump(self) -> None:
         """Run the clock and take anything off the air.
@@ -362,16 +445,23 @@ class Sx1262(SpiDevice):
             for offset, value in enumerate(frame[2:]):
                 self.buffer[(frame[1] + offset) % BUFFER_SIZE] = value
         elif opcode == SET_STANDBY:
-            self.mode = MODE_STANDBY_XOSC if len(frame) > 1 and frame[1] else MODE_STANDBY_RC
+            self._switch(MODE_STANDBY_XOSC if len(frame) > 1 and frame[1]
+                         else MODE_STANDBY_RC)
         elif opcode == SET_SLEEP:
+            # BUSY is high for the whole of sleep, and falls a wake-up after
+            # the select next falls (13.1.1, Table 8-2).
+            self.sleep_warm = len(frame) > 1 and bool(frame[1] & SLEEP_WARM)
+            self.asleep = True
             self.mode = MODE_STANDBY_RC
+            self._busy = (BUSY_HELD, (WAKE_WARM_US if self.sleep_warm
+                                      else WAKE_COLD_US) * 1000)
         elif opcode == SET_FS:
-            self.mode = MODE_FS
+            self._switch(MODE_FS)
         elif opcode == SET_TX:
-            self.mode = MODE_TX
+            self._switch(MODE_TX)
             self._transmit()
         elif opcode == SET_RX:
-            self.mode = MODE_RX
+            self._switch(MODE_RX)
         elif opcode == SET_CAD:
             # Listening before talking. Answering that the sweep finished and
             # found nothing is what lets a host go on to transmit; saying
@@ -380,6 +470,10 @@ class Sx1262(SpiDevice):
             self.mode = MODE_RX
             self.cad_sweeps += 1
             self._raise(IRQ_CAD_DONE)
+        elif opcode == CALIBRATE:
+            self._busy = (CALIBRATE_US * 1000, 0)
+        elif opcode == SET_DIO3_AS_TCXO and len(frame) >= 5:
+            self.tcxo_us = int.from_bytes(frame[2:5], "big") * TCXO_STEP_US
         elif opcode == CLEAR_IRQ_STATUS and len(frame) >= 3:
             self.irq &= ~((frame[1] << 8) | frame[2]) & 0xFFFF
             # The line follows the flags, so clearing them lowers it and the
@@ -411,7 +505,7 @@ class Sx1262(SpiDevice):
                         GET_PACKET_STATUS, GET_DEVICE_ERRORS, GET_PACKET_TYPE,
                         READ_REGISTER, READ_BUFFER):
             pass                                # answered while it was clocked
-        elif opcode in (CALIBRATE, CALIBRATE_IMAGE,
+        elif opcode in (CALIBRATE_IMAGE,
                         SET_REGULATOR_MODE, SET_DIO2_AS_RF_SWITCH,
                         SET_DIO3_AS_TCXO, SET_RX_TX_FALLBACK,
                         SET_LORA_SYMB_TIMEOUT, STOP_TIMER_ON_PREAMBLE,

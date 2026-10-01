@@ -19,7 +19,8 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from tests.support import (  # noqa: E402
-    FIRMWARE_TDECK, FIRMWARE_TDECK_BUILDS, Run, qemu_available, run_emulator,
+    FIRMWARE_TDECK, FIRMWARE_TDECK_BUILDS, Run, qemu_available, radio_busy,
+    run_emulator,
 )
 
 pytestmark = [
@@ -99,6 +100,21 @@ def test_it_gets_through_the_radio_bring_up(booted: Run, request) -> None:
         pytest.skip(f"build {build} does not start the station during setup")
     after = booted.uart.split("WiFi interface ready", 1)[-1][:600]
     assert "WiFi client started" in booted.uart, after
+
+
+def test_the_radio_comes_up_waiting_on_its_busy_line(booted: Run) -> None:
+    """BUSY on pin 13 and reset on pin 17, kept on the guest's clock (ADR
+    0111). RadioLib waits on BUSY before and after every command and gives up
+    with -705 after a second; a line held and never released is how that
+    looked while it was being built. A reset holds it for the datasheet's
+    3.5 ms start-up."""
+    # 250620 says so on its UART, 251113 on its USB serial port.
+    said = booted.uart + booted.usb
+    assert "Start Radio success!" in said, said[-1500:]
+    busy = radio_busy(booted.outdir)
+    assert busy is not None, "the controller never reported the radio's BUSY line"
+    holds, longest = busy
+    assert holds >= 1 and longest >= 3500, busy
 
 
 def test_it_reads_its_battery_and_keeps_drawing(booted: Run) -> None:

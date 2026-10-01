@@ -107,7 +107,7 @@ superseded ADR is marked superseded and points forward.
 | [0099](0099-a-board-that-panics-may-reboot.md) | A board that panics may reboot, as silicon does | Accepted |
 | [0100](0100-the-usb-serial-port.md) | The USB serial port, with a host on the other end | Accepted |
 | [0101](0101-the-interrupt-matrix-remembers-its-inputs.md) | The interrupt matrix remembers its inputs | Accepted (carried patch) |
-| [0102](0102-the-max-radio-is-on-select-three.md) | The Max's radio is on chip select 3 | Accepted (corrects 0043) |
+| [0102](0102-the-max-radio-is-on-select-three.md) | The Max's radio is on chip select 3 | Accepted (corrects 0043; decision 2 superseded by 0111) |
 | [0103](0103-the-max-fuel-gauge-is-provisioned.md) | The Max's fuel gauge is provisioned, as its driver expects | Accepted |
 | [0104](0104-the-parts-can-read-the-guests-clock.md) | The board's parts can read the guest's clock | Accepted |
 | [0105](0105-the-max-serial-parts.md) | The Max's serial parts: a modem and a u-blox receiver | Accepted (carried patch) |
@@ -116,3 +116,4 @@ superseded ADR is marked superseded and points forward.
 | [0108](0108-the-sensor-hub-boots-its-firmware.md) | The Max's sensor hub boots the firmware it is given | Accepted (closes 0106 item 5) |
 | [0109](0109-the-air-acknowledges-retries-and-holds-for-a-dozing-station.md) | The air acknowledges, retries, and holds frames for a dozing station | Accepted (closes 0106 item 6) |
 | [0110](0110-the-access-point-has-one-channel.md) | The access point has one channel | Accepted (supersedes 0057 decision 2) |
+| [0111](0111-the-radio-says-when-it-is-busy.md) | The radio says when it is busy | Accepted (closes 0106 item 7; supersedes 0102 decision 2) |

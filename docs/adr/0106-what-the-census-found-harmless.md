@@ -60,5 +60,6 @@ experiments directory keeps them: it stops the same ground being covered twice.
    real MAC would be acknowledged or retry. Higher layers retry instead (EAPOL,
    DHCP, TCP), so it costs time rather than function.
 
-7. **The SX1262 never drives BUSY**, on either board (ADR 0102). RadioLib waits
-   for it to be low, and it always is.
+7. *(Closed by ADR 0111: the radio says when it is busy.)* **The SX1262
+   never drives BUSY**, on either board (ADR 0102). RadioLib waits for it to
+   be low, and it always is.

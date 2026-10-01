@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import struct
 import subprocess
@@ -243,6 +244,19 @@ def usb_text(outdir: Path) -> str:
         except OSError:
             return ""
     return ""
+
+
+def radio_busy(outdir: Path) -> tuple[int, int] | None:
+    """The radio's BUSY line as the SPI controller last reported it (ADR
+    0111): how many holds, and the longest in microseconds. None when it
+    never reported one."""
+    for log in outdir.glob("*.qemu.log"):
+        found = re.findall(r"select 1's busy line: (\d+) hold\(s\), the "
+                           r"longest (\d+) us", log.read_text(errors="replace"))
+        if found:
+            holds, longest = found[-1]
+            return int(holds), int(longest)
+    return None
 
 
 def _frames(outdir: Path) -> list[Path]:

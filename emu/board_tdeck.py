@@ -79,6 +79,11 @@ RADIO_CS_PIN = 9
 # The radio nudges the processor on this line when something it was told
 # to watch for happens: a packet sent, or one received (ADR 0036).
 RADIO_DIO1_PIN = 45
+# Its BUSY and reset lines, from the vendor's examples/UnitTest/utilities.h.
+# The controller keeps BUSY on the guest's clock, for as long as the radio
+# says each command keeps it busy (ADR 0111).
+RADIO_BUSY_PIN = 13
+RADIO_RST_PIN = 17
 
 # Which device each chip select is, in the order the controller is told them
 # (ADR 0032), and which of them drive the shared MISO line. The display does
@@ -287,6 +292,7 @@ def build(outdir: Path, air: str | None = None, ble_air: str | None = None,
         f"socket={gpio.socket_path}",
         f"esp-spi-master,name=spi2,base=0x{SPI2_BASE:x},"
         f"cs_gpio={TFT_CS_PIN},cs1_gpio={RADIO_CS_PIN},cs2_gpio={SD_CS_PIN},"
+        f"busy1_gpio={RADIO_BUSY_PIN},reset1_gpio={RADIO_RST_PIN},"
         f"dc_gpio={TFT_DC_PIN},miso=off,miso_mask={MISO_MASK},"
         f"socket={spi.socket_path}",
         f"esp-i2c-master,name=i2c0,base=0x{I2C0_BASE:x},irq={IRQ_I2C_EXT0},"
