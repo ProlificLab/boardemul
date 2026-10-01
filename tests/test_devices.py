@@ -15,7 +15,9 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from emu.devices.i2c_devices import CST328, DRV2605, TCA8418, XL9555  # noqa: E402
+from emu.devices.i2c_devices import (  # noqa: E402
+    BQ27220, CST328, DRV2605, TCA8418, XL9555,
+)
 
 
 def address_report(touch: CST328) -> None:
@@ -174,3 +176,73 @@ def test_expander_reads_back_what_it_drove() -> None:
 def test_haptic_reports_a_device_id() -> None:
     """Bits 7:5 of the status register carry the id; zero reads as absent."""
     assert read_register(DRV2605(), 0x00)[0] >> 5 != 0
+
+
+def _subcommand(gauge: BQ27220, register: int, word: int, data: bytes = b"") -> None:
+    gauge.start(reading=False)
+    gauge.write(bytes([register]) + word.to_bytes(2, "little") + data)
+
+
+def _status(gauge: BQ27220) -> int:
+    return int.from_bytes(read_register(gauge, BQ27220.OPERATION_STATUS, 2), "little")
+
+
+def test_fuel_gauge_answers_its_device_number() -> None:
+    """DEVICE_NUMBER written to Control() is answered in MACData, as the Max's
+    factory demo checks before it trusts the gauge."""
+    gauge = BQ27220()
+    _subcommand(gauge, BQ27220.CONTROL, BQ27220.DEVICE_NUMBER)
+    assert read_register(gauge, BQ27220.MAC_DATA, 2) == bytes([0x20, 0x02])
+
+
+def test_fuel_gauge_starts_sealed_and_initialised() -> None:
+    status = _status(BQ27220())
+    assert (status >> 1) & 3 == BQ27220.SEC_SEALED
+    assert status & BQ27220.INITCOMP
+
+
+def test_fuel_gauge_unseals_only_with_both_keys_in_order() -> None:
+    gauge = BQ27220()
+    _subcommand(gauge, BQ27220.CONTROL, BQ27220.UNSEAL_KEY_2)
+    _subcommand(gauge, BQ27220.CONTROL, BQ27220.UNSEAL_KEY_1)
+    assert (_status(gauge) >> 1) & 3 == BQ27220.SEC_SEALED
+    _subcommand(gauge, BQ27220.CONTROL, BQ27220.UNSEAL_KEY_2)
+    assert (_status(gauge) >> 1) & 3 == BQ27220.SEC_UNSEALED
+
+
+def test_fuel_gauge_data_memory_round_trip() -> None:
+    """Enter configuration, write a parameter with its checksum, read it back."""
+    gauge = BQ27220()
+    _subcommand(gauge, BQ27220.CONTROL, BQ27220.UNSEAL_KEY_1)
+    _subcommand(gauge, BQ27220.CONTROL, BQ27220.UNSEAL_KEY_2)
+    _subcommand(gauge, BQ27220.MAC_SUBCMD, BQ27220.ENTER_CFG_UPDATE)
+    assert _status(gauge) & BQ27220.CFGUPDATE
+
+    address, value = 0x929F, (3000).to_bytes(2, "big")
+    _subcommand(gauge, BQ27220.MAC_SUBCMD, address, value)
+    checksum = 0xFF - (sum(address.to_bytes(2, "little") + value) & 0xFF)
+    gauge.start(reading=False)
+    gauge.write(bytes([BQ27220.MAC_DATA_SUM, checksum, len(value) + 4]))
+
+    _subcommand(gauge, BQ27220.CONTROL, BQ27220.EXIT_CFG_UPDATE_REINIT)
+    assert not _status(gauge) & BQ27220.CFGUPDATE
+    _subcommand(gauge, BQ27220.MAC_SUBCMD, address)
+    assert read_register(gauge, BQ27220.MAC_DATA, 2) == value
+
+
+def test_fuel_gauge_refuses_a_write_with_a_bad_checksum() -> None:
+    gauge = BQ27220()
+    _subcommand(gauge, BQ27220.CONTROL, BQ27220.UNSEAL_KEY_1)
+    _subcommand(gauge, BQ27220.CONTROL, BQ27220.UNSEAL_KEY_2)
+    _subcommand(gauge, BQ27220.MAC_SUBCMD, BQ27220.ENTER_CFG_UPDATE)
+    _subcommand(gauge, BQ27220.MAC_SUBCMD, 0x929F, bytes([0x0B, 0xB8]))
+    gauge.start(reading=False)
+    gauge.write(bytes([BQ27220.MAC_DATA_SUM, 0x00, 6]))
+    _subcommand(gauge, BQ27220.MAC_SUBCMD, 0x929F)
+    assert read_register(gauge, BQ27220.MAC_DATA, 2) == bytes(2)
+
+
+def test_fuel_gauge_control_reads_back_its_status_not_the_last_command() -> None:
+    gauge = BQ27220()
+    _subcommand(gauge, BQ27220.CONTROL, BQ27220.UNSEAL_KEY_1)
+    assert read_register(gauge, BQ27220.CONTROL, 2) == bytes(2)

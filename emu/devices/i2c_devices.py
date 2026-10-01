@@ -279,13 +279,155 @@ class SY6970(RegisterFile):
 
 
 class BQ27220(RegisterFile):
-    """Fuel gauge. Enough of a battery to look charged and healthy."""
+    """Fuel gauge: a battery that is charged and healthy, behind the access
+    control and configuration protocol a driver uses to provision it.
+
+    The protocol is what the T-Deck Max's own driver does (lib/BQ27220 in the
+    vendor's repository), with its codes from that driver's bq27220_def.h:
+
+    - A subcommand is a little-endian word written to Control() (0x00) or
+      MACSubcmd() (0x3E). DEVICE_NUMBER answers 0x0220 in MACData() (0x40);
+      the factory demo gave the gauge up as "Invalid Device Number 0000 !=
+      0x0220" while this answered nothing.
+    - Reading Control() itself gives CONTROL_STATUS, whose BATT_ID (bits
+      0..2) is the active profile, 0 by default.
+    - OperationStatus() (0x3A) carries the security mode in bits 1..2 (3
+      sealed, 2 unsealed, 1 full access), INITCOMP in bit 5 and CFGUPDATE in
+      bit 10. The two unseal keys in turn unseal it, SEALED seals it, RESET
+      reinitialises it, and ENTER_CFG_UPDATE / EXIT_CFG_UPDATE[_REINIT] put it
+      in and out of configuration mode. The driver waits on each of these bits.
+    - Data memory is addressed through MACSubcmd(): an address alone selects
+      it for reading back through MACData(); an address followed by data is
+      staged, and written when MACDataSum() (0x60) arrives with the checksum
+      (0xFF minus the byte sum of address and data) and the length (+4).
+      Data memory is flash on the real part; here it starts empty each run,
+      as a gauge does before its first provisioning.
+    """
+
+    CONTROL = 0x00
+    OPERATION_STATUS = 0x3A
+    MAC_SUBCMD = 0x3E
+    MAC_DATA = 0x40
+    MAC_DATA_SUM = 0x60
+    MAC_DATA_LEN = 0x61
+    MAC_BLOCK = 32
+
+    DEVICE_NUMBER = 0x0001
+    SEALED = 0x0030
+    RESET = 0x0041
+    ENTER_CFG_UPDATE = 0x0090
+    EXIT_CFG_UPDATE_REINIT = 0x0091
+    EXIT_CFG_UPDATE = 0x0092
+    UNSEAL_KEY_1, UNSEAL_KEY_2 = 0x0414, 0x3672
+    FULL_ACCESS_KEY = 0xFFFF
+
+    SEC_FULL, SEC_UNSEALED, SEC_SEALED = 1, 2, 3
+    CONTROL_STATUS = 0x0000
+    INITCOMP = 1 << 5
+    CFGUPDATE = 1 << 10
+    # Data memory addresses start here; a word below it is a subcommand.
+    DATA_MEMORY = 0x4000
 
     def __init__(self, address: int = 0x55):
         super().__init__(address, "BQ27220", size=0x80, defaults={
+            0x06: 0xA5, 0x07: 0x0B,   # temperature 2981 x 0.1 K, 25.0 C
             0x08: 0x10, 0x09: 0x10,   # voltage  ~4112 mV
-            0x2C: 0x55, 0x2D: 0x00,   # state of charge ~85 %
+            0x0A: 0x09, 0x0B: 0x00,   # battery status: present, discharging
+            0x10: 0xF6, 0x11: 0x09,   # remaining capacity 2550 mAh
+            0x12: 0xB8, 0x13: 0x0B,   # full charge capacity 3000 mAh
+            0x2C: 0x55, 0x2D: 0x00,   # state of charge 85 %
+            0x2E: 0x64, 0x2F: 0x00,   # state of health 100 %
+            0x3C: 0xB8, 0x3D: 0x0B,   # design capacity 3000 mAh
         })
+        self.security = self.SEC_SEALED
+        self.status = self.INITCOMP
+        self.memory: dict[int, int] = {}
+        self.staged: tuple[int, bytes] | None = None
+        self._last_key = 0
+        self._publish_status()
+
+    def write(self, data: bytes) -> bool:
+        reg = data[0] if self._expect_pointer and data else self.ptr
+        payload = data[1:] if self._expect_pointer and data else data
+        ok = super().write(data)
+        if reg in (self.CONTROL, self.MAC_SUBCMD) and len(payload) >= 2:
+            word = payload[0] | (payload[1] << 8)
+            if reg == self.MAC_SUBCMD and word >= self.DATA_MEMORY:
+                self._select(word, bytes(payload[2:]))
+            else:
+                self._subcommand(word)
+        elif reg == self.MAC_DATA_SUM and len(payload) >= 2:
+            self._commit(payload[0], payload[1])
+        self._publish_status()
+        return ok
+
+    # -- the protocol ----------------------------------------------------
+
+    def _answer(self, word: int, answer: bytes) -> None:
+        self.regs[self.MAC_DATA:self.MAC_DATA + self.MAC_BLOCK] = bytes(self.MAC_BLOCK)
+        self.regs[self.MAC_DATA:self.MAC_DATA + len(answer)] = answer
+        head = word.to_bytes(2, "little")
+        self.regs[self.MAC_DATA_SUM] = 0xFF - (sum(head + answer) & 0xFF)
+        self.regs[self.MAC_DATA_LEN] = len(answer) + 4
+
+    def _subcommand(self, word: int) -> None:
+        key, self._last_key = self._last_key, word
+        if word == self.DEVICE_NUMBER:
+            self._answer(word, (0x0220).to_bytes(2, "little"))
+        elif word == self.UNSEAL_KEY_2 and key == self.UNSEAL_KEY_1:
+            if self.security == self.SEC_SEALED:
+                self.security = self.SEC_UNSEALED
+        elif word == self.FULL_ACCESS_KEY and key == self.FULL_ACCESS_KEY:
+            if self.security == self.SEC_UNSEALED:
+                self.security = self.SEC_FULL
+        elif word == self.SEALED:
+            self.security = self.SEC_SEALED
+        elif word == self.RESET:
+            # Reinitialised at once: the driver only waits for INITCOMP.
+            self.status = (self.status & ~self.CFGUPDATE) | self.INITCOMP
+        elif word == self.ENTER_CFG_UPDATE:
+            if self.security != self.SEC_SEALED:
+                self.status |= self.CFGUPDATE
+        elif word in (self.EXIT_CFG_UPDATE, self.EXIT_CFG_UPDATE_REINIT):
+            self.status &= ~self.CFGUPDATE
+        else:
+            self._answer(word, b"\x00\x00")
+
+    def _select(self, address: int, data: bytes) -> None:
+        if data:
+            self.staged = (address, data)
+            return
+        self.staged = None
+        block = bytes(self.memory.get(address + i, 0) for i in range(self.MAC_BLOCK))
+        self._answer(address, block)
+
+    def _commit(self, checksum: int, length: int) -> None:
+        if self.staged is None:
+            return
+        address, data = self.staged
+        self.staged = None
+        expected = 0xFF - (sum(address.to_bytes(2, "little") + data) & 0xFF)
+        if checksum != expected or length != len(data) + 4:
+            log.warning("BQ27220 data memory write at 0x%04x refused: checksum "
+                        "0x%02x/%d, expected 0x%02x/%d", address, checksum, length,
+                        expected, len(data) + 4)
+            return
+        if not self.status & self.CFGUPDATE:
+            log.warning("BQ27220 data memory write at 0x%04x outside config update",
+                        address)
+            return
+        for i, b in enumerate(data):
+            self.memory[address + i] = b
+
+    def _publish_status(self) -> None:
+        word = self.status | (self.security << 1)
+        self.regs[self.OPERATION_STATUS] = word & 0xFF
+        self.regs[self.OPERATION_STATUS + 1] = word >> 8
+        # Reading Control() gives CONTROL_STATUS, not the subcommand last
+        # written there. Its BATT_ID (bits 0..2) is the active profile: 0, the
+        # default, which is what the driver checks before it trusts the gauge.
+        self.regs[self.CONTROL] = self.CONTROL_STATUS & 0xFF
+        self.regs[self.CONTROL + 1] = self.CONTROL_STATUS >> 8
 
 
 class ES8311(RegisterFile):
