@@ -41,6 +41,60 @@ three lines without it.
 
     BOARDEMUL_QEMU_EXPERIMENTS=report-cross-thread-tlb-flush tools/build_qemu.sh
 
+### `report-watchpoint-hits.patch` — a diagnostic, and it cleared QEMU
+
+Written to find out whether "Stack canary watchpoint triggered (ipc1)", a
+panic both vendor builds and Meshtastic showed under load, was a false trigger
+in QEMU's Xtensa data breakpoints. It was not, and this is how that was shown.
+
+Three things, all in `target/xtensa/` and all logged under `-d unimp`, which
+every run already has:
+
+- **Every hit** (`wp-hit:`): the access address, every DBREAK register and the
+  QEMU watchpoint each became, the core's last eight watchpoint moves with the
+  stack pointer each was made from, and 2 KB of the stack above the hit.
+- **A near-miss watch** (`wp-near:`): a second watchpoint, invisible to the
+  guest, over the lowest 384 bytes of whichever stack DBREAK1 is guarding. It
+  goes through the `debug_check_watchpoint` hook, which this patch adds, and
+  that hook says no, so the guest never sees it. Each time a stack's lowest
+  store goes deeper, one line is logged. A store within 96 bytes of the canary
+  is logged with all 64 physical registers and the stack.
+- **The decision** (`cause`, `cintlevel`, `debug level`) the breakpoint
+  handler then made.
+
+What it found, over 79 loaded boots of `T-Deck_UnitTest_250620`, four of which
+panicked:
+
+- Every hit was real. The watch covered `0x3fcf1380+32` and the store that
+  fired was at `0x3fcf138c`, inside it.
+- On every boot, ipc1 runs the GPIO ISR-service install
+  (`gpio_isr_register_on_core_static` → `esp_intr_alloc` →
+  `heap_caps_malloc` → `multi_heap`). Its deepest store is then 216 bytes
+  from the end of its 1024-byte stack, which ends at `0x3fcf1374`.
+- The panic is a core-1 tick that is pending when that path's heap lock ends.
+  The saved PS shows interrupt level 0, at the ROM's interrupt-level restore,
+  with SP 300 bytes from the end. Every core-1 tick ends in a context switch:
+  in an ISR on core 1 this firmware's `xTaskIncrementTick` returns true without
+  looking (`0x403807ea`). The tick pushes a 192-byte frame, and the
+  context switch then runs `vTaskSwitchContext` (48) and its kernel-lock
+  acquire (64) below that frame, on ipc1's own stack. That is 304 bytes, which
+  ends 4 bytes past the stack. The near-miss log shows interrupts landing in
+  that path in 9 of 21 boots, and in two of them at the one point that
+  overflows.
+
+Meshtastic 2.7.10 measured the same way over eight boots shows the same: one
+panic, at the same frame, through its own copy of the same IPC function.
+
+So the overflow is the firmware's. The emulator only changes how often a tick
+lands there: on the wall clock a loaded guest gets far fewer instructions per
+tick than silicon does (ADR 0027). What the emulator did wrong was refuse the
+reboot that follows, and ADR 0099 is about that.
+
+Kept because the next canary panic should start from this, not from
+suspecting QEMU again:
+
+    BOARDEMUL_QEMU_EXPERIMENTS=report-watchpoint-hits tools/build_qemu.sh
+
 ### `amplify-cross-thread-tlb-flush.patch` — makes a 1% race a visible one
 
 `accel/tcg/cputlb.c`, in `tlb_flush_by_mmuidx_async_work`: if this flush is

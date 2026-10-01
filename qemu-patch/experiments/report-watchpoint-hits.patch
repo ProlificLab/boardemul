@@ -1,0 +1,238 @@
+diff --git a/target/xtensa/dbg_helper.c b/target/xtensa/dbg_helper.c
+--- a/target/xtensa/dbg_helper.c
++++ b/target/xtensa/dbg_helper.c
+@@ -32,6 +32,162 @@
+ #include "qemu/host-utils.h"
+ #include "exec/exec-all.h"
+ #include "exec/address-spaces.h"
++#include "qemu/timer.h"
++
++/*
++ * report-watchpoint-hits (experiment, diagnostic -- see the experiments
++ * README). The last moves of each core's data breakpoints, so that when one
++ * fires the hit can be set against what the guest had asked to watch.
++ */
++#define WP_HISTORY 8
++#define WP_DUMP 0x800
++typedef struct {
++    int64_t ns;
++    uint32_t pc, sp, i, a, c;
++} WpMove;
++static WpMove wp_history[2][WP_HISTORY];
++static unsigned wp_next[2];
++
++static void wp_record(CPUXtensaState *env, unsigned i, uint32_t a, uint32_t c)
++{
++    unsigned cpu = env_cpu(env)->cpu_index & 1;
++    WpMove *m = &wp_history[cpu][wp_next[cpu]++ % WP_HISTORY];
++
++    m->ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
++    m->pc = env->pc;
++    m->sp = env->regs[1];
++    m->i = i;
++    m->a = a;
++    m->c = c;
++}
++
++/*
++ * The near miss: a second watch, invisible to the guest, over the lowest
++ * WP_NEAR bytes of whichever stack dbreak1 is guarding. Each stack's lowest
++ * store is logged as it deepens, and one that comes within WP_CLOSE of the
++ * canary is logged with the registers and the stack, so the path that comes
++ * close is seen on every run and not only on the one that crosses.
++ */
++#define WP_NEAR 0x180
++#define WP_CLOSE 0x60
++#define WP_BASES 32
++static CPUWatchpoint *wp_shadow[2];
++static struct {
++    uint32_t base, low;
++} wp_lows[2][WP_BASES];
++
++static void wp_shadow_move(CPUXtensaState *env, uint32_t base, bool on)
++{
++    CPUState *cs = env_cpu(env);
++    unsigned cpu = cs->cpu_index & 1;
++
++    if (wp_shadow[cpu]) {
++        cpu_watchpoint_remove_by_ref(cs, wp_shadow[cpu]);
++        wp_shadow[cpu] = NULL;
++    }
++    if (on && cpu_watchpoint_insert(cs, base, WP_NEAR,
++                                    BP_CPU | BP_MEM_WRITE |
++                                    BP_STOP_BEFORE_ACCESS, &wp_shadow[cpu])) {
++        wp_shadow[cpu] = NULL;
++    }
++}
++
++static void wp_dump(CPUState *cs, uint32_t from, unsigned len, const char *tag)
++{
++    unsigned k;
++
++    for (k = 0; k < len; k += 32) {
++        uint32_t w[8] = { 0 };
++        vaddr at = (from & ~31u) + k;
++
++        cpu_memory_rw_debug(cs, at, w, sizeof(w), false);
++        qemu_log_mask(LOG_UNIMP, "%s mem 0x%08" PRIx64 ": %08x %08x %08x "
++                      "%08x %08x %08x %08x %08x\n", tag, (uint64_t)at,
++                      w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7]);
++    }
++}
++
++bool xtensa_debug_check_watchpoint(CPUState *cs, CPUWatchpoint *wp);
++bool xtensa_debug_check_watchpoint(CPUState *cs, CPUWatchpoint *wp)
++{
++    CPUXtensaState *env = cpu_env(cs);
++    unsigned cpu = cs->cpu_index & 1;
++    uint32_t base, hit, sp;
++    unsigned k;
++
++    if (wp != wp_shadow[cpu]) {
++        return true;
++    }
++    base = wp->vaddr;
++    hit = wp->hitaddr;
++    for (k = 0; k < WP_BASES && wp_lows[cpu][k].base &&
++         wp_lows[cpu][k].base != base; ++k) {
++    }
++    if (k == WP_BASES) {
++        k = 0;
++        wp_lows[cpu][k].base = 0;
++    }
++    if (wp_lows[cpu][k].base == base && hit >= wp_lows[cpu][k].low) {
++        return false;
++    }
++    wp_lows[cpu][k].base = base;
++    wp_lows[cpu][k].low = hit;
++    sp = env->regs[1];
++    qemu_log_mask(LOG_UNIMP, "wp-near: cpu %d at %" PRId64 " ns: stack end "
++                  "0x%08x, store at 0x%08x, %u above it, sp 0x%08x\n",
++                  cs->cpu_index, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL), base,
++                  hit, hit - base, sp);
++    if (hit - base < WP_CLOSE) {
++        xtensa_sync_phys_from_window(env);
++        qemu_log_mask(LOG_UNIMP, "wp-near:   windowbase %u windowstart 0x%04x "
++                      "ps 0x%08x\n", env->sregs[WINDOW_BASE],
++                      env->sregs[WINDOW_START], env->sregs[PS]);
++        for (k = 0; k < 64; k += 8) {
++            qemu_log_mask(LOG_UNIMP, "wp-near:   ar%02u: %08x %08x %08x %08x "
++                          "%08x %08x %08x %08x\n", k, env->phys_regs[k],
++                          env->phys_regs[k + 1], env->phys_regs[k + 2],
++                          env->phys_regs[k + 3], env->phys_regs[k + 4],
++                          env->phys_regs[k + 5], env->phys_regs[k + 6],
++                          env->phys_regs[k + 7]);
++        }
++        wp_dump(cs, sp, 0x400, "wp-near:  ");
++    }
++    return false;
++}
++
++void xtensa_report_watchpoint_hit(CPUState *cs, CPUWatchpoint *hit);
++void xtensa_report_watchpoint_hit(CPUState *cs, CPUWatchpoint *hit)
++{
++    CPUXtensaState *env = cpu_env(cs);
++    unsigned cpu = cs->cpu_index & 1;
++    unsigned i, k;
++
++    qemu_log_mask(LOG_UNIMP, "wp-hit: cpu %d pc 0x%08x sp 0x%08x at %" PRId64
++                  " ns: wp 0x%08" PRIx64 "+%" PRIu64 " flags 0x%x hitaddr 0x%08"
++                  PRIx64 "\n", cs->cpu_index, env->pc, env->regs[1],
++                  qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL), (uint64_t)hit->vaddr,
++                  (uint64_t)hit->len, hit->flags, (uint64_t)hit->hitaddr);
++    for (i = 0; i < env->config->ndbreak; ++i) {
++        CPUWatchpoint *wp = env->cpu_watchpoint[i];
++
++        qemu_log_mask(LOG_UNIMP, "wp-hit:   dbreak%u a 0x%08x c 0x%08x -> %s"
++                      " 0x%08" PRIx64 "+%" PRIu64 " flags 0x%x\n", i,
++                      env->sregs[DBREAKA + i], env->sregs[DBREAKC + i],
++                      wp ? "wp" : "none", wp ? (uint64_t)wp->vaddr : 0,
++                      wp ? (uint64_t)wp->len : 0, wp ? wp->flags : 0);
++    }
++    for (k = 0; k < WP_HISTORY; ++k) {
++        WpMove *m = &wp_history[cpu][(wp_next[cpu] + k) % WP_HISTORY];
++
++        if (m->ns) {
++            qemu_log_mask(LOG_UNIMP, "wp-hit:   moved at %" PRId64 " ns pc "
++                          "0x%08x sp 0x%08x: dbreak%u a 0x%08x c 0x%08x\n",
++                          m->ns, m->pc, m->sp, m->i, m->a, m->c);
++        }
++    }
++    /* The stack above the hit: the frames, and any context saved on it. */
++    wp_dump(cs, env->regs[1], WP_DUMP, "wp-hit:  ");
++}
+ 
+ void HELPER(wsr_ibreakenable)(CPUXtensaState *env, uint32_t v)
+ {
+@@ -88,6 +244,7 @@
+     int flags = BP_CPU | BP_STOP_BEFORE_ACCESS;
+     uint32_t mask = dbreakc | ~DBREAKC_MASK;
+ 
++    wp_record(env, i, dbreaka, dbreakc);
+     if (env->cpu_watchpoint[i]) {
+         cpu_watchpoint_remove_by_ref(cs, env->cpu_watchpoint[i]);
+     }
+@@ -111,6 +268,9 @@
+                       "Failed to set data breakpoint at 0x%08x/%d\n",
+                       dbreaka & mask, ~mask + 1);
+     }
++    if (i == 1) {
++        wp_shadow_move(env, dbreaka & mask, true);
++    }
+ }
+ 
+ void HELPER(wsr_dbreaka)(CPUXtensaState *env, uint32_t i, uint32_t v)
+@@ -130,6 +290,10 @@
+         if (v & DBREAKC_SB_LB) {
+             set_dbreak(env, i, env->sregs[DBREAKA + i], v);
+         } else {
++            wp_record(env, i, env->sregs[DBREAKA + i], v);
++            if (i == 1) {
++                wp_shadow_move(env, 0, false);
++            }
+             if (env->cpu_watchpoint[i]) {
+                 CPUState *cs = env_cpu(env);
+ 
+diff --git a/target/xtensa/helper.c b/target/xtensa/helper.c
+--- a/target/xtensa/helper.c
++++ b/target/xtensa/helper.c
+@@ -35,6 +35,9 @@
+ #include "qemu/qemu-print.h"
+ #include "qemu/host-utils.h"
+ 
++/* report-watchpoint-hits (experiment, diagnostic): in dbg_helper.c. */
++void xtensa_report_watchpoint_hit(CPUState *cs, CPUWatchpoint *hit);
++
+ static struct XtensaConfigList *xtensa_cores;
+ 
+ static void add_translator_to_hash(GHashTable *translator,
+@@ -232,8 +235,12 @@
+         if (cs->watchpoint_hit->flags & BP_CPU) {
+             uint32_t cause;
+ 
++            xtensa_report_watchpoint_hit(cs, cs->watchpoint_hit);
+             cs->watchpoint_hit = NULL;
+             cause = check_hw_breakpoints(env);
++            qemu_log_mask(LOG_UNIMP, "wp-hit:   cause 0x%x, cintlevel %u, "
++                          "debug level %u\n", cause, xtensa_get_cintlevel(env),
++                          env->config->debug_level);
+             if (cause) {
+                 debug_exception_env(env, cause);
+             }
+diff --git a/target/xtensa/cpu.c b/target/xtensa/cpu.c
+--- a/target/xtensa/cpu.c
++++ b/target/xtensa/cpu.c
+@@ -226,9 +226,13 @@
+ 
+ #include "hw/core/tcg-cpu-ops.h"
+ 
++bool xtensa_debug_check_watchpoint(CPUState *cs, CPUWatchpoint *wp);
++
+ static const TCGCPUOps xtensa_tcg_ops = {
+     .initialize = xtensa_translate_init,
+     .debug_excp_handler = xtensa_breakpoint_handler,
++    /* report-watchpoint-hits (experiment, diagnostic): in dbg_helper.c. */
++    .debug_check_watchpoint = xtensa_debug_check_watchpoint,
+     .restore_state_to_opc = xtensa_restore_state_to_opc,
+ 
+ #ifndef CONFIG_USER_ONLY
