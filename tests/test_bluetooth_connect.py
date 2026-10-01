@@ -47,11 +47,18 @@ pytestmark = [
 
 BLUETOOTH_FS = REPO_ROOT / "build" / "littlefs-bluetooth.bin"
 OVERLAY_AT = 0xC90000
-RUN_SECONDS = 330
-# How long the central goes on speaking after it has connected. This is wall
-# time and the guest runs slower, so it buys rather less link time than it
-# looks -- which is why the assertions below are in the guest's own clock.
-KEEPALIVE_SECONDS = 20
+RUN_SECONDS = 480
+# How long to wait for the board to start advertising, in wall time.
+ADVERTISING_SECONDS = 240
+# The central goes on speaking until the link has run for as long as the
+# assertions need, in the guest's own clock -- they want 40 events spanning
+# ALIVE_MS, and this waits for some margin over both. It used to speak for a
+# fixed 20 wall seconds, which a slower host turns into less link: under a full
+# suite that bought twelve events and the test failed (ADR 0040's rule: stop on
+# the evidence, not on a budget). The ceiling is only for a link that has died.
+ENOUGH_EVENTS = 50
+ENOUGH_MS = 2500
+KEEPALIVE_CEILING_SECONDS = 180
 PDU_CONNECT_IND = 0x05
 # The first word of an exchange-table entry, as the core logs it. These are the
 # kinds a board schedules while it is only advertising; the controller has
@@ -110,6 +117,45 @@ def connection_events(log: str) -> list[int]:
         log) if kind not in ADVERTISING_EVENTS]
 
 
+class _LinkWatch:
+    """The connection events in a growing QEMU log, read a piece at a time.
+
+    Only what was appended since the last look is read -- re-reading the whole
+    log every second is enough host I/O to slow the guest being measured -- and
+    only whole lines are parsed, so an event half-written at the moment of
+    looking is counted next time rather than lost.
+    """
+
+    def __init__(self, path: Path):
+        self.path = path
+        self.offset = 0
+        self.carry = ""
+        self.count = 0
+        self.first: int | None = None
+        self.last: int | None = None
+
+    def lasted(self, events: int, span_ms: float) -> bool:
+        """Whether at least `events` connection events spanning `span_ms` of
+        guest time have been logged."""
+        try:
+            with self.path.open("rb") as fh:
+                fh.seek(self.offset)
+                chunk = fh.read()
+        except OSError:
+            return False
+        self.offset += len(chunk)
+        text = self.carry + chunk.decode("utf-8", errors="replace")
+        text, _, self.carry = text.rpartition("\n")
+        for at in connection_events(text):
+            self.count += 1
+            self.first = at if self.first is None else self.first
+            self.last = at
+        if self.first is None or self.last is None:
+            return False
+        return (self.count >= events
+                and (self.last - self.first) / HUS_PER_MS >= span_ms)
+
+
 @pytest.fixture(scope="module")
 def bluetooth_filesystem() -> Path:
     if not BLUETOOTH_FS.exists():
@@ -144,17 +190,24 @@ def connected(tmp_path_factory, bluetooth_filesystem: Path) -> str:
     try:
         # Wait until it is actually advertising; connecting to silence proves
         # nothing, and the link layer takes a while to come up.
-        deadline = time.monotonic() + RUN_SECONDS * 0.7
+        deadline = time.monotonic() + ADVERTISING_SECONDS
         while time.monotonic() < deadline and not central.poll():
             if proc.poll() is not None:
                 break
             time.sleep(0.5)
         central.send(connect_request())
         # One request, then talk. A real central sends exactly one, and the
-        # link then lives or dies on whether it is spoken to.
-        until = time.monotonic() + KEEPALIVE_SECONDS
+        # link then lives or dies on whether it is spoken to -- for as long as
+        # it takes the link to show what the assertions ask of it.
+        link = _LinkWatch(work / "con.qemu.log")
+        until = time.monotonic() + KEEPALIVE_CEILING_SECONDS
+        next_look = 0.0
         while time.monotonic() < until and proc.poll() is None:
             central.send(empty_packet())
+            if time.monotonic() >= next_look:
+                next_look = time.monotonic() + 1.0
+                if link.lasted(ENOUGH_EVENTS, ENOUGH_MS):
+                    break
             time.sleep(0.01)
     finally:
         central.close()
