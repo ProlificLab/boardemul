@@ -80,15 +80,18 @@ def test_a_command_is_framed_by_the_chip_select(radio: Sx1262) -> None:
 
 def test_transmitting_reports_that_it_finished(radio: Sx1262) -> None:
     """Nothing goes out, but a host that sends waits for this flag and blocks
-    for its whole timeout without it."""
+    for its whole timeout without it. With nothing to send it is raised once
+    the PA has ramped, on the guest's clock (ADR 0112)."""
     window(radio, bytes([0x83, 0x00, 0x00, 0x00]))
     assert radio.mode == MODE_TX
+    radio.now_ns = 1_000_000
     reply = window(radio, bytes([0x12, 0x00, 0x00, 0x00]))   # GetIrqStatus
     assert (reply[2] << 8 | reply[3]) & 0x0001, "TxDone was not raised"
 
 
 def test_clearing_the_flags_clears_them(radio: Sx1262) -> None:
     window(radio, bytes([0x83, 0x00, 0x00, 0x00]))
+    radio.now_ns = 1_000_000
     window(radio, bytes([0x02, 0xFF, 0xFF]))                # ClearIrqStatus
     reply = window(radio, bytes([0x12, 0x00, 0x00, 0x00]))
     assert (reply[2] << 8 | reply[3]) == 0

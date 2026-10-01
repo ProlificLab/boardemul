@@ -21,6 +21,7 @@
 #include "hw/qdev-core.h"
 #include "hw/irq.h"
 #include "qemu/log.h"
+#include "qemu/timer.h"
 #include "exec/address-spaces.h"
 #include "exec/memory.h"
 #include "qapi/error.h"
@@ -85,6 +86,15 @@ typedef struct {
     void *opaque;
 } EspGpioWatch;
 
+/* One pin's pending change, made on the guest's clock (ADR 0112). The timer is
+ * created the first time the pin is scheduled. */
+typedef struct {
+    EspGpioBlock *block;
+    unsigned pin;
+    int level;
+    QEMUTimer *timer;
+} EspGpioScheduled;
+
 /* Message from the host: drive one input pin. Fixed size, no framing. */
 typedef struct QEMU_PACKED {
     uint32_t pin;
@@ -121,6 +131,7 @@ struct EspGpioBlock {
 
     EspGpioWatch watches[GPIO_WATCH_MAX];
     unsigned watch_count;
+    EspGpioScheduled scheduled[GPIO_PIN_COUNT];
 
     qemu_irq irq_line;
     int irq_level;
@@ -418,6 +429,41 @@ void esp_gpio_drive(DeviceState *dev, unsigned pin, int level)
     if (s) {
         gpio_drive_input(s, pin, level);
     }
+}
+
+static void gpio_scheduled_due(void *opaque)
+{
+    EspGpioScheduled *due = opaque;
+
+    gpio_drive_input(due->block, due->pin, due->level);
+}
+
+void esp_gpio_schedule(DeviceState *dev, unsigned pin, int level, int64_t at_ns)
+{
+    EspGpioBlock *s = dev ? ESP_GPIO_BLOCK(dev) : the_block;
+    EspGpioScheduled *due;
+
+    if (!s || pin >= GPIO_PIN_COUNT) {
+        return;
+    }
+    due = &s->scheduled[pin];
+    if (due->timer) {
+        timer_del(due->timer);
+    }
+    if (at_ns < 0) {
+        return;
+    }
+    if (at_ns <= qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL)) {
+        gpio_drive_input(s, pin, level);
+        return;
+    }
+    if (!due->timer) {
+        due->block = s;
+        due->pin = pin;
+        due->timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, gpio_scheduled_due, due);
+    }
+    due->level = level;
+    timer_mod_ns(due->timer, at_ns);
 }
 
 static void gpio_realize(DeviceState *dev, Error **errp)

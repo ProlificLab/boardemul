@@ -117,3 +117,4 @@ superseded ADR is marked superseded and points forward.
 | [0109](0109-the-air-acknowledges-retries-and-holds-for-a-dozing-station.md) | The air acknowledges, retries, and holds frames for a dozing station | Accepted (closes 0106 item 6) |
 | [0110](0110-the-access-point-has-one-channel.md) | The access point has one channel | Accepted (supersedes 0057 decision 2) |
 | [0111](0111-the-radio-says-when-it-is-busy.md) | The radio says when it is busy | Accepted (closes 0106 item 7; supersedes 0102 decision 2) |
+| [0112](0112-the-radio-keeps-the-guests-time.md) | The radio keeps the guest's time | Accepted (moves 0037's timing onto the guest clock) |

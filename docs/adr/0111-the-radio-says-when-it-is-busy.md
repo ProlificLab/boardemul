@@ -137,13 +137,13 @@ The datasheet gives no time for these:
 - Each radio command now takes one more round trip: its release is answered.
   Bringing a radio up takes on the order of a thousand commands, so this adds
   milliseconds.
-- The packet still leaves at the release on the host's clock (ADR 0037), not
-  when the PA ramp ends. The difference is the 76–126 µs in Table 8-2, against
-  airtimes of tens of milliseconds.
-- After a transmission or a single reception, the chip still stays in the
-  mode it was in rather than dropping to its fallback mode. RadioLib calls
-  `standby()` after both (`finishTransmit`, `finishReceive`), so no switch
-  time it sees depends on this.
+- *(Closed by ADR 0112.)* The packet still leaves at the release on the
+  host's clock (ADR 0037), not when the PA ramp ends. The difference is the
+  76–126 µs in Table 8-2, against airtimes of tens of milliseconds.
+- *(Closed by ADR 0112.)* After a transmission or a single reception, the
+  chip still stays in the mode it was in rather than dropping to its fallback
+  mode. RadioLib calls `standby()` after both (`finishTransmit`,
+  `finishReceive`), so no switch time it sees depends on this.
 - After a CAD the chip is still left in RX, though the datasheet returns it to
   STBY_RC once a sweep finds nothing (13.4.7). That makes the transmission
   Meshtastic starts straight after its listen-before-talk an RX-to-TX switch

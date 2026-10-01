@@ -61,13 +61,16 @@ OBJECT_DECLARE_SIMPLE_TYPE(EspSpiMaster, ESP_SPI_MASTER)
  * pin while these bytes were clocked, which is the only thing that
  * distinguishes a command from payload on a three-wire display. `cs` says
  * which device on the bus was selected while they were clocked (ADR 0032);
- * it uses a byte the header already reserved, so the format keeps its size. */
+ * it uses a byte the header already reserved. `at_ns` is the guest's time
+ * when the segment is sent, so a part knows when a command happened rather
+ * than when the host got to it (ADR 0112). */
 typedef struct QEMU_PACKED {
     uint8_t type;      /* 0 = write only, no reply; 1 = duplex, reply expected */
     uint8_t dc;
     uint8_t cs;        /* index into the chip selects this controller drives */
     uint8_t pad;
     uint32_t len;
+    uint64_t at_ns;    /* QEMU's virtual clock */
 } EspSpiSegment;
 
 #define SEGMENT_WRITE  0
@@ -85,13 +88,21 @@ typedef struct QEMU_PACKED {
 /* What the part answers: BUSY stays high `high_ns` from now. BUSY_HELD keeps
  * it high until the select next falls, and it then falls `wake_ns` after that
  * edge -- a chip asleep, woken by NSS. A `wake_ns` of BUSY_HELD means a select
- * does not wake it either: a chip held in reset. */
+ * does not wake it either: a chip held in reset.
+ *
+ * Then its interrupt line (ADR 0112): `line` is its level now, or LINE_LEFT
+ * to leave it, and `rise_at_ns` the guest time it next rises -- a packet's
+ * last bit -- or 0 for none. */
 typedef struct QEMU_PACKED {
     uint32_t high_ns;
     uint32_t wake_ns;
+    uint8_t line;
+    uint8_t pad[3];
+    uint64_t rise_at_ns;
 } EspSpiBusyReply;
 
 #define BUSY_HELD 0xFFFFFFFFu
+#define LINE_LEFT 0xFF
 
 /* A part's BUSY line, kept on the guest's clock (ADR 0111). The part decides
  * how long each hold is; this only keeps the time, which the host cannot: a
@@ -100,6 +111,7 @@ typedef struct QEMU_PACKED {
 typedef struct {
     int32_t pin;                /* -1: this select has no BUSY line */
     int32_t reset_pin;          /* -1: no reset line is watched */
+    int32_t irq_pin;            /* -1: the part's interrupt is not ours to keep */
     QEMUTimer *timer;
     bool high;
     bool held;                  /* high until the select next falls */
@@ -128,6 +140,7 @@ struct EspSpiMaster {
     int32_t dc_gpio;
     int32_t busy_gpio[SPI_SELECTS];
     int32_t reset_gpio[SPI_SELECTS];
+    int32_t irq_gpio[SPI_SELECTS];
     EspSpiBusyLine busy[SPI_SELECTS];
     bool miso;
     uint32_t miso_mask;         /* which devices drive the shared MISO line */
@@ -319,7 +332,7 @@ static void spi_busy_apply(EspSpiBusyLine *line, EspSpiBusyReply reply,
  * line did before it was modelled. */
 static EspSpiBusyReply spi_ask_busy(EspSpiMaster *s, EspSpiSegment *seg)
 {
-    EspSpiBusyReply reply = { 0, 0 };
+    EspSpiBusyReply reply = { .line = LINE_LEFT };
 
     if (s->broken || s->fd < 0) {
         return reply;
@@ -327,9 +340,28 @@ static EspSpiBusyReply spi_ask_busy(EspSpiMaster *s, EspSpiSegment *seg)
     if (!spi_write_all(s, seg, sizeof(*seg)) ||
         !spi_read_all(s, &reply, sizeof(reply))) {
         spi_fail(s, "busy exchange failed");
-        reply.high_ns = reply.wake_ns = 0;
+        memset(&reply, 0, sizeof(reply));
+        reply.line = LINE_LEFT;
     }
     return reply;
+}
+
+/* The part's interrupt line, as it answered: a level now, and perhaps a rise
+ * later, on the guest's clock (ADR 0112). A later answer replaces the rise. */
+static void spi_line_apply(EspSpiBusyLine *line, EspSpiBusyReply reply)
+{
+    if (line->irq_pin < 0 || reply.line == LINE_LEFT) {
+        return;
+    }
+    esp_gpio_drive(NULL, line->irq_pin, reply.line & 1);
+    esp_gpio_schedule(NULL, line->irq_pin, 1,
+                      reply.rise_at_ns ? (int64_t)reply.rise_at_ns : -1);
+}
+
+/* Whether a release on this select waits for the part's answer. */
+static bool spi_asks(EspSpiBusyLine *line)
+{
+    return line->pin >= 0 || line->irq_pin >= 0;
 }
 
 /* Hand the accumulated bytes to the model. Nothing is expected back: a
@@ -348,6 +380,7 @@ static void spi_flush(EspSpiMaster *s)
     seg.cs = (uint8_t)(s->buffered_cs < 0 ? 0 : s->buffered_cs);
     seg.pad = 0;
     seg.len = s->buffered;
+    seg.at_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
     if (!spi_write_all(s, &seg, sizeof(seg)) ||
         !spi_write_all(s, s->buffer, s->buffered)) {
         spi_fail(s, "send failed");
@@ -402,6 +435,7 @@ static void spi_duplex(EspSpiMaster *s, uint8_t *data, uint32_t len)
     seg.cs = (uint8_t)cs;
     seg.pad = 0;
     seg.len = len;
+    seg.at_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
     if (!spi_write_all(s, &seg, sizeof(seg)) ||
         !spi_write_all(s, data, len) ||
         !spi_read_all(s, data, len)) {
@@ -472,13 +506,19 @@ static void spi_cs_changed(void *opaque, unsigned pin, int level)
     if (s->broken || s->fd < 0) {
         return;
     }
-    seg.type = line->pin >= 0 ? SEGMENT_RELEASE_BUSY : SEGMENT_RELEASE;
+    seg.type = spi_asks(line) ? SEGMENT_RELEASE_BUSY : SEGMENT_RELEASE;
     seg.dc = 0;
     seg.cs = (uint8_t)cs;
     seg.pad = 0;
     seg.len = 0;
-    if (line->pin >= 0) {
-        spi_busy_apply(line, spi_ask_busy(s, &seg), false);
+    seg.at_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    if (spi_asks(line)) {
+        EspSpiBusyReply reply = spi_ask_busy(s, &seg);
+
+        if (line->pin >= 0) {
+            spi_busy_apply(line, reply, false);
+        }
+        spi_line_apply(line, reply);
         return;
     }
     if (!spi_write_all(s, &seg, sizeof(seg))) {
@@ -499,10 +539,12 @@ static void spi_reset_changed(void *opaque, unsigned pin, int level)
     EspSpiBusyReply reply;
 
     spi_flush(s);
+    seg.at_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
     reply = spi_ask_busy(s, &seg);
     if (s->busy[cs].pin >= 0) {
         spi_busy_apply(&s->busy[cs], reply, true);
     }
+    spi_line_apply(&s->busy[cs], reply);
 }
 
 static uint64_t spi_read(void *opaque, hwaddr offset, unsigned size)
@@ -607,6 +649,7 @@ static void spi_realize(DeviceState *dev, Error **errp)
 
         line->pin = s->busy_gpio[i];
         line->reset_pin = s->reset_gpio[i];
+        line->irq_pin = s->irq_gpio[i];
         line->bus = s->region_name ? s->region_name : "?";
         line->cs = i;
         if (line->pin >= 0) {
@@ -642,6 +685,11 @@ static Property spi_props[] = {
     DEFINE_PROP_INT32("reset_gpio", EspSpiMaster, reset_gpio[0], -1),
     DEFINE_PROP_INT32("reset1_gpio", EspSpiMaster, reset_gpio[1], -1),
     DEFINE_PROP_INT32("reset2_gpio", EspSpiMaster, reset_gpio[2], -1),
+    /* A part's interrupt line, per select (ADR 0112): driven as the part's
+     * answers say, on the guest's clock. */
+    DEFINE_PROP_INT32("irq_gpio", EspSpiMaster, irq_gpio[0], -1),
+    DEFINE_PROP_INT32("irq1_gpio", EspSpiMaster, irq_gpio[1], -1),
+    DEFINE_PROP_INT32("irq2_gpio", EspSpiMaster, irq_gpio[2], -1),
     DEFINE_PROP_BOOL("miso", EspSpiMaster, miso, true),
     /* One bit per chip-select index: whether that part drives MISO. */
     DEFINE_PROP_UINT32("miso_mask", EspSpiMaster, miso_mask, 0),

@@ -240,17 +240,20 @@ def build(outdir: Path, air: str | None = None, ble_air: str | None = None,
     panel = EPaperPanel(outdir / "frames",
                         quarter_turns=int(os.environ.get("BOARDEMUL_ROTATE", "0")))
     gpio = GpioClient(outdir / "gpio.sock")
+    # The guest's clock, for parts that keep the board's time (ADR 0104): the
+    # radio's, for what it hears off the air (ADR 0112).
+    clock = GuestClock(outdir / "clock.sock")
     # The same three-part bus as the other board (ADR 0032), and for the same
     # reason: with one chip select forwarded the card and the radio were not
     # unmodelled but unreachable.
     medium = AirMedium(air, outdir.name) if air else None
     radio = Sx1262(air=medium, position=position, antenna_dbi=antenna_dbi,
                    exponent=exponent, obstruction_db=obstruction_db,
-                   signal=lambda level: gpio.drive(RADIO_DIO1_PIN, level))
+                   signal=lambda level: gpio.drive(RADIO_DIO1_PIN, level, force=True),
+                   clock=clock.seconds)
     sdcard = SdCard(sdimage.build(size_mb=SD_CARD_MB))
     spi = SpiServer(outdir / "spi2.sock",
                     {SPI_DISPLAY: panel, SPI_RADIO: radio, SPI_SDCARD: sdcard})
-    clock = GuestClock(outdir / "clock.sock")
     i2c0 = I2CServer(outdir / "i2c0.sock", i2c_devices(clock=clock.seconds), name="i2c0")
     i2c1 = I2CServer(outdir / "i2c1.sock", [], name="i2c1")
     # This board's receiver is a u-blox, built in, on the third UART; its
@@ -280,6 +283,7 @@ def build(outdir: Path, air: str | None = None, ble_air: str | None = None,
         # per device rather than per bus.
         f"cs_gpio={EPD_CS_PIN},cs1_gpio={RADIO_CS_PIN},cs2_gpio={SD_CS_PIN},"
         f"busy1_gpio={RADIO_BUSY_PIN},reset1_gpio={RADIO_RST_PIN},"
+        f"irq1_gpio={RADIO_DIO1_PIN},"
         f"dc_gpio={EPD_DC_PIN},miso=off,miso_mask={MISO_MASK},"
         f"socket={spi.socket_path}",
         f"esp-i2c-master,name=i2c0,base=0x{I2C0_BASE:x},irq={IRQ_I2C_EXT0},"

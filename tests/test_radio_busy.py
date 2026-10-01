@@ -25,8 +25,8 @@ from emu.devices.sx1262 import (  # noqa: E402
     WRITE_REGISTER,
 )
 from emu.spi_link import (  # noqa: E402
-    BUSY, BUSY_HELD, SEG_DUPLEX, SEG_RELEASE, SEG_RELEASE_BUSY, SEG_RESET,
-    SEGMENT, SpiServer,
+    ANSWER, BUSY_HELD, LINE_LEFT, SEG_DUPLEX, SEG_RELEASE, SEG_RELEASE_BUSY,
+    SEG_RESET, SEGMENT, SpiServer,
 )
 
 US = 1000
@@ -161,8 +161,9 @@ class _Controller:
         self.sock.settimeout(5)
         self.sock.connect(str(path))
 
-    def send(self, kind: int, cs: int, data: bytes = b"", dc: int = 0) -> None:
-        self.sock.sendall(SEGMENT.pack(kind, dc, cs, 0, len(data)) + data)
+    def send(self, kind: int, cs: int, data: bytes = b"", dc: int = 0,
+             at_ns: int = 0) -> None:
+        self.sock.sendall(SEGMENT.pack(kind, dc, cs, 0, len(data), at_ns) + data)
 
     def read(self, count: int) -> bytes:
         buf = b""
@@ -170,8 +171,11 @@ class _Controller:
             buf += self.sock.recv(count - len(buf))
         return buf
 
+    def answer(self) -> tuple[int, int, int, int]:
+        return ANSWER.unpack(self.read(ANSWER.size))
+
     def busy(self) -> tuple[int, int]:
-        return BUSY.unpack(self.read(BUSY.size))
+        return self.answer()[:2]
 
 
 @pytest.fixture()
@@ -241,6 +245,41 @@ def test_a_part_that_raises_still_answers(tmp_path: Path) -> None:
         server.stop()
 
 
+@needs_unix
+def test_a_segment_says_when_the_guest_sent_it(wired) -> None:
+    """ADR 0112: the radio learns the guest's time from the bus itself."""
+    controller, radio = wired
+    controller.send(SEG_DUPLEX, 1, bytes([GET_IRQ_STATUS, 0, 0, 0]), at_ns=123_456)
+    controller.read(4)
+    assert radio.now_ns == 123_456
+
+
+@needs_unix
+def test_the_answer_carries_the_interrupt_line(wired) -> None:
+    """A transmission's TxDone, routed to DIO1, is a rise the controller can
+    schedule: the ramp from STBY_RC to TX (126 us) after the release, and with
+    nothing to send, no airtime after that (ADR 0112)."""
+    controller, _ = wired
+    controller.send(SEG_DUPLEX, 1, bytes([0x08, 0x00, 0x01, 0, 0, 0, 0, 0, 0]))
+    controller.read(9)
+    controller.send(SEG_RELEASE_BUSY, 1)
+    assert controller.answer()[2:] == (0, 0), "nothing is due yet"
+    controller.send(SEG_DUPLEX, 1, bytes([0x83, 0, 0, 0]), at_ns=1_000_000)
+    controller.read(4)
+    controller.send(SEG_RELEASE_BUSY, 1, at_ns=1_000_000)
+    assert controller.answer() == (126 * US, 0, 0, 1_000_000 + 126 * US)
+
+
+@needs_unix
+def test_an_empty_select_leaves_the_line_alone(wired) -> None:
+    controller, _ = wired
+    controller.send(SEG_RELEASE_BUSY, 2)
+    assert controller.answer()[2] == LINE_LEFT
+
+
 def test_the_answer_fits_what_the_controller_reads() -> None:
-    """Two little-endian words, as esp_spi_master.c's EspSpiBusyReply."""
-    assert BUSY.size == 8 and BUSY.pack(1, 2) == struct.pack("<II", 1, 2)
+    """As esp_spi_master.c's EspSpiBusyReply: two words, the line's level,
+    three bytes of padding, and the guest time of its next rise."""
+    assert ANSWER.size == 20
+    assert ANSWER.pack(1, 2, 1, 3) == struct.pack("<IIB3xQ", 1, 2, 1, 3)
+    assert SEGMENT.size == 16, "esp_spi_master.c's EspSpiSegment"

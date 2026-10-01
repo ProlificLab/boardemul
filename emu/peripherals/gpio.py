@@ -79,10 +79,14 @@ class GpioClient:
         with self._lock:
             return dict(self._levels)
 
-    def drive(self, pin: int, level: int) -> None:
+    def drive(self, pin: int, level: int, force: bool = False) -> None:
+        """Set a line. An unchanged level is not sent again, unless `force`:
+        for a line something inside the machine also drives -- the radio's
+        interrupt, which the SPI controller lowers (ADR 0112) -- this side's
+        record of what it last sent says nothing about where the line is."""
         level = 1 if level else 0
         with self._lock:
-            if self._levels.get(pin) == level:
+            if self._levels.get(pin) == level and not force:
                 return
             self._levels[pin] = level
         self._send(pin, level)

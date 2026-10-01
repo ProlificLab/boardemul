@@ -256,10 +256,14 @@ def build(outdir: Path, air: str | None = None, ble_air: str | None = None,
     # asks for, which is where a model starts (ADR 0006).
     # On the air only when a directory is given to share with other boards
     # (ADR 0036); alone otherwise, which is a node with nobody in range.
+    # The guest's clock, for parts that keep the board's time (ADR 0104): the
+    # radio's, for what it hears off the air (ADR 0112).
+    clock = GuestClock(outdir / "clock.sock")
     medium = AirMedium(air, outdir.name) if air else None
     radio = Sx1262(air=medium, position=position, antenna_dbi=antenna_dbi,
                    exponent=exponent, obstruction_db=obstruction_db,
-                   signal=lambda level: gpio.drive(RADIO_DIO1_PIN, level))
+                   signal=lambda level: gpio.drive(RADIO_DIO1_PIN, level, force=True),
+                   clock=clock.seconds)
     # A card is in the slot, formatted and empty (ADR 0033). Its contents are
     # built here rather than shipped, and go no further than this run.
     sdcard = SdCard(sdimage.build(size_mb=SD_CARD_MB))
@@ -293,6 +297,7 @@ def build(outdir: Path, air: str | None = None, ble_air: str | None = None,
         f"esp-spi-master,name=spi2,base=0x{SPI2_BASE:x},"
         f"cs_gpio={TFT_CS_PIN},cs1_gpio={RADIO_CS_PIN},cs2_gpio={SD_CS_PIN},"
         f"busy1_gpio={RADIO_BUSY_PIN},reset1_gpio={RADIO_RST_PIN},"
+        f"irq1_gpio={RADIO_DIO1_PIN},"
         f"dc_gpio={TFT_DC_PIN},miso=off,miso_mask={MISO_MASK},"
         f"socket={spi.socket_path}",
         f"esp-i2c-master,name=i2c0,base=0x{I2C0_BASE:x},irq={IRQ_I2C_EXT0},"
@@ -334,11 +339,9 @@ def build(outdir: Path, air: str | None = None, ble_air: str | None = None,
             ssid=wifi_ap[0], channel=wifi_ap[2] or 1, wpa2=wifi_ap[3],
             passphrase=wifi_ap[4] if len(wifi_ap) > 4 else "",
             beacon_ms=wifi_ap[1]), uplink=uplink))
-    # The guest's clock, for parts that keep the board's time (ADR 0104). No
-    # part on this board asks for it yet; the L76K still waits to be spoken to.
     board = Board(regions=regions, gpio=gpio, spi=spi, i2c0=i2c0, i2c1=i2c1,
                   panel=panel, gps=receiver, devices=devices, frames=frames,
-                  clock=GuestClock(outdir / "clock.sock"))
+                  clock=clock)
     board.touch = touch
     board.keypad = keypad
     return board

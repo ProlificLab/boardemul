@@ -43,4 +43,13 @@ void esp_gpio_watch(DeviceState *dev, unsigned pin,
  */
 void esp_gpio_drive(DeviceState *dev, unsigned pin, int level);
 
+/*
+ * Drive an input pin to `level` at guest time `at_ns` (QEMU's virtual clock).
+ * One change is pending per pin; a newer one replaces it, and a negative
+ * `at_ns` only cancels. A time already past drives the pin at once. For a
+ * part that knows ahead of time when its line will move -- a radio's TxDone
+ * at the end of a packet (ADR 0112).
+ */
+void esp_gpio_schedule(DeviceState *dev, unsigned pin, int level, int64_t at_ns);
+
 #endif /* ESP_BOARD_GLUE_H */

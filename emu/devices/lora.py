@@ -78,14 +78,18 @@ def bandwidth_hz(code: int) -> int:
     return BANDWIDTHS.get(code, DEFAULT_BANDWIDTH)
 
 
+def symbol_time(spreading: int, bandwidth_code: int) -> float:
+    """Seconds one symbol lasts: 2^SF / bandwidth."""
+    return (2 ** max(5, min(12, spreading))) / bandwidth_hz(bandwidth_code)
+
+
 def time_on_air(payload: int, spreading: int, bandwidth_code: int,
                 coding_rate: int, low_data_rate: bool = False,
                 preamble: int = 8, crc: bool = True,
                 explicit_header: bool = True) -> float:
     """Seconds a packet of `payload` bytes occupies the channel."""
     spreading = max(5, min(12, spreading))
-    hz = bandwidth_hz(bandwidth_code)
-    symbol = (2 ** spreading) / hz
+    symbol = symbol_time(spreading, bandwidth_code)
 
     # The datasheet's own expression. The denominator drops by two when the
     # low data rate optimisation is on, which is what it is for.

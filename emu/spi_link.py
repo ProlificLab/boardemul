@@ -15,6 +15,7 @@ Segment header, matching esp_spi_master.c:
     u8 cs     which device on the bus was selected (ADR 0032)
     u8 pad
     u32 len
+    u64 at    the guest's time when the segment was sent, in ns (ADR 0112)
 """
 
 from __future__ import annotations
@@ -28,23 +29,30 @@ from pathlib import Path
 
 log = logging.getLogger("spi")
 
-SEGMENT = struct.Struct("<BBBBI")
+SEGMENT = struct.Struct("<BBBBIQ")
 SEG_WRITE = 0
 SEG_DUPLEX = 1
 SEG_RELEASE = 2         # the chip select went high; the window is over
 SEG_RELEASE_BUSY = 3    # the same, and the part has a BUSY line (ADR 0111)
 SEG_RESET = 4           # the part's reset pin moved; dc is its new level
 
-# How long a part's BUSY line stays high, in guest nanoseconds: from now, and
-# when that is BUSY_HELD, from the next time its select falls (ADR 0111).
-BUSY = struct.Struct("<II")
+# The answer to a release or a reset (ADR 0111, ADR 0112): how long the part's
+# BUSY line stays high, in guest nanoseconds -- from now, and when that is
+# BUSY_HELD, from the next time its select falls -- then its interrupt line:
+# its level now, or LINE_LEFT, and the guest time it next rises, or 0.
+ANSWER = struct.Struct("<IIB3xQ")
 BUSY_HELD = 0xFFFFFFFF
+LINE_LEFT = 0xFF
 
 
 class SpiDevice:
-    """A device on one chip-select. `dc` is 0 for command, 1 for data."""
+    """A device on one chip-select. `dc` is 0 for command, 1 for data.
+
+    `now_ns` is the guest's time when the segment, release or reset being
+    handled was sent, set by the server before each call (ADR 0112)."""
 
     name = "spi-device"
+    now_ns = 0
 
     def on_segment(self, dc: int, data: bytes, duplex: bool) -> bytes | None:
         return None
@@ -69,6 +77,13 @@ class SpiDevice:
         the controller was given a BUSY pin for (ADR 0111). A part that is
         never busy says so."""
         return (0, 0)
+
+    def line(self) -> tuple[int | None, int]:
+        """The part's interrupt line, asked at the same moments as busy():
+        its level now, or None to leave it, and the guest time in ns it next
+        rises, or 0. Asked only for a select the controller was given an
+        interrupt pin for (ADR 0112)."""
+        return (None, 0)
 
     def flush(self) -> None:
         """Called once the run is over. A panel with nothing pending does
@@ -138,13 +153,15 @@ class SpiServer:
             header = self._recv(conn, SEGMENT.size)
             if header is None:
                 return
-            kind, dc, cs, _pad, length = SEGMENT.unpack(header)
+            kind, dc, cs, _pad, length, at_ns = SEGMENT.unpack(header)
             payload = self._recv(conn, length) if length else b""
             if payload is None:
                 return
             self.segments += 1
             self.bytes_in += len(payload)
             device = self.devices.get(cs)
+            if device is not None:
+                device.now_ns = at_ns
             if kind in (SEG_RELEASE, SEG_RELEASE_BUSY, SEG_RESET):
                 if device is not None:
                     try:
@@ -181,17 +198,22 @@ class SpiServer:
 
     @staticmethod
     def _answer_busy(conn: socket.socket, device: SpiDevice | None) -> bool:
-        """The controller is waiting to hear how long BUSY stays high, so it
-        always gets an answer: from a part that raises, or from no part, that
-        is "not busy", which is what the line was before it was modelled."""
-        high_ns, wake_ns = 0, 0
+        """The controller is waiting to hear about BUSY and the interrupt
+        line, so it always gets an answer: from a part that raises, or from no
+        part, that is "not busy, line left alone", which is what both lines
+        were before they were modelled."""
+        high_ns, wake_ns, level, rise_at = 0, 0, None, 0
         if device is not None:
             try:
                 high_ns, wake_ns = device.busy()
+                level, rise_at = device.line()
             except Exception:
-                log.exception("spi device raised saying how long it is busy")
+                log.exception("spi device raised answering for its lines")
+                high_ns, wake_ns, level, rise_at = 0, 0, None, 0
         try:
-            conn.sendall(BUSY.pack(min(high_ns, BUSY_HELD), min(wake_ns, BUSY_HELD)))
+            conn.sendall(ANSWER.pack(min(high_ns, BUSY_HELD), min(wake_ns, BUSY_HELD),
+                                     LINE_LEFT if level is None else int(bool(level)),
+                                     max(0, rise_at)))
         except OSError:
             return False
         return True

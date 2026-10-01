@@ -20,13 +20,20 @@ It also says how long each command keeps it busy, which the SPI controller
 holds its BUSY pin high for on the guest's clock (ADR 0111). The times are the
 datasheet's -- Semtech DS.SX1261-2.W.APP, Rev. 1.2 -- and where the datasheet
 gives none, there is none.
+
+And it keeps the guest's time, not the host's (ADR 0112). Every segment says
+when the guest sent it; what the radio does by itself -- a packet's last bit,
+a sweep's end -- is a queue of events at guest times, which settle whenever
+the guest's time is next known to have passed them.
 """
 
 from __future__ import annotations
 
+import bisect
+import itertools
 import logging
 import math
-import time
+import threading
 
 from emu.devices import lora
 from emu.spi_link import BUSY_HELD, SpiDevice
@@ -45,6 +52,7 @@ SET_RX = 0x82
 STOP_TIMER_ON_PREAMBLE = 0x9F
 SET_RX_DUTY_CYCLE = 0x94
 SET_CAD = 0xC5              # listen before talking: is the channel busy?
+SET_CAD_PARAMS = 0x88
 CALIBRATE = 0x89
 CALIBRATE_IMAGE = 0x98
 SET_PA_CONFIG = 0x95
@@ -115,6 +123,16 @@ WAKE_COLD_US = 3500
 SLEEP_WARM = 0x04               # sleepConfig bit 2 (Table 13-2)
 # Calibrating every block (13.1.12). No time is given for fewer.
 CALIBRATE_US = 3500
+# Symbols a CAD listens for, by SetCadParams' code (Table 13-72). It then
+# stays in RX about half a symbol more to post-process (6.1.5).
+CAD_SYMBOLS = {0x00: 1, 0x01: 2, 0x02: 4, 0x03: 8, 0x04: 16}
+CAD_POST_SYMBOLS = 0.5
+# Where the chip goes after a transmission or a reception, by
+# SetRxTxFallbackMode's byte (13.1.15, Table 13-23). STBY_RC unless told.
+FALLBACK = {0x40: MODE_FS, 0x30: MODE_STANDBY_XOSC, 0x20: MODE_STANDBY_RC}
+# SetRx's timeout that means "stay in RX" (13.1.5); anything else receives one
+# packet and falls back.
+RX_CONTINUOUS = 0xFFFFFF
 # SetDIO3AsTCXOCtrl's delay is in these units, and a switch out of STBY_RC
 # into a mode that needs the clock waits that long for it (13.3.6).
 TCXO_STEP_US = 15.625
@@ -144,11 +162,19 @@ class Sx1262(SpiDevice):
                  position: tuple[float, float] = (0.0, 0.0),
                  antenna_dbi: float = 0.0,
                  exponent: float = lora.FREE_SPACE_EXPONENT,
-                 obstruction_db: float = 0.0) -> None:
-        # `air` carries frames to and from other boards; `signal` is how this
-        # part nudges the processor, which it does on a line of its own.
+                 obstruction_db: float = 0.0, clock=None) -> None:
+        # `air` carries frames to and from other boards. The interrupt line
+        # is the SPI controller's to drive, from line() (ADR 0112); `signal`
+        # drives it from this side for the one event that arrives off the air
+        # rather than through a command, a packet received.
         self.air = air
         self.signal = signal
+        # The guest's time in seconds from the board's clock tick (ADR 0104),
+        # for the ticker, which has no segment to read it from. None, or
+        # answering None, until the first tick.
+        self.clock = clock
+        self._lock = threading.RLock()
+        self._order = itertools.count()
         self.sent = 0
         self.heard = 0
         self.cad_sweeps = 0
@@ -210,10 +236,19 @@ class Sx1262(SpiDevice):
         self.low_data_rate = False
         self.preamble = 8
         # While transmitting, this part is deaf; while a packet is arriving,
-        # a second one lands on top of it and neither survives. A reset ends
-        # both, and with them the TxDone a transmission would have raised.
-        self.tx_until = 0.0
-        self.rx_until = 0.0
+        # a second one lands on top of it and neither survives. Guest
+        # nanoseconds. A reset ends both, and with them everything pending.
+        self.tx_until_ns = 0
+        self.rx_until_ns = 0
+        # What the radio will do by itself, in guest-time order:
+        # (at_ns, order, flag, packet).
+        self._due: list[tuple[int, int, int, tuple | None]] = []
+        self.fallback = MODE_STANDBY_RC
+        self.rx_single = False
+        self.cad_symbols: int | None = None
+        # A reception scheduled since the controller last asked about the
+        # line, so one it cannot know to raise (ADR 0112).
+        self._rx_untold = False
         # The TCXO's start-up, once the host has said there is one: added to
         # a switch out of STBY_RC (ADR 0111).
         self.tcxo_us = 0.0
@@ -228,39 +263,55 @@ class Sx1262(SpiDevice):
         return ((self.mode & 0x7) << 4) | ((COMMAND_OK & 0x7) << 1)
 
     def on_segment(self, dc: int, data: bytes, duplex: bool) -> bytes | None:
-        if self.asleep:
-            # The select falling is what wakes it (13.1.1). A cold start is
-            # a power-on: what the chip was told before sleeping is gone.
-            self.asleep = False
-            if not self.sleep_warm:
-                self._power_on()
-        reply = bytearray()
-        for byte in data:
-            reply.append(self._reply_at(len(self.frame)))
-            self.frame.append(byte)
-        return bytes(reply) if duplex else None
+        with self._lock:
+            self._settle(self.now_ns)
+            if self.asleep:
+                # The select falling is what wakes it (13.1.1). A cold start
+                # is a power-on: what the chip was told before sleeping is gone.
+                self.asleep = False
+                if not self.sleep_warm:
+                    self._power_on()
+            reply = bytearray()
+            for byte in data:
+                reply.append(self._reply_at(len(self.frame)))
+                self.frame.append(byte)
+            return bytes(reply) if duplex else None
 
     def on_deselect(self) -> None:
-        self._busy = (0, 0)
-        if self.frame and not self.in_reset:
-            self._apply(bytes(self.frame))
-        self.frame = bytearray()
+        with self._lock:
+            self._settle(self.now_ns)
+            self._busy = (0, 0)
+            if self.frame and not self.in_reset:
+                self._apply(bytes(self.frame))
+                self._settle(self.now_ns)
+            self.frame = bytearray()
 
     def on_reset(self, asserted: bool) -> None:
         """NRESET moved. Held low, the chip is in reset and BUSY is high
         (Table 8-3); released, it starts up and BUSY falls once it is in
         STBY_RC, a cold start's time later (ADR 0111)."""
-        self._power_on()
-        self.in_reset = asserted
-        self._drive_line()
-        if asserted:
-            self._busy = (BUSY_HELD, BUSY_HELD)
-        else:
-            self._busy = (WAKE_COLD_US * 1000, 0)
+        with self._lock:
+            self._power_on()
+            self.in_reset = asserted
+            if asserted:
+                self._busy = (BUSY_HELD, BUSY_HELD)
+            else:
+                self._busy = (WAKE_COLD_US * 1000, 0)
 
     def busy(self) -> tuple[int, int]:
-        owed, self._busy = self._busy, (0, 0)
-        return owed
+        with self._lock:
+            owed, self._busy = self._busy, (0, 0)
+            return owed
+
+    def line(self) -> tuple[int | None, int]:
+        """DIO1: high while a routed flag is set, and otherwise rising when
+        the first routed event falls due (ADR 0112)."""
+        with self._lock:
+            self._rx_untold = False
+            if self.irq & self.irq_mask:
+                return (1, 0)
+            routed = [at for at, _, flag, _ in self._due if flag & self.irq_mask]
+            return (0, min(routed) if routed else 0)
 
     def _switch(self, to: int) -> None:
         """Owe BUSY the time Table 8-2 gives for going from the mode the chip
@@ -272,25 +323,84 @@ class Sx1262(SpiDevice):
         self._busy = (int(us * 1000), 0)
         self.mode = to
 
+    def guest_ns(self) -> int:
+        """The latest guest time known: the last segment's, or the clock's
+        tick if that is later."""
+        ns = self.now_ns
+        seconds = self.clock() if self.clock is not None else None
+        if seconds is not None:
+            ns = max(ns, int(seconds * 1e9))
+        return ns
+
     def pump(self) -> None:
-        """Run the clock and take anything off the air.
+        """Take anything off the air, and let what has fallen due happen.
 
         Called from the board's ticker rather than on bus traffic, because an
-        idle guest makes almost none.
+        idle guest makes almost none. A packet received is the one event that
+        can come from outside a command: if the controller has not been asked
+        about the line since it was scheduled, it cannot raise it, so it goes
+        through `signal`. Anything else the controller already raised on the
+        guest's clock, and a second, later write from here could only land
+        after the host had cleared it.
         """
-        now = time.time()
-        if self.tx_until and now >= self.tx_until:
-            self.tx_until = 0.0
-            self._raise(IRQ_TX_DONE)
-        if self.air is None:
-            return
+        with self._lock:
+            now_ns = self.guest_ns()
+            if self.air is not None:
+                self._listen(now_ns)
+            raised = self._settle(now_ns)
+            if (raised & IRQ_RX_DONE & self.irq_mask and self._rx_untold
+                    and self.signal is not None):
+                self._rx_untold = False
+                self.signal(True)
 
+    def _schedule(self, at_ns: int, flag: int, packet: tuple | None = None) -> None:
+        bisect.insort(self._due, (at_ns, next(self._order), flag, packet))
+
+    def _settle(self, now_ns: int) -> int:
+        """Everything due by `now_ns` happens, in order. Returns the flags
+        raised."""
+        raised = 0
+        while self._due and self._due[0][0] <= now_ns:
+            _at, _order, flag, packet = self._due.pop(0)
+            if flag == IRQ_TX_DONE:
+                # The last bit is out: the PA ramps down and the chip goes to
+                # its fallback mode, if the host has not moved it (13.1.4).
+                self.tx_until_ns = 0
+                if self.mode == MODE_TX:
+                    self.mode = self.fallback
+            elif flag == IRQ_RX_DONE and packet is not None:
+                self._received(*packet)
+                if self.rx_single and self.mode == MODE_RX:
+                    self.mode = self.fallback
+            self.irq |= flag
+            raised |= flag
+        return raised
+
+    def _received(self, payload: bytes, arrived: float) -> None:
+        payload = payload[:BUFFER_SIZE]
+        for offset, value in enumerate(payload):
+            self.buffer[(self.rx_base + offset) % BUFFER_SIZE] = value
+        self.received_length = len(payload)
+        self.last_rssi_dbm = arrived
+        self.last_snr_db = arrived - lora.noise_floor_dbm(self.bandwidth_code)
+        self.heard += 1
+        # One line per packet received: they are rare, and a reception is
+        # the event a mesh run waits for (ADR 0098).
+        log.info("sx1262: heard a %d-byte packet at %.1f dBm",
+                 len(payload), arrived)
+
+    def _listen(self, now_ns: int) -> None:
+        """Judge what has arrived off the air, on this board's own guest clock.
+
+        Boards do not share a clock yet (ADR 0113), so a packet starts when
+        this board reads it and occupies it for its time on air from then
+        (ADR 0112).
+        """
         for frame in self.air.poll():
             decoded = lora.decode(frame)
             if decoded is None:
                 continue
-            frequency, sent_at, airtime = (decoded.frequency, decoded.sent_at,
-                                           decoded.airtime)
+            frequency, airtime = decoded.frequency, decoded.airtime
             payload = decoded.payload
 
             if frequency != self.frequency:
@@ -298,7 +408,7 @@ class Sx1262(SpiDevice):
                 # two radios on different channels hear each other.
                 self.wrong_frequency += 1
                 continue
-            if self.tx_until:
+            if now_ns < self.tx_until_ns:
                 self.deaf += 1  # transmitting, and deaf while it does
                 continue
             if self.mode != MODE_RX:
@@ -321,40 +431,18 @@ class Sx1262(SpiDevice):
                           arrived, distance, floor)
                 continue
 
-            ends = sent_at + airtime
-            if now < self.rx_until:
+            ends = now_ns + int(airtime * 1e9)
+            if now_ns < self.rx_until_ns:
                 # Another packet is still arriving. Two on top of each other
                 # is what a collision is, and neither survives it.
                 self.collisions += 1
-                self.rx_until = max(self.rx_until, ends)
+                self.rx_until_ns = max(self.rx_until_ns, ends)
+                self._due = [due for due in self._due if due[2] != IRQ_RX_DONE]
                 self.received_length = 0
                 continue
-            self.rx_until = ends
-            payload = payload[:BUFFER_SIZE]
-            for offset, value in enumerate(payload):
-                self.buffer[(self.rx_base + offset) % BUFFER_SIZE] = value
-            self.received_length = len(payload)
-            self.last_rssi_dbm = arrived
-            self.last_snr_db = arrived - lora.noise_floor_dbm(self.bandwidth_code)
-            self.heard += 1
-            # One line per packet received: they are rare, and a reception is
-            # the event a mesh run waits for (ADR 0098).
-            log.info("sx1262: heard a %d-byte packet at %.1f dBm",
-                     len(payload), arrived)
-            self._raise(IRQ_RX_DONE)
-
-    def _raise(self, flag: int) -> None:
-        """Set a flag and put the line where the flags say it should be.
-
-        A host that configured an interrupt waits on the line rather than
-        polling, and never looks at the flags until the line moves.
-        """
-        self.irq |= flag
-        self._drive_line()
-
-    def _drive_line(self) -> None:
-        if self.signal is not None:
-            self.signal(bool(self.irq & self.irq_mask))
+            self.rx_until_ns = ends
+            self._schedule(ends, IRQ_RX_DONE, (payload, arrived))
+            self._rx_untold = True
 
     # -- what the host reads while it clocks --------------------------------
 
@@ -405,22 +493,24 @@ class Sx1262(SpiDevice):
     def _transmit(self) -> None:
         """Put the packet the host wrote into the buffer on the air.
 
-        It goes out at once, but the channel is held for as long as the packet
-        actually takes, and the flag saying the transmission finished waits
-        that long too. A host that is told instantly would key the radio again
-        before the first packet had left.
+        It starts when the PA has ramped, which is when BUSY falls (8.3.1),
+        and holds the channel for as long as the packet takes; TxDone waits
+        for its last bit (13.1.4). A host told instantly would key the radio
+        again before the first packet had left. All on the guest's clock
+        (ADR 0112).
         """
+        start_ns = self.now_ns + self._busy[0]
         if not self.payload_length:
-            self._raise(IRQ_TX_DONE)
+            self._schedule(start_ns, IRQ_TX_DONE)
             return
         payload = bytes(self.buffer[(self.tx_base + offset) % BUFFER_SIZE]
                         for offset in range(self.payload_length))
         duration = self.airtime(len(payload))
-        now = time.time()
-        self.tx_until = now + duration
+        self.tx_until_ns = start_ns + int(duration * 1e9)
+        self._schedule(self.tx_until_ns, IRQ_TX_DONE)
         if self.air is not None:
-            self.air.send(lora.encode(self.frequency, now, duration, payload,
-                                      self.transmit_dbm, *self.position,
+            self.air.send(lora.encode(self.frequency, start_ns / 1e9, duration,
+                                      payload, self.transmit_dbm, *self.position,
                                       gain_dbi=self.antenna_dbi))
         self.sent += 1
         log.debug("sx1262: transmitting %d bytes for %.0f ms",
@@ -462,26 +552,35 @@ class Sx1262(SpiDevice):
             self._transmit()
         elif opcode == SET_RX:
             self._switch(MODE_RX)
+            self.rx_single = (len(frame) < 4
+                              or int.from_bytes(frame[1:4], "big") != RX_CONTINUOUS)
         elif opcode == SET_CAD:
             # Listening before talking. Answering that the sweep finished and
             # found nothing is what lets a host go on to transmit; saying
             # nothing at all leaves it waiting here for ever, which is exactly
-            # where both firmwares stopped.
+            # where both firmwares stopped. The sweep lasts its symbols and
+            # half a symbol more (6.1.5); a host that never set them is
+            # answered at once, as before.
             self.mode = MODE_RX
             self.cad_sweeps += 1
-            self._raise(IRQ_CAD_DONE)
+            symbols = (0.0 if self.cad_symbols is None
+                       else self.cad_symbols + CAD_POST_SYMBOLS)
+            self._schedule(self.now_ns + int(symbols * 1e9 * lora.symbol_time(
+                self.spreading, self.bandwidth_code)), IRQ_CAD_DONE)
+        elif opcode == SET_CAD_PARAMS and len(frame) >= 2:
+            self.cad_symbols = CAD_SYMBOLS.get(frame[1])
+        elif opcode == SET_RX_TX_FALLBACK and len(frame) >= 2:
+            self.fallback = FALLBACK.get(frame[1], MODE_STANDBY_RC)
         elif opcode == CALIBRATE:
             self._busy = (CALIBRATE_US * 1000, 0)
         elif opcode == SET_DIO3_AS_TCXO and len(frame) >= 5:
             self.tcxo_us = int.from_bytes(frame[2:5], "big") * TCXO_STEP_US
         elif opcode == CLEAR_IRQ_STATUS and len(frame) >= 3:
+            # The line follows the flags, so clearing them lowers it -- in the
+            # answer to this release (line()) -- and the next event is an edge.
             self.irq &= ~((frame[1] << 8) | frame[2]) & 0xFFFF
-            # The line follows the flags, so clearing them lowers it and the
-            # next event is an edge rather than nothing.
-            self._drive_line()
         elif opcode == SET_DIO_IRQ_PARAMS and len(frame) >= 3:
             self.irq_mask = (frame[1] << 8) | frame[2]
-            self._drive_line()
         elif opcode == SET_PACKET_TYPE and len(frame) >= 2:
             self.packet_type = frame[1]
         elif opcode == SET_RF_FREQUENCY and len(frame) >= 5:
@@ -507,7 +606,7 @@ class Sx1262(SpiDevice):
             pass                                # answered while it was clocked
         elif opcode in (CALIBRATE_IMAGE,
                         SET_REGULATOR_MODE, SET_DIO2_AS_RF_SWITCH,
-                        SET_DIO3_AS_TCXO, SET_RX_TX_FALLBACK,
+                        SET_DIO3_AS_TCXO,
                         SET_LORA_SYMB_TIMEOUT, STOP_TIMER_ON_PREAMBLE,
                         SET_RX_DUTY_CYCLE, CLEAR_DEVICE_ERRORS, GET_RSSI_INST,
                         SET_PA_CONFIG):
