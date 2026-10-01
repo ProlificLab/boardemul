@@ -104,3 +104,4 @@ superseded ADR is marked superseded and points forward.
 | [0096](0096-the-factory-test-service.md) | The factory-test service on lilygo.local:8896 | Accepted |
 | [0097](0097-the-uplink-a-nat-to-the-real-internet.md) | The uplink: a NAT from the LAN to the real internet | Accepted |
 | [0098](0098-each-board-has-its-own-randomness.md) | Each board has its own randomness | Accepted (amends 0004's seed) |
+| [0099](0099-a-board-that-panics-may-reboot.md) | A board that panics may reboot, as silicon does | Accepted |

@@ -120,7 +120,8 @@ def build_images(firmware: Path, outdir: Path, mac: str, overlays: list[str] = (
 
 def build_argv(qemu: Path, flash: Path, efuse: Path, uart: Path,
                qemu_log: Path, traced: bool, psram_mb: int,
-               psram_octal: bool = False, seed: int = RNG_SEED) -> list[str]:
+               psram_octal: bool = False, seed: int = RNG_SEED,
+               reboot: bool = False) -> list[str]:
     debug = ["unimp", "guest_errors"]
     # Escape hatch for one-off investigations (in_asm, exec, int...). Not a
     # supported interface; the supported one is --trace.
@@ -136,7 +137,7 @@ def build_argv(qemu: Path, flash: Path, efuse: Path, uart: Path,
         str(qemu),
         "-machine", "esp32s3",
         "-display", "none",
-        "-no-reboot",
+    ] + ([] if reboot else ["-no-reboot"]) + [
         "-drive", f"file={flash},if=mtd,format=raw",
         "-m", f"{psram_mb}M",
         "-global",
@@ -287,6 +288,9 @@ def main(argv: list[str] | None = None) -> int:
                     help="drive the guest clock from executed instructions (ADR 0027): "
                          "exact timer delivery and deterministic runs; the Bluetooth "
                          "link layer needs it")
+    ap.add_argument("--reboot", action="store_true",
+                    help="let a guest reset restart the chip, as the board does "
+                         "after a panic, instead of ending the run (ADR 0099)")
     ap.add_argument("--tag", default=None,
                     help="name for this run's logs (default: firmware stem)")
     args = ap.parse_args(argv)
@@ -304,7 +308,8 @@ def main(argv: list[str] | None = None) -> int:
     elog = args.outdir / f"{tag}.stderr.log"
     seed = rng_seed(args.mac)
     cmd = build_argv(qemu, flash, efuse, uart, qlog, args.trace, args.psram,
-                     psram_octal=args.psram_octal, seed=seed)
+                     psram_octal=args.psram_octal, seed=seed,
+                     reboot=args.reboot)
 
     hw_module = {"tdeck-max": board, "tdeck": board_tdeck}[args.board]
     # SoC-level, so it applies with or without --bus: these describe the chip
