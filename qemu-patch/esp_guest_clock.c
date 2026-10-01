@@ -9,6 +9,18 @@
  *
  * A full socket skips the tick rather than block the guest; a closed one
  * stops the clock.
+ *
+ * Given a quantum, the tick is a barrier instead (ADR 0113): every quantum it
+ * sends the time and waits for an answer before the guest runs on. Under
+ * -icount the vCPU runs a due virtual timer itself and its budget never passes
+ * the next deadline, so waiting here stops the guest's time at an exact
+ * instruction -- which is what lets boards on one air keep one time. The
+ * answer lists lines to move:
+ *
+ *     u32 count, then count times:
+ *     u32 pin   u8 level (0, 1, or 0xFF to leave it)   u8 pad[3]   u64 rise_at_ns
+ *
+ * applied with esp_gpio_drive() and esp_gpio_schedule() (ADR 0112).
  */
 
 #include "qemu/osdep.h"
@@ -21,6 +33,7 @@
 #include "hw/qdev-core.h"
 #include "qapi/error.h"
 #include "qom/object.h"
+#include "hw/misc/esp_board_glue.h"
 
 #include <sys/socket.h>
 #include <sys/un.h>
@@ -33,10 +46,86 @@ struct EspGuestClock {
 
     char *socket_path;
     uint32_t period_ms;
+    uint64_t quantum_ns;        /* nonzero: a barrier every quantum (ADR 0113) */
     int fd;
     QEMUTimer *timer;
     uint64_t ticks, skipped;
 };
+
+typedef struct QEMU_PACKED {
+    uint32_t pin;
+    uint8_t level;
+    uint8_t pad[3];
+    uint64_t rise_at_ns;
+} EspClockLine;
+
+#define LINE_LEFT 0xFF
+#define LINES_MAX 64
+
+static bool clock_read_all(int fd, void *buf, size_t len)
+{
+    uint8_t *p = buf;
+
+    while (len) {
+        ssize_t n = recv(fd, p, len, 0);
+        if (n <= 0) {
+            if (n < 0 && errno == EINTR) {
+                continue;
+            }
+            return false;
+        }
+        p += n;
+        len -= n;
+    }
+    return true;
+}
+
+static bool clock_send_all(int fd, const void *buf, size_t len)
+{
+    const uint8_t *p = buf;
+
+    while (len) {
+        ssize_t n = send(fd, p, len, MSG_NOSIGNAL);
+        if (n <= 0) {
+            if (n < 0 && errno == EINTR) {
+                continue;
+            }
+            return false;
+        }
+        p += n;
+        len -= n;
+    }
+    return true;
+}
+
+/* One barrier: say the time, wait to be let go, move the lines it names. */
+static bool clock_barrier(EspGuestClock *s, int64_t now)
+{
+    uint8_t frame[8];
+    uint32_t count;
+
+    stq_le_p(frame, (uint64_t)now);
+    if (!clock_send_all(s->fd, frame, sizeof(frame))
+        || !clock_read_all(s->fd, &count, sizeof(count))) {
+        return false;
+    }
+    count = le32_to_cpu(count);
+    for (uint32_t i = 0; i < count; i++) {
+        EspClockLine line;
+
+        if (!clock_read_all(s->fd, &line, sizeof(line))) {
+            return false;
+        }
+        if (i >= LINES_MAX || line.level == LINE_LEFT) {
+            continue;
+        }
+        esp_gpio_drive(NULL, le32_to_cpu(line.pin), line.level & 1);
+        esp_gpio_schedule(NULL, le32_to_cpu(line.pin), 1,
+                          line.rise_at_ns ? (int64_t)le64_to_cpu(line.rise_at_ns)
+                                          : -1);
+    }
+    return true;
+}
 
 static void clock_tick(void *opaque)
 {
@@ -46,6 +135,18 @@ static void clock_tick(void *opaque)
     ssize_t n;
 
     if (s->fd < 0) {
+        return;
+    }
+    if (s->quantum_ns) {
+        if (!clock_barrier(s, now)) {
+            warn_report("esp-guest-clock: the barrier's other end has gone; "
+                        "the clock stops");
+            close(s->fd);
+            s->fd = -1;
+            return;
+        }
+        s->ticks++;
+        timer_mod_ns(s->timer, now + (int64_t)s->quantum_ns);
         return;
     }
     stq_le_p(frame, (uint64_t)now);
@@ -100,6 +201,7 @@ static void clock_realize(DeviceState *dev, Error **errp)
 static Property clock_props[] = {
     DEFINE_PROP_STRING("socket", EspGuestClock, socket_path),
     DEFINE_PROP_UINT32("period_ms", EspGuestClock, period_ms, 10),
+    DEFINE_PROP_UINT64("quantum_ns", EspGuestClock, quantum_ns, 0),
     DEFINE_PROP_END_OF_LIST(),
 };
 

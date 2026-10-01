@@ -25,6 +25,12 @@ And it keeps the guest's time, not the host's (ADR 0112). Every segment says
 when the guest sent it; what the radio does by itself -- a packet's last bit,
 a sweep's end -- is a queue of events at guest times, which settle whenever
 the guest's time is next known to have passed them.
+
+On an air whose boards keep one time (ADR 0113), what others sent is judged
+at each barrier on that shared clock: against a history of this radio's modes
+with the exact times its segments gave, so a receiver that entered RX late,
+left it early or was transmitting is judged as it was, and a CAD sees what was
+on the air while it listened.
 """
 
 from __future__ import annotations
@@ -34,6 +40,7 @@ import itertools
 import logging
 import math
 import threading
+from typing import NamedTuple
 
 from emu.devices import lora
 from emu.spi_link import BUSY_HELD, SpiDevice
@@ -86,7 +93,7 @@ SET_REGULATOR_MODE = 0x96
 IRQ_TX_DONE = 0x0001
 IRQ_RX_DONE = 0x0002
 IRQ_CAD_DONE = 0x0080
-IRQ_CAD_DETECTED = 0x0040
+IRQ_CAD_DETECTED = 0x0100       # bit 8 (Table 8-4); 0x0040 is CrcErr
 
 # Chip modes, in the top nibble of the status byte.
 MODE_STANDBY_RC = 2
@@ -133,6 +140,30 @@ FALLBACK = {0x40: MODE_FS, 0x30: MODE_STANDBY_XOSC, 0x20: MODE_STANDBY_RC}
 # SetRx's timeout that means "stay in RX" (13.1.5); anything else receives one
 # packet and falls back.
 RX_CONTINUOUS = 0xFFFFFF
+# SetCadParams' exit mode (13.4.7): back to STBY_RC, or stay in RX on detection.
+CAD_ONLY, CAD_RX = 0x00, 0x01
+# A CAD in the mode history: listening, but not receiving (ADR 0113).
+MODE_CAD = -1
+# How long packets heard on a shared air are kept for a CAD to look back on.
+KEEP_HEARD_NS = 1_000_000_000
+
+
+def lock_symbols(spreading: int) -> int:
+    """Preamble symbols a receiver needs still to come to lock on, when it
+    enters RX after a packet has started. The datasheet gives none; this is
+    the figure the firmware's own library sizes a duty cycle by (RadioLib,
+    calculateRxDutyCycle): 8, or 12 at SF5 and SF6 (ADR 0113)."""
+    return 12 if spreading <= 6 else 8
+
+
+class Heard(NamedTuple):
+    """A packet on the air at this radio: when, from whom, how strong."""
+
+    start_ns: int
+    end_ns: int
+    sender: str
+    payload: bytes
+    arrived_dbm: float
 # SetDIO3AsTCXOCtrl's delay is in these units, and a switch out of STBY_RC
 # into a mode that needs the clock waits that long for it (13.3.6).
 TCXO_STEP_US = 15.625
@@ -175,6 +206,17 @@ class Sx1262(SpiDevice):
         self.clock = clock
         self._lock = threading.RLock()
         self._order = itertools.count()
+        # On a shared air (ADR 0113), the barrier judges what was heard, and
+        # pump() leaves the air alone.
+        self.timed = bool(getattr(air, "timed", False))
+        # This radio's modes, (since_ns, mode), and the packets on the air it
+        # has not yet decided about, or that a CAD may still look back on.
+        # Physics and record, not chip state: a reset keeps them.
+        self._history: list[tuple[int, int]] = []
+        self._candidates: list[Heard] = []
+        self._recent: list[Heard] = []
+        self.cut_off = 0
+        self.cad_detected = 0
         self.sent = 0
         self.heard = 0
         self.cad_sweeps = 0
@@ -217,7 +259,8 @@ class Sx1262(SpiDevice):
         self.registers = bytearray(REGISTER_SPACE)
         self.registers[VERSION_ADDRESS:VERSION_ADDRESS + len(VERSION_STRING)] = VERSION_STRING
         self.buffer = bytearray(BUFFER_SIZE)
-        self.mode = MODE_STANDBY_RC
+        self._receiving: Heard | None = None
+        self._set_mode(MODE_STANDBY_RC, self.now_ns)
         self.irq = 0
         self.irq_mask = 0
         self.packet_type = 0
@@ -246,6 +289,7 @@ class Sx1262(SpiDevice):
         self.fallback = MODE_STANDBY_RC
         self.rx_single = False
         self.cad_symbols: int | None = None
+        self.cad_exit = CAD_ONLY
         # A reception scheduled since the controller last asked about the
         # line, so one it cannot know to raise (ADR 0112).
         self._rx_untold = False
@@ -321,7 +365,21 @@ class Sx1262(SpiDevice):
         if us and self.mode == MODE_STANDBY_RC and self.tcxo_us:
             us += self.tcxo_us
         self._busy = (int(us * 1000), 0)
-        self.mode = to
+        # The status says the new mode at once; the chip is in it once BUSY
+        # falls, and that is when it can hear anything (8.3.1).
+        self._set_mode(to, self.now_ns + self._busy[0])
+
+    def _set_mode(self, mode: int, at_ns: int, history: int | None = None) -> None:
+        """Be in `mode` from `at_ns`, and keep the record ADR 0113 judges by.
+        Leaving RX part-way through a packet loses it."""
+        self.mode = mode
+        bisect.insort(self._history, (at_ns, mode if history is None else history))
+        held = mode if history is None else history
+        if (self._receiving is not None and held != MODE_RX
+                and at_ns < self._receiving.end_ns):
+            self._due = [due for due in self._due if due[2] != IRQ_RX_DONE]
+            self._receiving = None
+            self.cut_off += 1
 
     def guest_ns(self) -> int:
         """The latest guest time known: the last segment's, or the clock's
@@ -343,6 +401,8 @@ class Sx1262(SpiDevice):
         guest's clock, and a second, later write from here could only land
         after the host had cleared it.
         """
+        if self.timed:
+            return
         with self._lock:
             now_ns = self.guest_ns()
             if self.air is not None:
@@ -367,16 +427,19 @@ class Sx1262(SpiDevice):
                 # its fallback mode, if the host has not moved it (13.1.4).
                 self.tx_until_ns = 0
                 if self.mode == MODE_TX:
-                    self.mode = self.fallback
+                    self._set_mode(self.fallback, _at)
             elif flag == IRQ_RX_DONE and packet is not None:
-                self._received(*packet)
+                self._receiving = None
+                self._received(*packet, _at)
                 if self.rx_single and self.mode == MODE_RX:
-                    self.mode = self.fallback
+                    self._set_mode(self.fallback, _at)
+            elif flag == IRQ_CAD_DONE:
+                flag |= self._cad_done(_at, packet)
             self.irq |= flag
             raised |= flag
         return raised
 
-    def _received(self, payload: bytes, arrived: float) -> None:
+    def _received(self, payload: bytes, arrived: float, at_ns: int) -> None:
         payload = payload[:BUFFER_SIZE]
         for offset, value in enumerate(payload):
             self.buffer[(self.rx_base + offset) % BUFFER_SIZE] = value
@@ -385,9 +448,136 @@ class Sx1262(SpiDevice):
         self.last_snr_db = arrived - lora.noise_floor_dbm(self.bandwidth_code)
         self.heard += 1
         # One line per packet received: they are rare, and a reception is
-        # the event a mesh run waits for (ADR 0098).
-        log.info("sx1262: heard a %d-byte packet at %.1f dBm",
-                 len(payload), arrived)
+        # the event a mesh run waits for (ADR 0098). The guest's time makes
+        # two runs comparable (ADR 0113).
+        log.info("sx1262: heard a %d-byte packet at %.1f dBm at guest %.6f s",
+                 len(payload), arrived, at_ns / 1e9)
+
+    def _cad_done(self, at_ns: int, window: tuple | None) -> int:
+        """A sweep ends. On a shared air it detects any packet that overlapped
+        its symbols by a symbol or more -- "if LoRa symbols have been detected
+        during the CAD" (6.1.5) -- and the chip returns to STBY_RC, or stays
+        in RX on detection if told CAD_RX (13.1.8, 13.4.7). Without a shared
+        air there is nothing it could see, and ADR 0111 found that the mode
+        change alone loses packets, so it stays in RX as before."""
+        if not self.timed:
+            return 0
+        found = False
+        if window is not None:
+            start, end = window
+            symbol = int(lora.symbol_time(self.spreading, self.bandwidth_code) * 1e9)
+            found = any(min(p.end_ns, end) - max(p.start_ns, start) >= symbol
+                        for p in self._recent)
+        if found:
+            self.cad_detected += 1
+        self._set_mode(MODE_RX if found and self.cad_exit == CAD_RX
+                       else MODE_STANDBY_RC, at_ns)
+        return IRQ_CAD_DETECTED if found else 0
+
+    def _intake(self, frame: bytes, sender: str, start_ns: int | None) -> Heard | None:
+        """A frame off the air, as this radio would see it: None if it is on
+        another channel or too weak to decode, which are counted. It starts at
+        `start_ns`, or on a shared air at its sender's start (ADR 0113)."""
+        decoded = lora.decode(frame)
+        if decoded is None:
+            return None
+        if decoded.frequency != self.frequency:
+            # Tuned elsewhere. Nothing about being on the same air makes
+            # two radios on different channels hear each other.
+            self.wrong_frequency += 1
+            return None
+        # Whether it arrives strongly enough to be decoded at all. The
+        # distance is the scenario's, the rest is arithmetic (ADR 0038).
+        distance = math.dist(self.position, decoded.origin)
+        arrived = lora.received_dbm(
+            decoded.power_dbm, distance, lora.register_to_hz(decoded.frequency),
+            exponent=self.exponent,
+            transmit_gain_dbi=decoded.gain_dbi,
+            receive_gain_dbi=self.antenna_dbi,
+            shadowing_db=self.obstruction_db)
+        floor = lora.sensitivity_dbm(self.bandwidth_code, self.spreading)
+        if arrived < floor:
+            self.out_of_range += 1
+            log.debug("sx1262: %.1f dBm at %.0f m is under %.1f dBm",
+                      arrived, distance, floor)
+            return None
+        start = round(decoded.sent_at * 1e9) if start_ns is None else start_ns
+        return Heard(start, start + int(decoded.airtime * 1e9), sender,
+                     decoded.payload, arrived)
+
+    # -- a shared air (ADR 0113) --------------------------------------------
+
+    def barrier(self, ns: int, frames: list[tuple[str, bytes]]) -> tuple[int | None, int]:
+        """Every board on the air has reached guest time `ns`. Take what they
+        sent, judge what can now be judged, and say where DIO1 goes."""
+        with self._lock:
+            self.now_ns = max(self.now_ns, ns)
+            for sender, frame in frames:
+                heard = self._intake(frame, sender, None)
+                if heard is not None:
+                    self._candidates.append(heard)
+                    self._recent.append(heard)
+            self._candidates.sort()
+            self._settle(ns)
+            self._judge(ns)
+            self._settle(ns)
+            self._recent = [p for p in self._recent if p.end_ns >= ns - KEEP_HEARD_NS]
+            if self._candidates or self._receiving:
+                since = min([p.start_ns for p in self._candidates]
+                            + ([self._receiving.start_ns] if self._receiving else []))
+            else:
+                since = ns
+            keep = max(0, bisect.bisect_right(self._history, (since, 1 << 30)) - 1)
+            del self._history[:keep]
+            return self.line()
+
+    def _judge(self, now_ns: int) -> None:
+        """Decide every packet that started by `now_ns` and can be decided:
+        received if this radio was in RX at its start or entered RX while
+        enough preamble was still to come; otherwise deaf if it was
+        transmitting meanwhile, or not listening."""
+        undecided = []
+        for heard in self._candidates:
+            if heard.start_ns > now_ns:
+                undecided.append(heard)
+                continue
+            if ((self._receiving is not None and heard.start_ns < self._receiving.end_ns)
+                    or heard.start_ns < self.rx_until_ns):
+                # Two on top of each other is what a collision is, and
+                # neither survives it.
+                self.collisions += 1
+                self._due = [due for due in self._due if due[2] != IRQ_RX_DONE]
+                self._receiving = None
+                self.rx_until_ns = max(self.rx_until_ns, heard.end_ns)
+                self.received_length = 0
+                continue
+            symbol = lora.symbol_time(self.spreading, self.bandwidth_code)
+            spare = max(0.0, self.preamble + 4.25 - lock_symbols(self.spreading))
+            deadline = heard.start_ns + int(spare * symbol * 1e9)
+            locked = self._first(MODE_RX, heard.start_ns, min(now_ns, deadline))
+            if locked is not None:
+                self._receiving = heard
+                self.rx_until_ns = heard.end_ns
+                self._schedule(heard.end_ns, IRQ_RX_DONE,
+                               (heard.payload, heard.arrived_dbm))
+            elif now_ns >= deadline:
+                if self._first(MODE_TX, heard.start_ns, deadline) is not None:
+                    self.deaf += 1      # transmitting, and deaf while it does
+                else:
+                    self.not_listening += 1
+            else:
+                undecided.append(heard)
+        self._candidates = undecided
+
+    def _first(self, mode: int, start: int, end: int) -> int | None:
+        """The first time in [start, end] this radio was in `mode`."""
+        for index, (since, held) in enumerate(self._history):
+            until = (self._history[index + 1][0] if index + 1 < len(self._history)
+                     else end + 1)
+            if held != mode or until <= start or since > end:
+                continue
+            return max(since, start)
+        return None
 
     def _listen(self, now_ns: int) -> None:
         """Judge what has arrived off the air, on this board's own guest clock.
@@ -397,16 +587,8 @@ class Sx1262(SpiDevice):
         (ADR 0112).
         """
         for frame in self.air.poll():
-            decoded = lora.decode(frame)
-            if decoded is None:
-                continue
-            frequency, airtime = decoded.frequency, decoded.airtime
-            payload = decoded.payload
-
-            if frequency != self.frequency:
-                # Tuned elsewhere. Nothing about being on the same air makes
-                # two radios on different channels hear each other.
-                self.wrong_frequency += 1
+            heard = self._intake(frame, "", now_ns)
+            if heard is None:
                 continue
             if now_ns < self.tx_until_ns:
                 self.deaf += 1  # transmitting, and deaf while it does
@@ -414,34 +596,18 @@ class Sx1262(SpiDevice):
             if self.mode != MODE_RX:
                 self.not_listening += 1
                 continue
-
-            # Whether it arrives strongly enough to be decoded at all. The
-            # distance is the scenario's, the rest is arithmetic (ADR 0038).
-            distance = math.dist(self.position, decoded.origin)
-            arrived = lora.received_dbm(
-                decoded.power_dbm, distance, lora.register_to_hz(frequency),
-                exponent=self.exponent,
-                transmit_gain_dbi=decoded.gain_dbi,
-                receive_gain_dbi=self.antenna_dbi,
-                shadowing_db=self.obstruction_db)
-            floor = lora.sensitivity_dbm(self.bandwidth_code, self.spreading)
-            if arrived < floor:
-                self.out_of_range += 1
-                log.debug("sx1262: %.1f dBm at %.0f m is under %.1f dBm",
-                          arrived, distance, floor)
-                continue
-
-            ends = now_ns + int(airtime * 1e9)
             if now_ns < self.rx_until_ns:
                 # Another packet is still arriving. Two on top of each other
                 # is what a collision is, and neither survives it.
                 self.collisions += 1
-                self.rx_until_ns = max(self.rx_until_ns, ends)
+                self.rx_until_ns = max(self.rx_until_ns, heard.end_ns)
                 self._due = [due for due in self._due if due[2] != IRQ_RX_DONE]
+                self._receiving = None
                 self.received_length = 0
                 continue
-            self.rx_until_ns = ends
-            self._schedule(ends, IRQ_RX_DONE, (payload, arrived))
+            self.rx_until_ns = heard.end_ns
+            self._receiving = heard
+            self._schedule(heard.end_ns, IRQ_RX_DONE, (heard.payload, heard.arrived_dbm))
             self._rx_untold = True
 
     # -- what the host reads while it clocks --------------------------------
@@ -513,8 +679,8 @@ class Sx1262(SpiDevice):
                                       payload, self.transmit_dbm, *self.position,
                                       gain_dbi=self.antenna_dbi))
         self.sent += 1
-        log.debug("sx1262: transmitting %d bytes for %.0f ms",
-                  len(payload), duration * 1000)
+        log.info("sx1262: sent a %d-byte packet at guest %.6f s for %.3f ms",
+                 len(payload), start_ns / 1e9, duration * 1000)
 
     def _register(self, address: int) -> int:
         return self.registers[address] if address < REGISTER_SPACE else 0
@@ -542,7 +708,7 @@ class Sx1262(SpiDevice):
             # the select next falls (13.1.1, Table 8-2).
             self.sleep_warm = len(frame) > 1 and bool(frame[1] & SLEEP_WARM)
             self.asleep = True
-            self.mode = MODE_STANDBY_RC
+            self._set_mode(MODE_STANDBY_RC, self.now_ns)
             self._busy = (BUSY_HELD, (WAKE_WARM_US if self.sleep_warm
                                       else WAKE_COLD_US) * 1000)
         elif opcode == SET_FS:
@@ -561,14 +727,16 @@ class Sx1262(SpiDevice):
             # where both firmwares stopped. The sweep lasts its symbols and
             # half a symbol more (6.1.5); a host that never set them is
             # answered at once, as before.
-            self.mode = MODE_RX
+            self._set_mode(MODE_RX, self.now_ns, history=MODE_CAD)
             self.cad_sweeps += 1
-            symbols = (0.0 if self.cad_symbols is None
-                       else self.cad_symbols + CAD_POST_SYMBOLS)
-            self._schedule(self.now_ns + int(symbols * 1e9 * lora.symbol_time(
-                self.spreading, self.bandwidth_code)), IRQ_CAD_DONE)
+            symbol = lora.symbol_time(self.spreading, self.bandwidth_code) * 1e9
+            listens = 0 if self.cad_symbols is None else self.cad_symbols
+            post = 0.0 if self.cad_symbols is None else CAD_POST_SYMBOLS
+            self._schedule(self.now_ns + int((listens + post) * symbol), IRQ_CAD_DONE,
+                           (self.now_ns, self.now_ns + int(listens * symbol)))
         elif opcode == SET_CAD_PARAMS and len(frame) >= 2:
             self.cad_symbols = CAD_SYMBOLS.get(frame[1])
+            self.cad_exit = frame[4] if len(frame) >= 5 else CAD_ONLY
         elif opcode == SET_RX_TX_FALLBACK and len(frame) >= 2:
             self.fallback = FALLBACK.get(frame[1], MODE_STANDBY_RC)
         elif opcode == CALIBRATE:

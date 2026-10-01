@@ -52,4 +52,17 @@ void esp_gpio_drive(DeviceState *dev, unsigned pin, int level);
  */
 void esp_gpio_schedule(DeviceState *dev, unsigned pin, int level, int64_t at_ns);
 
+/*
+ * How long after the guest's own register access a device raises the
+ * interrupt that access caused. Raising it inside the access delivers it on
+ * the very next instruction, before the driver has finished the function
+ * that started the transfer, and that re-entry is a stack overflow in some
+ * unlucky task (esp_i2c_master.c). The devices used to defer it to a bottom
+ * half, which runs whenever the main loop next gets the lock: a host-dependent
+ * number of guest instructions later, which two runs of one board did not
+ * agree on (ADR 0113). This is the same deferral on the guest's clock: 10 us,
+ * about 2,500 instructions under -icount's 4 ns each.
+ */
+#define ESP_IRQ_DEFER_NS 10000
+
 #endif /* ESP_BOARD_GLUE_H */

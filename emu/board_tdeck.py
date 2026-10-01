@@ -29,7 +29,7 @@ from emu.devices.gps import L76K
 from emu.guest_clock import GuestClock
 from emu.devices.ledc import Ledc
 from emu.devices.lcd import St7789Panel
-from emu.devices.air import AirMedium
+from emu.devices.air import AirMedium, keep_time
 from emu.devices.es7210 import Es7210
 from emu.devices.sdcard import SdCard
 from emu.devices.spi_trace import SpiTrace
@@ -244,7 +244,8 @@ def build(outdir: Path, air: str | None = None, ble_air: str | None = None,
           antenna_dbi: float = 0.0, exponent: float = 2.0,
           obstruction_db: float = 0.0,
           gps: tuple[float, float, float] | None = None,
-          wifi_ap: tuple[str, int, int, bool, str, bool] | None = None) -> Board:
+          wifi_ap: tuple[str, int, int, bool, str, bool] | None = None,
+          air_boards: int = 0, air_quantum_ns: int = 1_000_000) -> Board:
     outdir = Path(outdir)
     panel = St7789Panel(outdir / "frames")
     gpio = GpioClient(outdir / "gpio.sock")
@@ -258,12 +259,19 @@ def build(outdir: Path, air: str | None = None, ble_air: str | None = None,
     # (ADR 0036); alone otherwise, which is a node with nobody in range.
     # The guest's clock, for parts that keep the board's time (ADR 0104): the
     # radio's, for what it hears off the air (ADR 0112).
-    clock = GuestClock(outdir / "clock.sock")
-    medium = AirMedium(air, outdir.name) if air else None
+    # On an air whose boards keep one time, the clock is the barrier that
+    # keeps it (ADR 0113).
+    clock = GuestClock(outdir / "clock.sock",
+                       quantum_ns=air_quantum_ns if air_boards else 0)
+    medium = AirMedium(air, outdir.name, timed=bool(air_boards)) if air else None
     radio = Sx1262(air=medium, position=position, antenna_dbi=antenna_dbi,
                    exponent=exponent, obstruction_db=obstruction_db,
                    signal=lambda level: gpio.drive(RADIO_DIO1_PIN, level, force=True),
                    clock=clock.seconds)
+    if medium is not None and air_boards:
+        # At each barrier: meet the other boards, judge what they sent, and
+        # put DIO1 where that leaves it, all at the same guest instant.
+        clock.on_barrier = keep_time(radio, medium, gpio, RADIO_DIO1_PIN, air_boards)
     # A card is in the slot, formatted and empty (ADR 0033). Its contents are
     # built here rather than shipped, and go no further than this run.
     sdcard = SdCard(sdimage.build(size_mb=SD_CARD_MB))
@@ -272,6 +280,10 @@ def build(outdir: Path, air: str | None = None, ble_air: str | None = None,
     # Discovered by watching the firmware probe: it looks for 0x14 and 0x5d
     # (touch), 0x55 (the keyboard) and 0x40 (the microphone codec).
     touch = GT911()          # its own portrait raster; see touch_point()
+    # Its line at rest, from the start rather than from the ticker's first
+    # pass: a timed air puts every level set by now in place at time zero
+    # (ADR 0113).
+    gpio.drive(TOUCH_INT_PIN, touch.int_level)
     keypad = TDeckKeyboard()
     codec = Es7210()         # the microphone codec the firmware probes for
     i2c0 = I2CServer(outdir / "i2c0.sock", [touch, keypad, codec], name="i2c0")

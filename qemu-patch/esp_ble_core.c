@@ -66,6 +66,7 @@
 #include "qemu/osdep.h"
 #include "qemu/error-report.h"
 #include "qemu/timer.h"
+#include "hw/misc/esp_board_glue.h"
 #include "qemu/main-loop.h"
 #include "qemu/log.h"
 #include "hw/qdev-properties.h"
@@ -240,7 +241,7 @@ struct EspBleCore {
     QEMUTimer *timer;
     qemu_irq irq_line;
     int irq_level;
-    QEMUBH *irq_bh;
+    QEMUTimer *irq_timer;          /* the deferred interrupt (ESP_IRQ_DEFER_NS) */
 };
 
 /* -- time ---------------------------------------------------------------- */
@@ -275,7 +276,7 @@ static int64_t ble_due(EspBleCore *s, uint32_t bit)
 
 /* -- the line ------------------------------------------------------------ */
 
-static void ble_irq_bh(void *opaque)
+static void ble_irq_due(void *opaque)
 {
     EspBleCore *s = opaque;
     int level = ((s->raw & s->regs[R_INTCNTL / 4]) || s->fifo_len) ? 1 : 0;
@@ -287,13 +288,14 @@ static void ble_irq_bh(void *opaque)
     qemu_set_irq(s->irq_line, level);
 }
 
-/* Deferred to a bottom half for the same reason as the I2C master's: raising
- * the line inside the guest's own write would deliver the interrupt on the
- * next instruction, before the setter has finished. */
+/* Deferred for the same reason as the I2C master's: raising the line inside
+ * the guest's own write would deliver the interrupt on the next instruction,
+ * before the setter has finished. On the guest's clock (ADR 0113). */
 static void ble_update_irq(EspBleCore *s)
 {
-    if (s->irq_bh) {
-        qemu_bh_schedule(s->irq_bh);
+    if (s->irq_timer && !timer_pending(s->irq_timer)) {
+        timer_mod_ns(s->irq_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL)
+                                   + ESP_IRQ_DEFER_NS);
     }
 }
 
@@ -1015,7 +1017,7 @@ static void ble_realize(DeviceState *dev, Error **errp)
             return;
         }
         s->irq_line = qdev_get_gpio_in(DEVICE(intc), s->irq_source);
-        s->irq_bh = qemu_bh_new(ble_irq_bh, s);
+        s->irq_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, ble_irq_due, s);
     }
     s->timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, ble_expire, s);
     s->event_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, ble_event_done, s);

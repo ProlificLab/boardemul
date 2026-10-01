@@ -118,3 +118,4 @@ superseded ADR is marked superseded and points forward.
 | [0110](0110-the-access-point-has-one-channel.md) | The access point has one channel | Accepted (supersedes 0057 decision 2) |
 | [0111](0111-the-radio-says-when-it-is-busy.md) | The radio says when it is busy | Accepted (closes 0106 item 7; supersedes 0102 decision 2) |
 | [0112](0112-the-radio-keeps-the-guests-time.md) | The radio keeps the guest's time | Accepted (moves 0037's timing onto the guest clock) |
+| [0113](0113-boards-on-one-air-keep-one-time.md) | Boards on one air keep one time | Accepted (finishes 0112; closes 0111's last cost) |

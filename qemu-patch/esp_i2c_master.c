@@ -28,6 +28,7 @@
 #include "qom/object.h"
 #include "qemu/main-loop.h"
 #include "hw/misc/esp_board_glue.h"
+#include "qemu/timer.h"
 
 #include <sys/socket.h>
 #include <sys/un.h>
@@ -122,7 +123,7 @@ struct EspI2cMaster {
 
     qemu_irq irq_line;
     int irq_level;
-    QEMUBH *irq_bh;
+    QEMUTimer *irq_timer;          /* the deferred interrupt (ESP_IRQ_DEFER_NS) */
     int fd;
     bool broken;
 };
@@ -172,7 +173,7 @@ static void i2c_fail(EspI2cMaster *s, const char *what)
     }
 }
 
-static void i2c_irq_bh(void *opaque)
+static void i2c_irq_due(void *opaque)
 {
     EspI2cMaster *s = opaque;
     int level = (s->int_raw & s->regs[R_INT_ENA / 4]) ? 1 : 0;
@@ -184,18 +185,20 @@ static void i2c_irq_bh(void *opaque)
     qemu_set_irq(s->irq_line, level);
 }
 
-/* Deferred to a bottom half rather than raised from inside the MMIO handler.
+/* Deferred rather than raised from inside the MMIO handler.
  *
  * A transaction completes during the guest's own write to CTR, so raising the
  * line there delivers the interrupt on the very next instruction -- before the
  * driver has finished the function that started the transfer. That re-enters
  * it, and the recursion shows up as a stack-canary trip in whichever task was
- * unlucky, nowhere near the I2C code. The bottom half runs once the current
- * access is done. */
+ * unlucky, nowhere near the I2C code. It was a bottom half; it is now a fixed
+ * delay on the guest's clock, so the instruction it lands on does not depend
+ * on the host (ESP_IRQ_DEFER_NS, ADR 0113). */
 static void i2c_update_irq(EspI2cMaster *s)
 {
-    if (s->irq_bh) {
-        qemu_bh_schedule(s->irq_bh);
+    if (s->irq_timer && !timer_pending(s->irq_timer)) {
+        timer_mod_ns(s->irq_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL)
+                                   + ESP_IRQ_DEFER_NS);
     }
 }
 
@@ -471,7 +474,7 @@ static void i2c_realize(DeviceState *dev, Error **errp)
             return;
         }
         s->irq_line = qdev_get_gpio_in(DEVICE(intc), s->irq_source);
-        s->irq_bh = qemu_bh_new(i2c_irq_bh, s);
+        s->irq_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, i2c_irq_due, s);
     }
 
     s->fd = socket(AF_UNIX, SOCK_STREAM, 0);

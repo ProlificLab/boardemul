@@ -26,6 +26,7 @@
 #include "qemu/osdep.h"
 #include "qemu/error-report.h"
 #include "qemu/timer.h"
+#include "hw/misc/esp_board_glue.h"
 #include "qemu/main-loop.h"
 #include "qemu/log.h"
 #include "hw/qdev-properties.h"
@@ -95,7 +96,7 @@ struct EspUsbSerialJtag {
 
     qemu_irq irq_line;
     int irq_level;
-    QEMUBH *irq_bh;
+    QEMUTimer *irq_timer;          /* the deferred interrupt (ESP_IRQ_DEFER_NS) */
     QEMUTimer *host_timer;      /* the host taking a flushed IN packet */
     QEMUTimer *sof_timer;
 
@@ -113,7 +114,7 @@ struct EspUsbSerialJtag {
 
 /* -- the line ------------------------------------------------------------ */
 
-static void usj_irq_bh(void *opaque)
+static void usj_irq_due(void *opaque)
 {
     EspUsbSerialJtag *s = opaque;
     int level = (s->raw & s->ena) ? 1 : 0;
@@ -126,15 +127,17 @@ static void usj_irq_bh(void *opaque)
 }
 
 /* Deferred as the other devices' are (esp_ble_core.c): raising the line
- * inside the guest's own write would deliver it before the setter is done. */
+ * inside the guest's own write would deliver it before the setter is done.
+ * On the guest's clock (ADR 0113). */
 static void usj_update(EspUsbSerialJtag *s)
 {
     /* Level, not latched: an empty IN FIFO keeps asking to be filled. */
     if (!s->in_len && !s->in_flushed) {
         s->raw |= INT_SERIAL_IN_EMPTY;
     }
-    if (s->irq_bh) {
-        qemu_bh_schedule(s->irq_bh);
+    if (s->irq_timer && !timer_pending(s->irq_timer)) {
+        timer_mod_ns(s->irq_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL)
+                                   + ESP_IRQ_DEFER_NS);
     }
 }
 
@@ -385,7 +388,7 @@ static void usj_realize(DeviceState *dev, Error **errp)
             return;
         }
         s->irq_line = qdev_get_gpio_in(DEVICE(intc), s->irq_source);
-        s->irq_bh = qemu_bh_new(usj_irq_bh, s);
+        s->irq_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, usj_irq_due, s);
     }
     s->host_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, usj_host_takes, s);
     s->sof_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, usj_sof, s);

@@ -24,7 +24,7 @@ from emu.serial_link import SerialServer
 from emu.devices.epaper import EPaperPanel
 from emu.devices.i2c_devices import CST328, TCA8418, tdeck_max_devices
 from emu import sdimage
-from emu.devices.air import AirMedium
+from emu.devices.air import AirMedium, keep_time
 from emu.devices.gps import UBloxM10
 from emu.devices.ledc import Ledc
 from emu.devices.modem import A7682E
@@ -223,7 +223,8 @@ def build(outdir: Path, air: str | None = None, ble_air: str | None = None,
           antenna_dbi: float = 0.0, exponent: float = 2.0,
           obstruction_db: float = 0.0,
           gps: tuple[float, float, float] | None = None,
-          wifi_ap: tuple[str, int, int, bool, str, bool] | None = None) -> Board:
+          wifi_ap: tuple[str, int, int, bool, str, bool] | None = None,
+          air_boards: int = 0, air_quantum_ns: int = 1_000_000) -> Board:
     """`ble_air` and `wifi_ap` are accepted and do nothing here: this board has
     a radio but no Bluetooth controller and no WiFi MAC modelled, so there is no
     part for either to reach. Every board takes the same arguments on purpose --
@@ -242,15 +243,22 @@ def build(outdir: Path, air: str | None = None, ble_air: str | None = None,
     gpio = GpioClient(outdir / "gpio.sock")
     # The guest's clock, for parts that keep the board's time (ADR 0104): the
     # radio's, for what it hears off the air (ADR 0112).
-    clock = GuestClock(outdir / "clock.sock")
+    # On an air whose boards keep one time, the clock is the barrier that
+    # keeps it (ADR 0113).
+    clock = GuestClock(outdir / "clock.sock",
+                       quantum_ns=air_quantum_ns if air_boards else 0)
     # The same three-part bus as the other board (ADR 0032), and for the same
     # reason: with one chip select forwarded the card and the radio were not
     # unmodelled but unreachable.
-    medium = AirMedium(air, outdir.name) if air else None
+    medium = AirMedium(air, outdir.name, timed=bool(air_boards)) if air else None
     radio = Sx1262(air=medium, position=position, antenna_dbi=antenna_dbi,
                    exponent=exponent, obstruction_db=obstruction_db,
                    signal=lambda level: gpio.drive(RADIO_DIO1_PIN, level, force=True),
                    clock=clock.seconds)
+    if medium is not None and air_boards:
+        # At each barrier: meet the other boards, judge what they sent, and
+        # put DIO1 where that leaves it, all at the same guest instant.
+        clock.on_barrier = keep_time(radio, medium, gpio, RADIO_DIO1_PIN, air_boards)
     sdcard = SdCard(sdimage.build(size_mb=SD_CARD_MB))
     spi = SpiServer(outdir / "spi2.sock",
                     {SPI_DISPLAY: panel, SPI_RADIO: radio, SPI_SDCARD: sdcard})

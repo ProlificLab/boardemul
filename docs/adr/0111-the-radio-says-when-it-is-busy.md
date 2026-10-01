@@ -144,8 +144,9 @@ The datasheet gives no time for these:
   chip still stays in the mode it was in rather than dropping to its fallback
   mode. RadioLib calls `standby()` after both (`finishTransmit`,
   `finishReceive`), so no switch time it sees depends on this.
-- After a CAD the chip is still left in RX, though the datasheet returns it to
-  STBY_RC once a sweep finds nothing (13.4.7). That makes the transmission
+- *(Closed by ADR 0113, on a timed air.)* After a CAD the chip is still left
+  in RX, though the datasheet returns it to STBY_RC once a sweep finds
+  nothing (13.4.7). That makes the transmission
   Meshtastic starts straight after its listen-before-talk an RX-to-TX switch
   (92 µs) rather than STBY_RC-to-TX (126 µs plus the TCXO). Correcting only
   the mode was tried, and it made the two-node mesh lose packets:

@@ -299,6 +299,13 @@ def main(argv: list[str] | None = None) -> int:
                     help="share a directory so this board's Bluetooth can be "
                          "heard by others; a different band from --air, so a "
                          "different directory (ADR 0045)")
+    ap.add_argument("--air-boards", type=int, default=0, metavar="N",
+                    help="the boards on --air keep one time: N of them, this one "
+                         "included, advancing together a quantum at a time "
+                         "(ADR 0113). Needs --icount")
+    ap.add_argument("--air-quantum-us", type=int, default=1000, metavar="US",
+                    help="how far a timed air's boards run between meeting, in "
+                         "microseconds of guest time (default 1000)")
     ap.add_argument("--icount", action="store_true",
                     help="drive the guest clock from executed instructions (ADR 0027): "
                          "exact timer delivery and deterministic runs; the Bluetooth "
@@ -344,7 +351,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.icount:
         # 2^2 ns per instruction, 250 MIPS nominal; the vCPU sleeps when the
         # guest idles. Instruction counting requires the single thread above.
-        cmd += ["-icount", "shift=2,sleep=on"]
+        # On a timed air it does not sleep: an idle guest's clock jumps to its
+        # next deadline instead of following the host's, which is what QEMU
+        # documents as deterministic -- and determinism is what a shared air
+        # is for (ADR 0113).
+        cmd += ["-icount", "shift=2,sleep=" + ("off" if args.air_boards else "on")]
 
     # Everything a board provides needs --bus, because without it no board is
     # built at all: no Python devices, no WiFi MAC, nothing on any bus. A run
@@ -358,6 +369,19 @@ def main(argv: list[str] | None = None) -> int:
     if given and not args.bus:
         raise SystemExit(", ".join(given) + " needs --bus: without it no board "
                          "is built, so nothing would answer")
+
+    if args.air_boards:
+        # A barrier stops the guest's time only when the vCPU runs the clock's
+        # timer itself, which is what -icount does (ADR 0113). Without it the
+        # guest would run on while its board waited.
+        if not args.air:
+            raise SystemExit("--air-boards says how many boards share --air; "
+                             "give the directory too")
+        if not args.icount:
+            raise SystemExit("--air-boards needs --icount: only an "
+                             "instruction-counted clock stops at a barrier")
+        if args.air_quantum_us <= 0:
+            raise SystemExit("--air-quantum-us must be positive")
 
     access_point: tuple[str, int, int, bool, str, bool] | None = None
     if args.wifi_uplink and not args.wifi_ap:
@@ -420,7 +444,9 @@ def main(argv: list[str] | None = None) -> int:
         hw = hw_module.build(args.outdir, air=args.air, ble_air=args.ble_air,
                              position=where, antenna_dbi=args.antenna,
                              exponent=exponent, obstruction_db=args.obstruction,
-                             gps=fix, wifi_ap=access_point)
+                             gps=fix, wifi_ap=access_point,
+                             air_boards=args.air_boards,
+                             air_quantum_ns=args.air_quantum_us * 1000)
         hw.start()
         server = BusServer(args.outdir / f"{tag}.bus.sock", hw.regions)
         irq = IrqChannel(args.outdir / f"{tag}.irq.sock")
@@ -479,6 +505,9 @@ def main(argv: list[str] | None = None) -> int:
                     "wrong_frequency": getattr(device, "wrong_frequency", 0),
                     "deaf": getattr(device, "deaf", 0),
                     "not_listening": getattr(device, "not_listening", 0),
+                    "cut_off": getattr(device, "cut_off", 0),
+                    "cad_sweeps": getattr(device, "cad_sweeps", 0),
+                    "cad_detected": getattr(device, "cad_detected", 0),
                 }
         # Every claimed window and what the firmware did with it. The run
         # already prints the busiest few; keeping the whole list in the record
