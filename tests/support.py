@@ -216,6 +216,9 @@ class Run:
     outdir: Path
     frames: list[Path] = field(default_factory=list)
     uart: str = ""
+    # What the host on the chip's USB serial port received (ADR 0100). A
+    # firmware whose Serial is that port says almost nothing on the UART.
+    usb: str = ""
 
     def digests(self) -> list[str]:
         return [region_digest(f) for f in self.frames]
@@ -225,6 +228,16 @@ def _uart(outdir: Path) -> str:
     """Whatever the guest has said so far. Read again each time: a run being
     waited on is still writing to it."""
     for log in outdir.glob("*.uart.log"):
+        try:
+            return log.read_text(errors="replace")
+        except OSError:
+            return ""
+    return ""
+
+
+def usb_text(outdir: Path) -> str:
+    """What the host on the USB serial port has received so far."""
+    for log in outdir.glob("*.usb.log"):
         try:
             return log.read_text(errors="replace")
         except OSError:
@@ -316,4 +329,5 @@ def run_emulator(outdir: Path, *, firmware: Path = FIRMWARE,
             except subprocess.TimeoutExpired:
                 proc.kill()
 
-    return Run(outdir=outdir, frames=_frames(outdir), uart=_uart(outdir))
+    return Run(outdir=outdir, frames=_frames(outdir), uart=_uart(outdir),
+               usb=usb_text(outdir))

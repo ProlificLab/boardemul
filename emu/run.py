@@ -63,6 +63,10 @@ class RunResult:
     stderr_log_path: str
     traced: bool
     seed: int = RNG_SEED
+    # The chip's USB serial port, as the host on the other end received it
+    # (ADR 0100). A firmware whose Serial is that port says nothing on the UART.
+    usb_bytes: int = 0
+    usb_path: str = ""
     rtc_base: str = RTC_BASE
     strap_mode: int = STRAP_MODE
     notes: list[str] = field(default_factory=list)
@@ -121,7 +125,7 @@ def build_images(firmware: Path, outdir: Path, mac: str, overlays: list[str] = (
 def build_argv(qemu: Path, flash: Path, efuse: Path, uart: Path,
                qemu_log: Path, traced: bool, psram_mb: int,
                psram_octal: bool = False, seed: int = RNG_SEED,
-               reboot: bool = False) -> list[str]:
+               reboot: bool = False, usb: Path | None = None) -> list[str]:
     debug = ["unimp", "guest_errors"]
     # Escape hatch for one-off investigations (in_asm, exec, int...). Not a
     # supported interface; the supported one is --trace.
@@ -133,6 +137,12 @@ def build_argv(qemu: Path, flash: Path, efuse: Path, uart: Path,
     passthrough = os.environ.get("BOARDEMUL_QEMU_ARGS", "").split()
     if traced:
         debug += [f"trace:{e}" for e in TRACE_EVENTS]
+    # The chip's USB serial port, with a host listening on it (ADR 0100). It is
+    # silicon, so it is there on every board; what the host hears goes to a file
+    # beside the UART's when the run names one.
+    usb_port = (["-chardev", f"file,id=usbjtag,path={usb}",
+                 "-device", "esp-usb-serial-jtag,chardev=usbjtag"]
+                if usb is not None else ["-device", "esp-usb-serial-jtag"])
     return [
         str(qemu),
         "-machine", "esp32s3",
@@ -150,21 +160,26 @@ def build_argv(qemu: Path, flash: Path, efuse: Path, uart: Path,
         "-seed", str(seed),
         "-d", ",".join(debug),
         "-D", str(qemu_log),
-    ] + passthrough
+    ] + usb_port + passthrough
 
 
 def run_qemu(argv: list[str], uart: Path, stderr_log: Path, timeout: float,
-             stall: float, server: "BusServer | None" = None) -> tuple[str, float]:
+             stall: float, server: "BusServer | None" = None,
+             usb: Path | None = None) -> tuple[str, float]:
     """Returns (exit_reason, wall_seconds).
 
     The guest will not exit on its own once it starts polling a register that
     never changes, so both a stall watchdog and a hard timeout are required.
 
-    Liveness is UART output *or* bus traffic. Firmware that draws to a screen
+    Liveness is serial output *or* bus traffic. Firmware that draws to a screen
     can be perfectly healthy while saying nothing at all on the serial port, and
-    judging it by UART alone cuts the run off mid-picture.
+    judging it by UART alone cuts the run off mid-picture. Serial output is the
+    UART's and the USB port's together: a firmware whose Serial is the USB port
+    says nothing on the UART after the ROM's lines (ADR 0100).
     """
     uart.write_bytes(b"")
+    if usb is not None:
+        usb.write_bytes(b"")
     started = time.monotonic()
     # QEMU's own reports (error_report, a debug build's info_report) go to
     # stderr. A pipe nobody drains fills at 64 KB and then blocks QEMU on the
@@ -186,7 +201,8 @@ def run_qemu(argv: list[str], uart: Path, stderr_log: Path, timeout: float,
             now = time.monotonic()
             if now - started > timeout:
                 return "hard timeout", now - started
-            size = uart.stat().st_size if uart.exists() else 0
+            size = sum(p.stat().st_size for p in (uart, usb)
+                       if p is not None and p.exists())
             bus_n = server.accesses if server else 0
             if size != last_size or bus_n != last_bus:
                 last_size, last_bus, last_change = size, bus_n, now
@@ -304,12 +320,13 @@ def main(argv: list[str] | None = None) -> int:
     flash, efuse = build_images(args.firmware, args.builddir / args.firmware.stem, args.mac, args.overlay)
 
     uart = args.outdir / f"{tag}.uart.log"
+    usb = args.outdir / f"{tag}.usb.log"
     qlog = args.outdir / f"{tag}.qemu.log"
     elog = args.outdir / f"{tag}.stderr.log"
     seed = rng_seed(args.mac)
     cmd = build_argv(qemu, flash, efuse, uart, qlog, args.trace, args.psram,
                      psram_octal=args.psram_octal, seed=seed,
-                     reboot=args.reboot)
+                     reboot=args.reboot, usb=usb)
 
     hw_module = {"tdeck-max": board, "tdeck": board_tdeck}[args.board]
     # SoC-level, so it applies with or without --bus: these describe the chip
@@ -426,10 +443,12 @@ def main(argv: list[str] | None = None) -> int:
     if hw_module.SOC_DEVICES:
         print(f"soc     : {', '.join(hw_module.SOC_DEVICES)}")
     print(f"uart    : {uart}")
+    print(f"usb     : {usb}")
     started = time.monotonic()
     interrupted = False
     try:
-        reason, wall = run_qemu(cmd, uart, elog, args.timeout, args.stall, server)
+        reason, wall = run_qemu(cmd, uart, elog, args.timeout, args.stall, server,
+                                usb=usb)
     except KeyboardInterrupt:
         # Stopped from outside, which is a normal way for a run to end when
         # something is watching it and has seen enough. The manifest is the
@@ -490,6 +509,8 @@ def main(argv: list[str] | None = None) -> int:
         wall_seconds=round(wall, 2),
         uart_bytes=uart.stat().st_size if uart.exists() else 0,
         uart_path=str(uart),
+        usb_bytes=usb.stat().st_size if usb.exists() else 0,
+        usb_path=str(usb),
         qemu_log_path=str(qlog),
         stderr_log_path=str(elog),
         traced=args.trace,
@@ -503,7 +524,8 @@ def main(argv: list[str] | None = None) -> int:
     manifest = args.outdir / f"{tag}.manifest.json"
     manifest.write_text(json.dumps(asdict(result), indent=2))
 
-    print(f"result  : {reason} after {wall:.1f}s, {result.uart_bytes} bytes of UART")
+    print(f"result  : {reason} after {wall:.1f}s, {result.uart_bytes} bytes of UART, "
+          f"{result.usb_bytes} of USB")
     print(f"manifest: {manifest}\n")
     if interrupted:
         return 0
@@ -511,6 +533,11 @@ def main(argv: list[str] | None = None) -> int:
         print("--- last UART lines " + "-" * 40)
         tail = uart.read_text(errors="replace").splitlines()[-12:]
         for line in tail:
+            print("  " + line)
+        print("-" * 60)
+    if usb.exists() and result.usb_bytes:
+        print("--- last USB lines " + "-" * 41)
+        for line in usb.read_text(errors="replace").splitlines()[-12:]:
             print("  " + line)
         print("-" * 60)
     return 0
