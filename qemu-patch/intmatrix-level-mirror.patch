@@ -1,0 +1,108 @@
+diff --git a/hw/xtensa/esp32s3_intc.c b/hw/xtensa/esp32s3_intc.c
+--- a/hw/xtensa/esp32s3_intc.c
++++ b/hw/xtensa/esp32s3_intc.c
+@@ -26,20 +26,46 @@
+ 
+ #define IRQ_MAP(cpu, input) s->irq_map[cpu][input]
+ 
++/* Drive one CPU line from the OR of the inputs mapped to it, and only when
++ * that OR changes: some CPU interrupts are edge-triggered, and setting one
++ * that is already high would latch an edge the chip's OR gate never makes. */
++static void esp32s3_intmatrix_update_line(Esp32s3IntMatrixState *s, int cpu, int out_index)
++{
++    int level = 0;
++
++    if (s->outputs[cpu] == NULL || out_index < 0 || out_index >= 32) {
++        return;
++    }
++    for (int n = 0; n < ESP32S3_INT_MATRIX_INPUTS && !level; ++n) {
++        level = IRQ_MAP(cpu, n) == out_index && test_bit(n, s->input_levels);
++    }
++    if (level == test_bit(out_index, s->line_levels[cpu])) {
++        return;
++    }
++    if (level) {
++        set_bit(out_index, s->line_levels[cpu]);
++    } else {
++        clear_bit(out_index, s->line_levels[cpu]);
++    }
++    for (int int_index = 0; int_index < s->cpu[cpu]->env.config->nextint; ++int_index) {
++        if (s->cpu[cpu]->env.config->extint[int_index] == out_index) {
++            qemu_set_irq(s->outputs[cpu][int_index], level);
++            break;
++        }
++    }
++}
++
+ static void esp32s3_intmatrix_irq_handler(void *opaque, int n, int level)
+ {
+     Esp32s3IntMatrixState *s = ESP32S3_INTMATRIX(opaque);
++
++    if (level) {
++        set_bit(n, s->input_levels);
++    } else {
++        clear_bit(n, s->input_levels);
++    }
+     for (int i = 0; i < ESP32S3_CPU_COUNT; ++i) {
+-        if (s->outputs[i] == NULL) {
+-            continue;
+-        }
+-        int out_index = IRQ_MAP(i, n);
+-        for (int int_index = 0; int_index < s->cpu[i]->env.config->nextint; ++int_index) {
+-            if (s->cpu[i]->env.config->extint[int_index] == out_index) {
+-                qemu_set_irq(s->outputs[i][int_index], level);
+-                break;
+-            }
+-        }
++        esp32s3_intmatrix_update_line(s, i, IRQ_MAP(i, n));
+     }
+ }
+ 
+@@ -72,7 +98,14 @@
+     Esp32s3IntMatrixState *s = ESP32S3_INTMATRIX(opaque);
+     uint8_t* map_entry = get_map_entry(s, addr);
+     if (map_entry != NULL) {
++        int cpu = (addr / sizeof(uint32_t)) / ESP32S3_INT_MATRIX_INPUTS;
++        int old_index = *map_entry;
++
+         *map_entry = value & 0x1f;
++        /* A source already asserted when it is routed reaches its new line,
++         * and the line it left is recomputed without it. */
++        esp32s3_intmatrix_update_line(s, cpu, old_index);
++        esp32s3_intmatrix_update_line(s, cpu, *map_entry);
+     }
+ }
+ 
+@@ -86,7 +119,10 @@
+ {
+     Esp32s3IntMatrixState *s = ESP32S3_INTMATRIX(obj);
+     memset(s->irq_map, INTMATRIX_UNINT_VALUE, sizeof(s->irq_map));
++    /* The map is cleared and the lines with it. The inputs are wires from
++     * other devices and keep their level: input_levels is left alone. */
+     for (int i = 0; i < ESP32S3_CPU_COUNT; ++i) {
++        bitmap_zero(s->line_levels[i], 32);
+         if (s->outputs[i] == NULL) {
+             continue;
+         }
+diff --git a/include/hw/xtensa/esp32s3_intc.h b/include/hw/xtensa/esp32s3_intc.h
+--- a/include/hw/xtensa/esp32s3_intc.h
++++ b/include/hw/xtensa/esp32s3_intc.h
+@@ -21,6 +21,7 @@
+ #include "target/xtensa/cpu.h"
+ #include "target/xtensa/cpu-qom.h"
+ #include "hw/misc/esp32s3_reg.h"
++#include "qemu/bitmap.h"
+ 
+ 
+ typedef enum {
+@@ -142,6 +143,10 @@
+     MemoryRegion iomem;
+     qemu_irq *outputs[ESP32S3_CPU_COUNT];
+     uint8_t irq_map[ESP32S3_CPU_COUNT][ESP32S3_INT_MATRIX_INPUTS];
++    /* The level of every input, routed or not, and of every CPU line. A line
++     * is the OR of the inputs mapped to it, as on the chip. */
++    DECLARE_BITMAP(input_levels, ESP32S3_INT_MATRIX_INPUTS);
++    DECLARE_BITMAP(line_levels[ESP32S3_CPU_COUNT], 32);
+ 
+     /* properties */
+     XtensaCPU *cpu[ESP32S3_CPU_COUNT];

@@ -84,7 +84,8 @@ fi
 echo "==> installing BoardEmul sources"
 cp "${REPO_ROOT}/qemu-patch/esp_board_glue.h" "${SRC}/include/hw/misc/"
 MESON_FILE="${SRC}/hw/misc/meson.build"
-for f in esp_bus_bridge esp_gpio_block esp_spi_master esp_i2c_master esp_i2s_master esp_ble_core esp_wifi_mac \n         esp_usb_serial_jtag; do
+for f in esp_bus_bridge esp_gpio_block esp_spi_master esp_i2c_master esp_i2s_master esp_ble_core esp_wifi_mac \
+         esp_usb_serial_jtag; do
     cp "${REPO_ROOT}/qemu-patch/${f}.c" "${SRC}/hw/misc/${f}.c"
     if ! grep -qF "${f}.c" "${MESON_FILE}"; then
         echo "system_ss.add(files('${f}.c'))" >> "${MESON_FILE}"
@@ -112,13 +113,15 @@ fi
 #   system-bt-lpck-regs.patch ADR 0023  issue 171, offered as PR 178
 #   tlb-flush-owning-thread.patch ADR 0066  issue 175, offered as PR 179
 #   gdma-reaches-psram.patch      ADR 0083  issue 180, offered as PR 181
+#   intmatrix-level-mirror.patch  ADR 0101  not yet reported
 # Each PR is the same diff as the patch beside it, against esp-develop, from
 # github.com/ProlificLab/qemu. When one is merged and the pinned tag moves past
 # it, delete the patch and supersede its ADR rather than carrying it on.
 # Applied from patch files rather than by hand so that they are declared,
 # reviewed like anything else, and fail loudly if a tag bump moves the code.
 for name in gdma-out-eof-desc.patch spi1-dummy-lanes.patch system-bt-lpck-regs.patch \
-            tlb-flush-owning-thread.patch gdma-reaches-psram.patch; do
+            tlb-flush-owning-thread.patch gdma-reaches-psram.patch \
+            intmatrix-level-mirror.patch; do
     PATCH="${REPO_ROOT}/qemu-patch/${name}"
     if git -C "${SRC}" apply --reverse --check "${PATCH}" 2>/dev/null; then
         echo "==> ${name} already applied"
