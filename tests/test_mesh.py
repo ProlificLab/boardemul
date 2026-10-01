@@ -51,6 +51,8 @@ RUN_SECONDS = 300
 # in the middle of answering.
 GRACE_SECONDS = 2
 RECEIVED = "sx1262: heard a"
+# The ROM prints this once per boot, with the reset cause after it.
+BOOT_BANNER = "rst:0x"
 
 
 @pytest.fixture(scope="module")
@@ -71,11 +73,15 @@ def configured_filesystem() -> Path:
 
 
 def _launch(node: str, work: Path, air: Path, mac: str, overlay: Path):
+    """One node, allowed to reboot. Its firmware can overflow ipc1's stack
+    while installing the radio's interrupt, and then panics and resets, as a
+    T-Deck does; the board comes back, and the mesh is judged on what it does
+    after (ADR 0099). How often each node booted is reported, not hidden."""
     outdir = work / node
     (outdir / "build").mkdir(parents=True, exist_ok=True)
     return subprocess.Popen(
         [sys.executable, "emu/run.py", str(FIRMWARE_MESHTASTIC),
-         "--board", "tdeck", "--bus", "--psram-octal",
+         "--board", "tdeck", "--bus", "--psram-octal", "--reboot",
          "--air", str(air), "--mac", mac,
          "--builddir", str(outdir / "build"),
          "--overlay", f"0x{OVERLAY_AT:x}={overlay}",
@@ -139,6 +145,8 @@ def two_nodes(tmp_path_factory, configured_filesystem: Path) -> dict[str, dict]:
             if len(senders) >= len(nodes) and _a_node_received(work, nodes):
                 time.sleep(GRACE_SECONDS)
                 break
+            # With --reboot a node's reset does not end its run, so this is
+            # only a crash inside QEMU or a run that hit its own ceiling.
             if all(p.poll() is not None for p in running.values()):
                 break
             time.sleep(1)
@@ -152,20 +160,25 @@ def two_nodes(tmp_path_factory, configured_filesystem: Path) -> dict[str, dict]:
                 except subprocess.TimeoutExpired:
                     proc.kill()
 
-    radios = {}
+    radios, boots = {}, {}
     for name in nodes:
         manifest = work / name / f"{name}.manifest.json"
         if not manifest.exists():
             pytest.fail(f"node {name} left no manifest")
         radios[name] = json.loads(manifest.read_text()).get("radio", {})
-    return {"radios": radios, "senders": senders}
+        uart = work / name / f"{name}.uart.log"
+        boots[name] = (uart.read_text(errors="replace").count(BOOT_BANNER)
+                       if uart.exists() else 0)
+    return {"radios": radios, "senders": senders, "boots": boots}
 
 
 def test_both_nodes_transmit(two_nodes) -> None:
     """A node with a region set keys its radio on its own. If neither does,
     nothing below this means anything."""
     for name, radio in two_nodes["radios"].items():
-        assert radio.get("sent", 0) >= 1, f"node {name} never transmitted: {radio}"
+        assert radio.get("sent", 0) >= 1, (
+            f"node {name} never transmitted: {radio}; "
+            f"boots {two_nodes['boots']}")
 
 
 def test_the_listener_heard_both_nodes(two_nodes) -> None:
@@ -175,14 +188,15 @@ def test_the_listener_heard_both_nodes(two_nodes) -> None:
     senders = two_nodes["senders"]
     assert len(senders) == 2, (
         f"the listener told {len(senders)} sender(s) apart: "
-        f"{sorted(s.hex() for s in senders)}")
+        f"{sorted(s.hex() for s in senders)}; boots {two_nodes['boots']}")
 
 
 def test_a_packet_crosses_between_them(two_nodes) -> None:
     """The mesh itself: one board received what the other put on the air."""
     radios = two_nodes["radios"]
     heard = {name: radio.get("heard", 0) for name, radio in radios.items()}
-    assert sum(heard.values()) >= 1, f"neither node heard the other: {radios}"
+    assert sum(heard.values()) >= 1, (
+        f"neither node heard the other: {radios}; boots {two_nodes['boots']}")
 
 
 def test_nothing_was_lost_to_range_or_tuning(two_nodes) -> None:
