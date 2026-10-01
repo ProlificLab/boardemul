@@ -104,7 +104,7 @@ superseded ADR is marked superseded and points forward.
 | [0096](0096-the-factory-test-service.md) | The factory-test service on lilygo.local:8896 | Accepted |
 | [0097](0097-the-uplink-a-nat-to-the-real-internet.md) | The uplink: a NAT from the LAN to the real internet | Accepted |
 | [0098](0098-each-board-has-its-own-randomness.md) | Each board has its own randomness | Accepted (amends 0004's seed) |
-| [0099](0099-a-board-that-panics-may-reboot.md) | A board that panics may reboot, as silicon does | Accepted |
+| [0099](0099-a-board-that-panics-may-reboot.md) | A board that panics may reboot, as silicon does | Accepted (decision 3 extended by 0114) |
 | [0100](0100-the-usb-serial-port.md) | The USB serial port, with a host on the other end | Accepted |
 | [0101](0101-the-interrupt-matrix-remembers-its-inputs.md) | The interrupt matrix remembers its inputs | Accepted (carried patch) |
 | [0102](0102-the-max-radio-is-on-select-three.md) | The Max's radio is on chip select 3 | Accepted (corrects 0043; decision 2 superseded by 0111) |
@@ -119,3 +119,4 @@ superseded ADR is marked superseded and points forward.
 | [0111](0111-the-radio-says-when-it-is-busy.md) | The radio says when it is busy | Accepted (closes 0106 item 7; supersedes 0102 decision 2) |
 | [0112](0112-the-radio-keeps-the-guests-time.md) | The radio keeps the guest's time | Accepted (moves 0037's timing onto the guest clock) |
 | [0113](0113-boards-on-one-air-keep-one-time.md) | Boards on one air keep one time | Accepted (finishes 0112; closes 0111's last cost) |
+| [0114](0114-the-boot-test-forgives-one-panic-by-name.md) | The boot test forgives one panic, by name | Accepted (extends 0099 decision 3) |

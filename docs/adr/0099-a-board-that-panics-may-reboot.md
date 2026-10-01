@@ -3,6 +3,11 @@
 **Status:** Accepted — 2026-10-01. Found while chasing the `test_mesh` node
 that sometimes never initialised its radio.
 
+**Amended 2026-10-01:** decision 3 is extended to `test_boot_tdeck` by
+[ADR 0114](0114-the-boot-test-forgives-one-panic-by-name.md). That test now
+runs with `--reboot` too, forgives this panic and no other, and judges the
+board on its last boot.
+
 ## Context
 
 Under load, the vendor's 250620 build and Meshtastic 2.7.10 both sometimes
