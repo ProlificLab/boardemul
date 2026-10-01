@@ -6,12 +6,18 @@ and the status bar carries a clock, so no single frame is stable. What is
 stable is the sequence of walls the firmware used to stop at, and each test
 below is one of them no longer stopping it (ADR 0013, 0016, 0019, 0020).
 
+The board may reboot, as a T-Deck does after a panic (ADR 0099). One panic is
+forgiven: the firmware's own ipc1 stack overflow, which 250620 hits on about
+one loaded boot in twenty. The board is then judged on the boot that came
+back, and any other panic still fails (ADR 0114).
+
     python3 -m pytest tests/ -m slow
 """
 
 from __future__ import annotations
 
 import sys
+import warnings
 from pathlib import Path
 
 import pytest
@@ -19,8 +25,8 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from tests.support import (  # noqa: E402
-    FIRMWARE_TDECK, FIRMWARE_TDECK_BUILDS, Run, qemu_available, radio_busy,
-    run_emulator,
+    FIRMWARE_TDECK, FIRMWARE_TDECK_BUILDS, Run, by_boot, last_boot,
+    qemu_available, radio_busy, run_emulator, unexplained_resets, unforgiven,
 )
 
 pytestmark = [
@@ -33,12 +39,19 @@ pytestmark = [
 def _shown_everything(build: str):
     """The last things this module asks about: the battery read, an interface
     that kept drawing, and for a build that starts its station at boot, that it
-    did. Once those are in, the rest of the timeout is an idle guest.
+    did -- all in the boot that came last. Once those are in, the rest of the
+    timeout is an idle guest.
     """
     def shown(uart: str, frames: list) -> bool:
-        if "ADC_CALI" not in uart or len(frames) <= 100:
+        # A panic that is not forgiven has decided the FPU test already. Once
+        # the board is back from it the panic is in the log whole, and waiting
+        # longer would only watch the board boot-loop to the timeout.
+        if any(unforgiven(boot) for boot in by_boot(uart)[:-1]):
+            return True
+        last = last_boot(uart)
+        if "ADC_CALI" not in last or len(frames) <= 100:
             return False
-        return build not in STARTS_STATION_AT_BOOT or "WiFi client started" in uart
+        return build not in STARTS_STATION_AT_BOOT or "WiFi client started" in last
     return shown
 
 
@@ -47,9 +60,19 @@ def _shown_everything(build: str):
 def booted(request, tmp_path_factory) -> Run:
     if not qemu_available():
         pytest.skip("no qemu-system-xtensa; run tools/build_qemu.sh")
-    return run_emulator(tmp_path_factory.mktemp("tdeck"),
-                        firmware=request.param, board="tdeck", timeout=300,
-                        until=_shown_everything(request.param.stem[-6:]))
+    build = request.param.stem[-6:]
+    run = run_emulator(tmp_path_factory.mktemp("tdeck"),
+                       firmware=request.param, board="tdeck", timeout=300,
+                       extra=("--reboot",), until=_shown_everything(build))
+    if run.boots > 1:
+        # A pass that needed a second boot says so, rather than passing
+        # quietly; a failure carries the count in its message instead.
+        warnings.warn(f"build {build} booted {run.boots} times (ADR 0114)")
+    return run
+
+
+def _boots(run: Run) -> str:
+    return f"booted {run.boots} time(s)"
 
 
 def test_the_fpu_is_enabled_before_the_scheduler_starts(booted: Run) -> None:
@@ -58,16 +81,38 @@ def test_the_fpu_is_enabled_before_the_scheduler_starts(booted: Run) -> None:
     Without esp-coproc-enable this firmware dies about a second in, inside a
     C++ global constructor, on a float that no task yet owns the FPU state for.
     The panic prints before anything else the firmware would say, so its absence
-    is the assertion; the two below only show it kept going afterwards.
+    is the assertion; the tests below only show it kept going afterwards.
+
+    The board may reboot now (ADR 0114), so "no panic at all" would fail it for
+    the firmware's own ipc1 overflow. Each boot is judged by the panic that
+    ended it: that one is forgiven, with what its panic handler does after it.
+    This one, or any other, fails in whichever boot it came.
     """
-    assert "Coprocessor exception" not in booted.uart
-    assert "Guru Meditation" not in booted.uart
+    assert "Coprocessor exception" not in booted.uart, _boots(booted)
+    assert not unforgiven(booted.uart), (unforgiven(booted.uart), _boots(booted))
+
+
+def test_it_reboots_only_from_the_forgiven_panic(booted: Run) -> None:
+    """A reboot is allowed for the panic ADR 0099 traced, and nothing else.
+
+    Before the board could reboot, any reset ended the run and failed what came
+    after it. So a boot that ended some other way -- a watchdog, an abort, a
+    reset with no panic before it -- still fails, here. The canary's own reset
+    can land twice, leaving a boot of nothing but the ROM's banner; that one is
+    the canary's too (ADR 0114).
+    """
+    unexplained = unexplained_resets(booted.uart)
+    boots = by_boot(booted.uart)
+    assert not unexplained, (
+        f"boot {unexplained[0]} of {len(boots)} ended without the ipc1 canary "
+        "panic: " + boots[unexplained[0] - 1][-1500:])
 
 
 def test_it_reaches_the_arduino_layer(booted: Run) -> None:
     """The constructor that used to kill it runs before any of this, so getting
     here at all means startup completed."""
-    assert "[E][" in booted.uart or "[I][" in booted.uart, booted.uart[-400:]
+    last = last_boot(booted.uart)
+    assert "[E][" in last or "[I][" in last, (last[-400:], _boots(booted))
 
 
 def test_it_gets_far_enough_to_mount_storage(booted: Run) -> None:
@@ -79,9 +124,9 @@ def test_it_gets_far_enough_to_mount_storage(booted: Run) -> None:
     says so. Either is evidence of the same thing, which is why this asks for
     storage to have been reached rather than for it to have failed.
     """
-    reached = ("SD Card Size" in booted.uart or "SPIFFS" in booted.uart
-               or "sd_diskio" in booted.uart)
-    assert reached, booted.uart[-400:]
+    last = last_boot(booted.uart)
+    reached = "SD Card Size" in last or "SPIFFS" in last or "sd_diskio" in last
+    assert reached, (last[-400:], _boots(booted))
 
 
 # Builds whose setup() starts the WiFi station, and so meet the four radio
@@ -98,8 +143,9 @@ def test_it_gets_through_the_radio_bring_up(booted: Run, request) -> None:
     build = request.node.callspec.id
     if build not in STARTS_STATION_AT_BOOT:
         pytest.skip(f"build {build} does not start the station during setup")
-    after = booted.uart.split("WiFi interface ready", 1)[-1][:600]
-    assert "WiFi client started" in booted.uart, after
+    last = last_boot(booted.uart)
+    after = last.split("WiFi interface ready", 1)[-1][:600]
+    assert "WiFi client started" in last, (after, _boots(booted))
 
 
 def test_the_radio_comes_up_waiting_on_its_busy_line(booted: Run) -> None:
@@ -108,9 +154,10 @@ def test_the_radio_comes_up_waiting_on_its_busy_line(booted: Run) -> None:
     with -705 after a second; a line held and never released is how that
     looked while it was being built. A reset holds it for the datasheet's
     3.5 ms start-up."""
-    # 250620 says so on its UART, 251113 on its USB serial port.
-    said = booted.uart + booted.usb
-    assert "Start Radio success!" in said, said[-1500:]
+    # 250620 says so on its UART, 251113 on its USB serial port. The ROM's
+    # banner reaches both, so each is cut at the same boot.
+    said = last_boot(booted.uart) + last_boot(booted.usb)
+    assert "Start Radio success!" in said, (said[-1500:], _boots(booted))
     busy = radio_busy(booted.outdir)
     assert busy is not None, "the controller never reported the radio's BUSY line"
     holds, longest = busy
@@ -120,6 +167,12 @@ def test_the_radio_comes_up_waiting_on_its_busy_line(booted: Run) -> None:
 def test_it_reads_its_battery_and_keeps_drawing(booted: Run) -> None:
     """The ADC conversion completing is what lets LVGL keep its turn (ADR
     0020). A stalled interface stops at a couple of dozen frames; a live one
-    draws about ten a second for as long as it runs."""
-    assert "ADC_CALI" in booted.uart
-    assert len(booted.frames) > 100, len(booted.frames)
+    draws about ten a second for as long as it runs.
+
+    The panel is a part on the board, not in the chip, so it numbers its frames
+    across a reboot and the count here is the run's. A boot the forgiven panic
+    ended had drawn two or three: it panics while starting the radio, before
+    the interface runs (ADR 0114).
+    """
+    assert "ADC_CALI" in last_boot(booted.uart), _boots(booted)
+    assert len(booted.frames) > 100, (len(booted.frames), _boots(booted))
