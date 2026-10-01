@@ -46,8 +46,8 @@ experiments directory keeps them: it stops the same ground being covered twice.
 
 ## Open, and why
 
-5. **The BHI260AP sensor hub** answers its identity registers and nothing
-   else, and the factory demo reports `reset bhy2 failed! ... Timed out`. What
+5. *(Closed by ADR 0108: the hub now boots its firmware.)* **The BHI260AP
+   sensor hub** answered its identity registers and nothing else, and the factory demo reports `reset bhy2 failed! ... Timed out`. What
    comes after the reset is Bosch's whole host interface: a firmware upload in
    chunks over channel 0, boot verification, a parameter protocol on the
    status channel, and virtual sensors streaming into FIFOs. A partial model

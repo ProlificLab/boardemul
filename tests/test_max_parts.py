@@ -67,3 +67,11 @@ def test_the_modem_answers(checked: Run) -> None:
     up on it (ADR 0105)."""
     assert "Start modem..." in checked.usb, checked.usb[-2000:]
     assert "[A7682E] Init Fail" not in checked.usb, checked.usb[-2000:]
+
+
+def test_the_sensor_hub_boots_its_firmware(checked: Run) -> None:
+    """The demo uploads Bosch's firmware, boots it and finds its sensors
+    (ADR 0108)."""
+    assert "Boot successful." in checked.usb, checked.usb[-2000:]
+    assert "Total 6 Sensor online" in checked.usb, checked.usb[-2000:]
+    assert "Failed to init BHI260AP" not in checked.usb

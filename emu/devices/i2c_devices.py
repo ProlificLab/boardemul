@@ -15,6 +15,8 @@ import logging
 
 from emu.peripherals.i2c import I2CDevice
 
+from emu.devices.bhi260ap import BHI260AP  # noqa: E402  (ADR 0108)
+
 log = logging.getLogger("i2c.dev")
 
 # The real part's key-event FIFO is ten deep.
@@ -438,20 +440,12 @@ class ES8311(RegisterFile):
                          defaults={0xFD: 0x83, 0xFE: 0x11})
 
 
-class BHI260AP(RegisterFile):
-    """Bosch smart sensor. It expects a large firmware upload before it does
-    anything useful; this models only enough to be discoverable."""
-
-    def __init__(self, address: int = 0x28):
-        super().__init__(address, "BHI260AP", size=0x100, defaults={0x2B: 0x89})
-
-
-def tdeck_max_devices() -> list[I2CDevice]:
+def tdeck_max_devices(clock=None) -> list[I2CDevice]:
     return [
         ES8311(0x18),
         CST328(0x1A),
         XL9555(0x20),
-        BHI260AP(0x28),
+        BHI260AP(0x28, clock=clock),
         TCA8418(0x34),
         BQ27220(0x55),
         DRV2605(0x5A),

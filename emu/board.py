@@ -129,13 +129,13 @@ class TraceRegion(Region):
         self.regs.clear()
 
 
-def i2c_devices() -> list[I2CDevice]:
+def i2c_devices(clock=None) -> list[I2CDevice]:
     """Addresses are the vendor's own, from lib/TDeckMaxBoard/src/TDeckMaxBoard.h.
 
     BOARDEMUL_I2C restricts the set to a comma-separated list of hex addresses,
     which is how you find out which device's answers a driver actually chokes on.
     """
-    devices = tdeck_max_devices()
+    devices = tdeck_max_devices(clock=clock)
     only = os.environ.get("BOARDEMUL_I2C")
     if only:
         wanted = {int(a, 16) for a in only.replace(" ", "").split(",") if a}
@@ -247,12 +247,12 @@ def build(outdir: Path, air: str | None = None, ble_air: str | None = None,
     sdcard = SdCard(sdimage.build(size_mb=SD_CARD_MB))
     spi = SpiServer(outdir / "spi2.sock",
                     {SPI_DISPLAY: panel, SPI_RADIO: radio, SPI_SDCARD: sdcard})
-    i2c0 = I2CServer(outdir / "i2c0.sock", i2c_devices(), name="i2c0")
+    clock = GuestClock(outdir / "clock.sock")
+    i2c0 = I2CServer(outdir / "i2c0.sock", i2c_devices(clock=clock.seconds), name="i2c0")
     i2c1 = I2CServer(outdir / "i2c1.sock", [], name="i2c1")
     # This board's receiver is a u-blox, built in, on the third UART; its
     # modem is on the second (ADR 0105). Both are always fitted. --gps says
     # where the board is; without it the receiver is indoors, with no fix.
-    clock = GuestClock(outdir / "clock.sock")
     receiver = SerialServer(
         outdir / "gps.sock",
         UBloxM10(latitude=gps[0] if gps else None,
