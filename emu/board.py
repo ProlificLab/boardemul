@@ -27,6 +27,7 @@ from emu import sdimage
 from emu.devices.air import AirMedium
 from emu.devices.gps import L76K
 from emu.devices.ledc import Ledc
+from emu.guest_clock import GuestClock
 from emu.devices.sdcard import SdCard
 from emu.devices.sx1262 import Sx1262
 from emu.i2c_link import I2CServer
@@ -157,8 +158,12 @@ class Board:
     # It needs no device of ours: the fork's controller already speaks to a
     # character device, so a socket is the whole of it (ADR 0052).
     gps: "SerialServer | None" = None
+    # The guest's clock, for parts that keep the board's time (ADR 0104).
+    clock: "GuestClock | None" = None
 
     def start(self) -> None:
+        if self.clock:
+            self.clock.start()
         self.gpio.start()
         self.spi.start()
         self.i2c0.start()
@@ -173,7 +178,7 @@ class Board:
 
     def stop(self) -> None:
         for link in (self.spi, self.i2c0, self.i2c1, self.gpio,
-                     self.gps, self.frames):
+                     self.gps, self.frames, self.clock):
             if link:
                 link.stop()
 
@@ -185,6 +190,8 @@ class Board:
         args: list[str] = []
         for spec in self.devices:
             args += ["-device", spec]
+        if self.clock:
+            args += ["-device", self.clock.device()]
         # The order matters and is the only thing that names the port: the
         # console is given first, in build_argv, so this one is the machine's
         # second UART, which is where the board's satellite receiver sits.
@@ -257,7 +264,8 @@ def build(outdir: Path, air: str | None = None, ble_air: str | None = None,
         f"socket={i2c1.socket_path}",
     ]
     return Board(regions=regions, gpio=gpio, spi=spi, i2c0=i2c0, i2c1=i2c1,
-                 panel=panel, gps=receiver, devices=devices)
+                 panel=panel, gps=receiver, devices=devices,
+                 clock=GuestClock(outdir / "clock.sock"))
 
 
 def attach_input(server: BusServer, board: Board, outdir: Path) -> InputTail:

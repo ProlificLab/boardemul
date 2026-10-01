@@ -109,3 +109,4 @@ superseded ADR is marked superseded and points forward.
 | [0101](0101-the-interrupt-matrix-remembers-its-inputs.md) | The interrupt matrix remembers its inputs | Accepted (carried patch) |
 | [0102](0102-the-max-radio-is-on-select-three.md) | The Max's radio is on chip select 3 | Accepted (corrects 0043) |
 | [0103](0103-the-max-fuel-gauge-is-provisioned.md) | The Max's fuel gauge is provisioned, as its driver expects | Accepted |
+| [0104](0104-the-parts-can-read-the-guests-clock.md) | The board's parts can read the guest's clock | Accepted |

@@ -26,6 +26,7 @@ from emu import sdimage
 from emu.i2c_link import I2CServer
 from emu.serial_link import SerialServer
 from emu.devices.gps import L76K
+from emu.guest_clock import GuestClock
 from emu.devices.ledc import Ledc
 from emu.devices.lcd import St7789Panel
 from emu.devices.air import AirMedium
@@ -327,8 +328,11 @@ def build(outdir: Path, air: str | None = None, ble_air: str | None = None,
             ssid=wifi_ap[0], channel=wifi_ap[2] or 1, wpa2=wifi_ap[3],
             passphrase=wifi_ap[4] if len(wifi_ap) > 4 else "",
             beacon_ms=wifi_ap[1]), uplink=uplink))
+    # The guest's clock, for parts that keep the board's time (ADR 0104). No
+    # part on this board asks for it yet; the L76K still waits to be spoken to.
     board = Board(regions=regions, gpio=gpio, spi=spi, i2c0=i2c0, i2c1=i2c1,
-                  panel=panel, gps=receiver, devices=devices, frames=frames)
+                  panel=panel, gps=receiver, devices=devices, frames=frames,
+                  clock=GuestClock(outdir / "clock.sock"))
     board.touch = touch
     board.keypad = keypad
     return board

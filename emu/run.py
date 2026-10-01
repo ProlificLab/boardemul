@@ -594,6 +594,8 @@ def _report_bus(server: BusServer, tail=None, irq=None, hw=None) -> None:
         if hw.gps:
             print(f"  gps: {hw.gps.bytes_in} byte(s) in, {hw.gps.bytes_out} out")
             print(f"    {hw.gps.device.summary()}")
+        if hw.clock:
+            print(f"  guest clock: {hw.clock.ticks} tick(s)")
 
     busy = sorted((r for r in server.regions if r.accesses),
                   key=lambda r: -r.accesses)
