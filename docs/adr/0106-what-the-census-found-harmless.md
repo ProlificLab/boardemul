@@ -54,7 +54,8 @@ experiments directory keeps them: it stops the same ground being covered twice.
    could leave the demo waiting on a boot that never completes, where today it
    gives up and carries on. It is its own piece of work.
 
-6. **The WiFi MAC acknowledges nothing at the 802.11 level** (ADR 0067). A
+6. *(Closed by ADR 0109: acknowledgement, retries and power save.)* **The
+   WiFi MAC acknowledged nothing at the 802.11 level** (ADR 0067). A
    frame the access point sends while the station is retuning is lost, where a
    real MAC would be acknowledged or retry. Higher layers retry instead (EAPOL,
    DHCP, TCP), so it costs time rather than function.

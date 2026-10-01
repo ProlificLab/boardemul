@@ -53,6 +53,24 @@ AWAITED = 1
 # data frames with (ADR 0094). Sent once, on the first reply after the handshake
 # completes, because the key install never reaches MMIO for the device to see.
 REPLY_KEY = 2
+# A third: the access point did not acknowledge the frame it was handed -- an
+# individually addressed frame for someone else. The device then completes the
+# station's transmission with an acknowledgement timeout (ADR 0109).
+REPLY_UNACKED = 4
+
+# Power save (ADR 0109, IEEE Std 802.11-2016 11.2). The frame-control bits a
+# station's frames carry, and those this side sets on frames it sends.
+FC1_RETRY = 0x08
+FC1_PM = 0x10                   # the station will be dozing after this exchange
+FC1_MORE_DATA = 0x20            # more frames are held for the dozing station
+PS_POLL = 0xA4                  # a dozing station asking for one held frame
+NULL_DATA = 0x48
+QOS_NULL = 0xC8
+# Every beacon is a DTIM beacon. Held frames go to their station, not after a
+# DTIM, so the period decides nothing else here.
+DTIM_PERIOD = 1
+# How many frames are held for one dozing station before the oldest goes.
+HOLD_LIMIT = 64
 
 # 802.11 subtypes, as the first octet of a frame carries them.
 PROBE_REQUEST = 0x40
@@ -103,6 +121,9 @@ FIRST_RETRY_DELIVERED_MS = 1000
 # The type bit the device sets on the request after a frame the peer offered
 # reached a receive descriptor: the model's transmit acknowledgement (ADR 0095).
 REQ_DELIVERED = 0x8000
+# And the bit it sets when the frame offered was retried to the 802.11 limit and
+# never acknowledged: a failed tx_status (ADR 0109).
+REQ_UNACKED = 0x4000
 # How long after the association response to hold message one back, as an
 # experiment knob only -- default 0, no hold. The idea was that a message one
 # arriving before the station's supplicant finished setting up was answered
@@ -220,6 +241,29 @@ def header(kind: int, to: bytes, sequence: int, frm: bytes = AP_ADDRESS,
             + ((sequence & 0xFFF) << 4).to_bytes(2, "little"))
 
 
+def tim_element(held: set[int]) -> bytes:
+    """A TIM element: DTIM count 0 and period DTIM_PERIOD (every beacon is a
+    DTIM), then the partial virtual bitmap of the association IDs with frames
+    held (IEEE Std 802.11-2016 9.4.2.6).
+
+    The bitmap runs from octet N1, the largest even octet number below the
+    first set bit, to N2, the last octet with one; the bitmap control octet
+    carries N1/2 above its group-traffic bit, which stays clear because nothing
+    group-addressed is held. With nothing held it is one octet of zero.
+    """
+    held = {aid for aid in held if 0 < aid < 2008}
+    if not held:
+        bitmap, n1 = bytes([0]), 0
+    else:
+        n1 = (min(held) // 8) & ~1
+        n2 = max(held) // 8
+        octets = bytearray(n2 - n1 + 1)
+        for aid in held:
+            octets[aid // 8 - n1] |= 1 << (aid % 8)
+        bitmap = bytes(octets)
+    return bytes([0x05, 3 + len(bitmap), 0, DTIM_PERIOD, (n1 // 2) << 1]) + bitmap
+
+
 @dataclass
 class Network:
     """The network this access point advertises."""
@@ -232,8 +276,10 @@ class Network:
     wpa2: bool = False
     passphrase: str = ""
 
-    def body(self, channel: int) -> bytes:
-        """The fixed fields and elements a beacon and a probe response share.
+    def body(self, channel: int, tim: bytes | None = None) -> bytes:
+        """The fixed fields and elements a beacon and a probe response share,
+        and a beacon's TIM after the channel when it is given one -- beacons
+        carry one and probe responses do not (ADR 0109).
 
         Ordinary 2.4 GHz g: the four b rates as basic and four more on top,
         the rest in the extended element, and an ERP element to say so. Four b
@@ -252,6 +298,8 @@ class Network:
         out += bytes([0x00, len(name)]) + name          # the name
         out += bytes([0x01, 0x08, 0x82, 0x84, 0x8B, 0x96, 0x0C, 0x12, 0x18, 0x24])
         out += bytes([0x03, 0x01, channel or self.channel])
+        if tim is not None:
+            out += tim                                  # beacons only
         out += bytes([0x2A, 0x01, 0x00])                # an ERP network
         if self.wpa2:
             out += RSN_ELEMENT
@@ -292,6 +340,12 @@ class Station:
     # When the association response went, so message one can be held back
     # until the station is ready for it (ADR 0076).
     associated_at: int = 0
+    # Its association identifier, its own (ADR 0109); 0 before it associates.
+    aid: int = 0
+    # Whether its last frame to us said it would be dozing, and what is held
+    # for it meanwhile, in order (ADR 0109).
+    dozing: bool = False
+    held: list = field(default_factory=list)
 
 
 class AccessPoint:
@@ -351,6 +405,9 @@ class AccessPoint:
         # The station whose message one was the last frame offered on a tick,
         # so a delivery the device reports can be pinned on it (ADR 0095).
         self.last_offered: Station | None = None
+        # Whether the last frame the station transmitted was acknowledged by
+        # this access point, which the device reports back to it (ADR 0109).
+        self.last_heard = True
         # What the factory-test service has been told (ADR 0096).
         self.registrations: list[factory.Report] = []
         log.info("access point %r on channel %d, %s", network.ssid,
@@ -364,6 +421,89 @@ class AccessPoint:
 
     def _count(self, what: str) -> None:
         self.counts[what] = self.counts.get(what, 0) + 1
+
+    # ----------------------------------------------------------- power save
+
+    @staticmethod
+    def _heard(frame: bytes) -> bool:
+        """Whether this access point acknowledges the frame: one addressed to
+        it. A group frame wants no acknowledgement; one addressed to anyone
+        else gets none, and its sender's MAC times out (ADR 0109)."""
+        if len(frame) < 10:
+            return True
+        to = frame[4:10]
+        return bool(to[0] & 1) or to == AP_ADDRESS
+
+    def _station_for(self, frame: bytes) -> "Station | None":
+        """The station an outgoing frame is individually addressed to."""
+        if len(frame) < 10 or frame[4] & 1:
+            return None
+        return self.stations.get(frame[4:10])
+
+    def _hold(self, station: Station, air: Air) -> None:
+        if len(station.held) >= HOLD_LIMIT:
+            station.held.pop(0)
+            self._count("held frame dropped, the hold was full")
+        station.held.append(air)
+        self._count("frame held for a dozing station")
+
+    def _route(self) -> Air | None:
+        """The next frame from the outbox that may go now. One for a dozing
+        station is held for it instead, as an access point buffers for a
+        station in power save (ADR 0109)."""
+        while self.outbox:
+            air = self.outbox.pop(0)
+            station = self._station_for(air.frame)
+            if station is not None and station.dozing:
+                self._hold(station, air)
+                continue
+            return air
+        return None
+
+    def _power(self, station: Station, frame: bytes) -> None:
+        """The power-management bit of a frame the station addressed to us says
+        whether it will be dozing after this exchange. Waking releases what was
+        held, in order and ahead of anything newer."""
+        dozing = bool(frame[1] & FC1_PM)
+        if dozing == station.dozing:
+            return
+        station.dozing = dozing
+        self._count("station dozing" if dozing else "station awake")
+        if not dozing and station.held:
+            log.info("at %d ms %s is awake; %d held frame(s) go out", self.clock,
+                     station.address.hex(":"), len(station.held))
+            self.outbox[0:0] = station.held
+            station.held = []
+
+    def _ps_poll(self, station: Station) -> Air:
+        """One held frame for a dozing station that asked, with More Data set
+        while more remain -- or a null-data frame when none is held."""
+        if station.held:
+            air = station.held.pop(0)
+            frame = bytearray(air.frame)
+            if station.held:
+                frame[1] |= FC1_MORE_DATA
+            self._count("ps-poll answered")
+            return Air(bytes(frame), awaited=True)
+        self._count("ps-poll with nothing held")
+        return Air(bytes([NULL_DATA, 0x02, 0x00, 0x00]) + station.address
+                   + AP_ADDRESS + AP_ADDRESS
+                   + ((self._next() & 0xFFF) << 4).to_bytes(2, "little"),
+                   awaited=True)
+
+    def unacked(self) -> None:
+        """The device says the last frame offered was tried to the 802.11 retry
+        limit and never acknowledged, which is hostapd's failed tx_status.
+
+        A message one stays owed and keeps its short retry timer, which is
+        what an unacknowledged one gets from hostapd too; anything else -- a
+        TCP segment -- is recovered by its own protocol, as it would be.
+        """
+        station, self.last_offered = self.last_offered, None
+        self._count("frame unacknowledged after retries")
+        if station is not None:
+            log.info("at %d ms message one to %s went unacknowledged", self.clock,
+                     station.address.hex(":"))
 
     # ---------------------------------------------------------------- ticks
 
@@ -397,6 +537,8 @@ class AccessPoint:
         for station in self.stations.values():
             if not (station.owes_first and station.shake is not None):
                 continue
+            if station.dozing:
+                continue                # held until it wakes (ADR 0109)
             if clock - station.associated_at < FIRST_HOLD_MS:
                 continue                # not ready for it yet; see ADR 0076
             again = station.first_at != 0
@@ -419,8 +561,9 @@ class AccessPoint:
         # milliseconds away (ADR 0089).
         self._uplink_events()
         self._tcp_tick(clock)
-        if self.outbox:
-            return self.outbox.pop(0)
+        air = self._route()
+        if air is not None:
+            return air
         # A beacon only when one is due. Offering one on every opportunity is
         # what filled the driver's descriptors and left none for the frames
         # that matter.
@@ -437,9 +580,12 @@ class AccessPoint:
         self.last_beacon = clock
         self._count("beacon")
         # Not awaited: a beacon nobody hears is a beacon missed, and the next
-        # one is twenty milliseconds away.
+        # one is twenty milliseconds away. Its TIM names every station with
+        # frames held for it, a message one owed to a dozing one included.
+        held = {s.aid for s in self.stations.values()
+                if s.held or (s.dozing and s.owes_first)}
         return Air(header(BEACON, BROADCAST, self._next())
-                   + self.network.body(channel))
+                   + self.network.body(channel, tim_element(held)))
 
     # --------------------------------------------------------------- frames
 
@@ -485,14 +631,33 @@ class AccessPoint:
 
         Everything this returns answers something the station just sent, so
         the station is waiting for it by construction and it is marked so.
+
+        Whether this access point acknowledged the frame is left in
+        `last_heard` for the device (ADR 0109). A frame an associated station
+        addressed to us carries its power-management state; a PS-Poll asks for
+        one held frame; and an answer for a station that is dozing is held for
+        it like anything else.
         """
+        self.channel = channel or self.channel
+        self.clock = clock
+        self.last_heard = self._heard(frame)
+        sender = self.stations.get(frame[10:16]) if len(frame) >= 16 else None
+        if (sender is not None and sender.associated and not frame[0] & 0x03
+                and frame[4:10] == AP_ADDRESS):
+            if frame[0] == PS_POLL:
+                return self._ps_poll(sender)
+            self._power(sender, frame)
         answer = self._answer(frame, channel, clock)
         self._uplink_events()           # anything the uplink has brought back
         if answer:
-            return Air(answer, awaited=True)
+            air = Air(answer, awaited=True)
+            target = self._station_for(answer)
+            if target is None or not target.dozing or (answer[0] & 0x0C) != 0x08:
+                return air
+            self._hold(target, air)
         # A TCP exchange puts its frames in the outbox rather than returning one
         # (ADR 0089); hand back the first now, the rest follow on ticks.
-        return self.outbox.pop(0) if self.outbox else None
+        return self._route()
 
     def _answer(self, frame: bytes, channel: int,
                 clock: int = 0) -> bytes | None:
@@ -563,11 +728,13 @@ class AccessPoint:
         station.associated = False
         station.shake = None
         station.owes_first = False
+        station.dozing = False          # a joining station starts awake
+        station.held = []
         return (header(AUTH, station.address, self._next())
                 + bytes([0x00, 0x00, 0x02, 0x00, 0x00, 0x00]))
 
     def _assoc(self, station: Station, clock: int = 0) -> bytes:
-        """Accepted, with association identifier one.
+        """Accepted, with the station's own association identifier (ADR 0109).
 
         And, on a protected network, the handshake starts: its first message
         goes out on the next tick rather than now, because one frame gets one
@@ -575,6 +742,10 @@ class AccessPoint:
         """
         self._count("assoc")
         station.associated = True
+        station.dozing = False
+        if not station.aid:
+            taken = {s.aid for s in self.stations.values() if s.aid}
+            station.aid = next(a for a in range(1, 2008) if a not in taken)
         log.info("at %d ms %s associated; handshake %s", clock,
                  station.address.hex(":"),
                  "armed" if self.master else "not armed")
@@ -591,7 +762,7 @@ class AccessPoint:
             station.first_delivered = False
         return (header(ASSOC_RESPONSE, station.address, self._next())
                 + bytes([0x11 if self.network.wpa2 else 0x01, 0x00,
-                         0x00, 0x00, 0x01, 0xC0,
+                         0x00, 0x00, station.aid & 0xFF, 0xC0 | (station.aid >> 8),
                          0x01, 0x04, 0x82, 0x84, 0x8B, 0x96]))
 
     def _data(self, frame: bytes) -> bytes | None:
@@ -603,6 +774,11 @@ class AccessPoint:
         is the question this code is usually being asked.
         """
         self._count("data frame in")
+        if frame[0] in (NULL_DATA, QOS_NULL):
+            # No body: a station saying it is dozing or awake, which take()
+            # has already read off the frame control (ADR 0109).
+            self._count("null data")
+            return None
         station = self.stations.get(frame[10:16])
         if station is None:
             # Either the addressing is not what this expects, or the station
@@ -1262,13 +1438,20 @@ class FrameChannel:
                     break
                 # The high bit acknowledges the last frame offered on a tick
                 # (ADR 0095); it is not part of the request's type.
-                delivered, kind = bool(kind & REQ_DELIVERED), kind & ~REQ_DELIVERED
+                delivered = bool(kind & REQ_DELIVERED)
+                unacked = bool(kind & REQ_UNACKED)
+                kind &= ~(REQ_DELIVERED | REQ_UNACKED)
+                heard = True
                 try:
                     if delivered:
                         self.point.clock = clock
                         self.point.delivered()
+                    if unacked:
+                        self.point.clock = clock
+                        self.point.unacked()
                     if kind == REQ_TX:
                         out = self.point.take(frame, channel, clock)
+                        heard = self.point.last_heard
                     elif kind == REQ_TICK:
                         out = self.point.tick(channel, clock, free)
                     else:
@@ -1282,6 +1465,8 @@ class FrameChannel:
                     out = None
                 payload = out.frame if out else b""
                 flags = AWAITED if (out and out.awaited) else 0
+                if not heard:
+                    flags |= REPLY_UNACKED
                 # Hand the temporal key to the MAC model when one is waiting
                 # (ADR 0094): it rides between the reply header and the frame, so
                 # the header's length still counts only the frame.

@@ -114,3 +114,4 @@ superseded ADR is marked superseded and points forward.
 | [0106](0106-what-the-census-found-harmless.md) | What the hardware census found harmless, and what it left open | Accepted |
 | [0107](0107-a-skipped-event-is-decided-on-the-kick.md) | A skipped Bluetooth event is decided on the kick | Accepted (refines 0025) |
 | [0108](0108-the-sensor-hub-boots-its-firmware.md) | The Max's sensor hub boots the firmware it is given | Accepted (closes 0106 item 5) |
+| [0109](0109-the-air-acknowledges-retries-and-holds-for-a-dozing-station.md) | The air acknowledges, retries, and holds frames for a dozing station | Accepted (closes 0106 item 6) |

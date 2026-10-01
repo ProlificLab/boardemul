@@ -230,12 +230,17 @@ OBJECT_DECLARE_SIMPLE_TYPE(EspWifiMac, ESP_WIFI_MAC)
  * read off the table at 0x3c18cbc0 and the function names the driver carries
  * for its own asserts. So zero is success -- which is what an unmodelled
  * window was already returning, by accident. This device says it on purpose,
- * per slot, at the moment the frame completes. The remaining fields are left
- * at zero: bits 16..23 are the only others the success path is handed, and it
- * does not read them. */
+ * per slot, at the moment the frame completes -- success when the access point
+ * acknowledged the frame or it was group-addressed, an acknowledgement timeout
+ * when nothing did (ADR 0109). The remaining fields are left at zero: bits
+ * 16..23 are the only others the success path is handed, and it does not read
+ * them. */
 #define R_TX_RESULT0      0x1320
 #define TX_RESULT_STRIDE  76
 #define TX_RESULT_SUCCESS 0x00000000u
+/* Bits 12..15 of 5: lmacProcessAckTimeout, for a frame nobody acknowledged
+ * (ADR 0109). */
+#define TX_RESULT_ACK_TIMEOUT 0x00005000u
 /* A hatch, not hardware: somewhere in this device's span the driver never
  * touches, used to hand a debugger a trigger. With BOARDEMUL_WIFI_MARK set
  * to a subtype, the device writes that subtype here when the station sends
@@ -295,6 +300,30 @@ OBJECT_DECLARE_SIMPLE_TYPE(EspWifiMac, ESP_WIFI_MAC)
  * install never reaches MMIO for the device to read (ADR 0077), so the peer --
  * which derived the same key from the handshake -- sends it here instead. */
 #define REPLY_KEY         0x0002u
+/* And a third: the access point did not acknowledge the frame it was just
+ * handed -- an individually addressed frame not addressed to it. The slot then
+ * completes with an acknowledgement timeout instead of success (ADR 0109). */
+#define REPLY_UNACKED     0x0004u
+/* Or-ed into the type of the next request when the last frame the peer offered
+ * was retried to the limit and never acknowledged, as hostapd hears a failed
+ * tx_status (ADR 0109). */
+#define FRAME_UNACKED     0x4000u
+/* The 802.11 retry rules for a 2.4 GHz OFDM network (IEEE Std 802.11-2016):
+ * dot11ShortRetryLimit attempts in all; before each retry the sender waits its
+ * ACK timeout (SIFS 10 + slot 9 + PHY start delay 25 us) and DIFS (28 us), then
+ * a backoff from a contention window that starts at 15 slots and doubles to
+ * 1023. The backoff is taken at its mean, so a run stays reproducible. */
+#define RETRY_LIMIT       7
+#define ACK_TIMEOUT_US    44
+#define DIFS_US           28
+#define SLOT_US           9
+#define CW_MIN            15
+#define CW_MAX            1023
+/* The Retry bit, in the second octet of the frame control field. */
+#define FC1_RETRY         0x08u
+/* Answers waiting behind the one being delivered. The access point's radio
+ * hears every frame the station sends; its answers queue (ADR 0109). */
+#define ANSWER_BACKLOG    4
 /* Why the handler was woken. Found by raising the interrupt with nothing to
  * say and watching what it went and read: it reads this, gets nothing, and
  * returns -- then comes straight back, because the line is still asserted.
@@ -475,6 +504,18 @@ struct EspWifiMac {
     /* The last frame the peer offered reached a descriptor, and the peer has
      * not been told yet (ADR 0095). */
     bool offered_delivered;
+    /* The last frame the peer offered was retried to the limit unacknowledged
+     * (ADR 0109), and the peer has not been told yet. */
+    bool offered_unacked;
+    /* How many times the frame being delivered has been tried and not taken:
+     * the offered one and the answer, each its own count (ADR 0109). */
+    unsigned offered_attempts;
+    unsigned answer_attempts;
+    unsigned retried, gave_up;
+    /* Answers behind the one in `pending` (ADR 0109). */
+    uint8_t backlog[ANSWER_BACKLOG][FRAME_MAX];
+    size_t backlog_len[ANSWER_BACKLOG];
+    unsigned backlog_count;
     int64_t mark_at;
     uint32_t ring;              /* what the driver handed us */
     unsigned deliveries;
@@ -493,6 +534,83 @@ struct EspWifiMac {
 static int64_t wifi_retry_ns(EspWifiMac *s)
 {
     return s->pending_len ? s->tx_delay_ns : s->gap_ns;
+}
+
+/* How long the access point waits after `attempts` unacknowledged tries before
+ * the next one: its ACK timeout, DIFS, and the mean backoff of the window for
+ * that attempt (ADR 0109). */
+static int64_t wifi_backoff_ns(unsigned attempts)
+{
+    unsigned cw = CW_MIN;
+
+    for (unsigned i = 0; i < attempts && cw < CW_MAX; i++) {
+        cw = cw * 2 + 1;
+    }
+    if (cw > CW_MAX) {
+        cw = CW_MAX;
+    }
+    return (int64_t)(ACK_TIMEOUT_US + DIFS_US) * 1000 + (int64_t)cw * SLOT_US * 500;
+}
+
+/* The next queued answer takes the place of one that has gone, or given up. */
+static void wifi_next_answer(EspWifiMac *s)
+{
+    s->pending_len = 0;
+    s->answer_attempts = 0;
+    if (!s->backlog_count) {
+        return;
+    }
+    memcpy(s->pending, s->backlog[0], s->backlog_len[0]);
+    s->pending_len = s->backlog_len[0];
+    s->backlog_count--;
+    memmove(s->backlog[0], s->backlog[1], s->backlog_count * sizeof(s->backlog[0]));
+    memmove(s->backlog_len, s->backlog_len + 1,
+            s->backlog_count * sizeof(s->backlog_len[0]));
+}
+
+/* The station's radio did not take the frame being delivered: held, deaf, or
+ * out of buffers. To an individually addressed frame that is a missing
+ * acknowledgement, and the access point tries it again with the Retry bit set,
+ * up to the limit; a group frame is sent once and is simply gone. Returns the
+ * delay before the retry, or zero when there is nothing left to retry. */
+static int64_t wifi_not_taken(EspWifiMac *s)
+{
+    bool answer = s->pending_len != 0;
+    uint8_t *frame = answer ? s->pending : s->offered;
+    size_t len = answer ? s->pending_len : s->offered_len;
+    unsigned *attempts = answer ? &s->answer_attempts : &s->offered_attempts;
+
+    if (!len) {
+        return 0;
+    }
+    if (len < 10 || (frame[4] & 1)) {
+        if (!answer) {
+            s->offered_len = 0;
+            s->dropped++;
+        }
+        return 0;
+    }
+    if (++*attempts < RETRY_LIMIT) {
+        frame[1] |= FC1_RETRY;
+        s->retried++;
+        return wifi_backoff_ns(*attempts);
+    }
+    s->gave_up++;
+    qemu_log_mask(LOG_UNIMP, "esp-wifi-mac: at %u ms a 0x%02x of %u byte(s) to "
+                  "%02x:%02x:%02x:%02x:%02x:%02x went unacknowledged %u time(s); "
+                  "given up%c",
+                  (unsigned)(qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) / 1000000),
+                  frame[0], (unsigned)len, frame[4], frame[5], frame[6],
+                  frame[7], frame[8], frame[9], *attempts, 10);
+    if (answer) {
+        wifi_next_answer(s);
+    } else {
+        s->offered_len = 0;
+        s->offered_attempts = 0;
+        s->offered_unacked = true;
+        s->dropped++;
+    }
+    return 0;
 }
 
 static void wifi_raise(EspWifiMac *s, int level)
@@ -664,8 +782,10 @@ static size_t wifi_ask(EspWifiMac *s, uint16_t type, unsigned channel,
         frame = sealed;
     }
     uint8_t head[12];
-    stw_le_p(head + 0, type | (s->offered_delivered ? FRAME_DELIVERED : 0));
+    stw_le_p(head + 0, type | (s->offered_delivered ? FRAME_DELIVERED : 0)
+                            | (s->offered_unacked ? FRAME_UNACKED : 0));
     s->offered_delivered = false;
+    s->offered_unacked = false;
     stw_le_p(head + 2, (uint16_t)channel);
     stw_le_p(head + 4, (uint16_t)len);
     stl_le_p(head + 6, (uint32_t)(qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL)
@@ -969,15 +1089,14 @@ static void wifi_deliver(void *opaque)
         } else {
             s->stalled[4]++;
         }
-        /* The radio cannot put this on the air, and the air does not
-         * buffer: a frame the peer started is lost here, and the peer
-         * retries it because retrying is protocol. ADR 0067. */
-        if (s->offered_len) {
-            s->offered_len = 0;
-            s->dropped++;
+        /* The station's radio did not take it. An individually addressed
+         * frame is retried as 802.11 retries an unacknowledged one, up to the
+         * limit; a group frame is gone. ADR 0109, revisiting ADR 0067. */
+        {
+            int64_t again = wifi_not_taken(s);
+            timer_mod_ns(s->hatch, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL)
+                                   + (again ? again : wifi_retry_ns(s)));
         }
-        timer_mod_ns(s->hatch,
-                     qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + wifi_retry_ns(s));
         return;
     }
     if (s->mark_kind && s->pending_len && s->regs[R_PROBE_GATE / 4]
@@ -996,15 +1115,14 @@ static void wifi_deliver(void *opaque)
                       "descriptor the hardware owns after %u frame(s); waiting%c",
                       s->ring, s->deliveries, 10);
         s->stalled[2]++;
-        /* The radio cannot put this on the air, and the air does not
-         * buffer: a frame the peer started is lost here, and the peer
-         * retries it because retrying is protocol. ADR 0067. */
-        if (s->offered_len) {
-            s->offered_len = 0;
-            s->dropped++;
+        /* The station's radio did not take it. An individually addressed
+         * frame is retried as 802.11 retries an unacknowledged one, up to the
+         * limit; a group frame is gone. ADR 0109, revisiting ADR 0067. */
+        {
+            int64_t again = wifi_not_taken(s);
+            timer_mod_ns(s->hatch, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL)
+                                   + (again ? again : wifi_retry_ns(s)));
         }
-        timer_mod_ns(s->hatch,
-                     qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + wifi_retry_ns(s));
         return;
     }
 
@@ -1021,15 +1139,14 @@ static void wifi_deliver(void *opaque)
          * transmitting and never reached the rate that was asked for. Fifty
          * beacons a second were configured and five arrived. */
         s->stalled[3]++;
-        /* The radio cannot put this on the air, and the air does not
-         * buffer: a frame the peer started is lost here, and the peer
-         * retries it because retrying is protocol. ADR 0067. */
-        if (s->offered_len) {
-            s->offered_len = 0;
-            s->dropped++;
+        /* The station's radio did not take it. An individually addressed
+         * frame is retried as 802.11 retries an unacknowledged one, up to the
+         * limit; a group frame is gone. ADR 0109, revisiting ADR 0067. */
+        {
+            int64_t again = wifi_not_taken(s);
+            timer_mod_ns(s->hatch, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL)
+                                   + (again ? again : wifi_retry_ns(s)));
         }
-        timer_mod_ns(s->hatch,
-                     qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + wifi_retry_ns(s));
         return;
     }
     /* A header, then the packet, then its check sequence.
@@ -1070,7 +1187,7 @@ static void wifi_deliver(void *opaque)
     if (s->pending_len) {
         memcpy(frame, s->pending, s->pending_len);
         frame_len = s->pending_len;
-        s->pending_len = 0;
+        wifi_next_answer(s);
         qemu_log_mask(LOG_UNIMP, "esp-wifi-mac: at %u ms the answer, a 0x%02x "
                       "of %u byte(s), went on the air%c",
                       (unsigned)(qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) / 1000000),
@@ -1083,6 +1200,7 @@ static void wifi_deliver(void *opaque)
         frame_len = s->offered_len;
         memcpy(frame, s->offered, frame_len);
         s->offered_len = 0;
+        s->offered_attempts = 0;
         if (!frame_len) {
             timer_mod_ns(s->hatch,
                          qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + s->gap_ns);
@@ -1178,10 +1296,12 @@ static void wifi_deliver(void *opaque)
                       "the driver took %u, and it has sent %u; stalled on "
                       "no ring %u, mac held %u, receiver off %u, no free "
                       "descriptor %u, no buffer %u; %u frame(s) the peer "
-                      "offered were lost to a closed radio%c",
+                      "offered were lost to a closed radio; %u retr(ies), "
+                      "%u frame(s) given up unacknowledged%c",
                       s->deliveries, s->taken, s->transmits,
                       s->stalled[0], s->stalled[1], s->stalled[4],
-                      s->stalled[2], s->stalled[3], s->dropped, 10);
+                      s->stalled[2], s->stalled[3], s->dropped,
+                      s->retried, s->gave_up, 10);
     }
     /* A data frame delivered is worth a line each, because EAPOL is the only
      * thing that is one and there are a handful per handshake -- against
@@ -1390,6 +1510,11 @@ static void wifi_tx_complete(void *opaque)
                       (unsigned)(qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) / 1000000), 10);
         return;
     }
+    uint32_t result[TX_SLOTS];
+    uint8_t answer[FRAME_MAX];
+    for (unsigned slot = 0; slot < TX_SLOTS; slot++) {
+        result[slot] = TX_RESULT_SUCCESS;
+    }
     for (unsigned slot = 0; slot < TX_SLOTS; slot++) {
         if (!(s->tx_pending & (1u << slot))) {
             continue;
@@ -1419,25 +1544,42 @@ static void wifi_tx_complete(void *opaque)
                           "0x%04x%c", now_ms, request[0], (unsigned)length,
                           ethertype, info, 10);
         }
-        if (s->pending_len) {
-            /* Not put on the air, because an answer to an earlier frame has not
-             * been delivered yet. Said out loud, because a frame that silently
-             * never reaches the peer is indistinguishable from one it ignored. */
-            qemu_log_mask(LOG_UNIMP, "esp-wifi-mac: at %u ms a transmitted 0x%02x "
-                          "of %u byte(s) (eapol key_info 0x%04x) was not put on "
-                          "the air: the answer to an earlier frame, a 0x%02x of "
-                          "%u byte(s), is still waiting%c",
-                          now_ms, request[0], (unsigned)length, info,
-                          s->pending[0], (unsigned)s->pending_len, 10);
-            continue;
+        /* The access point's radio hears every frame the station sends, and
+         * acknowledges the ones addressed to it; the peer says which. A group
+         * frame is never acknowledged and completes as sent. With no access
+         * point on the air, nothing acknowledges anything (ADR 0109). */
+        bool group = length >= 10 && (request[4] & 1);
+        uint16_t flags = 0;
+        size_t reply = 0;
+        if (s->frames_fd >= 0) {
+            reply = wifi_ask(s, FRAME_TX, wifi_channel(s), request, length,
+                             answer, sizeof(answer), &flags);
+        } else if (!group) {
+            flags = REPLY_UNACKED;
         }
-        size_t reply = wifi_ask(s, FRAME_TX, wifi_channel(s),
-                                request, length,
-                                s->pending, sizeof(s->pending), NULL);
+        if (!group && (flags & REPLY_UNACKED)) {
+            result[slot] = TX_RESULT_ACK_TIMEOUT;
+        }
         if (!reply) {
             continue;
         }
-        s->pending_len = reply;
+        /* An earlier answer still waiting does not cost this one: it queues
+         * behind it, as the access point's own transmit queue would hold it.
+         * Before, the station's frame was not handed over at all, and was
+         * then reported acknowledged (ADR 0109). */
+        if (!s->pending_len) {
+            memcpy(s->pending, answer, reply);
+            s->pending_len = reply;
+            s->answer_attempts = 0;
+        } else if (s->backlog_count < ANSWER_BACKLOG) {
+            memcpy(s->backlog[s->backlog_count], answer, reply);
+            s->backlog_len[s->backlog_count++] = reply;
+        } else {
+            qemu_log_mask(LOG_UNIMP, "esp-wifi-mac: at %u ms the access point's "
+                          "answers are backed up %u deep; a 0x%02x answer is "
+                          "dropped%c", now_ms, ANSWER_BACKLOG + 1, answer[0], 10);
+            continue;
+        }
         s->answers++;
         unsigned kind = (unsigned)(request[0] >> 4) & 0xFu;
         bool fresh = !(s->kinds & (1u << kind));
@@ -1459,7 +1601,7 @@ static void wifi_tx_complete(void *opaque)
                           "from %02x:%02x:%02x:%02x:%02x:%02x -- answering with "
                           "a 0x%02x of %u byte(s)%c", request[0],
                           request[10], request[11], request[12], request[13],
-                          request[14], request[15], s->pending[0],
+                          request[14], request[15], answer[0],
                           (unsigned)reply, 10);
         }
         /* Put it on soon, but not in the same instant as the
@@ -1470,8 +1612,7 @@ static void wifi_tx_complete(void *opaque)
     }
     for (unsigned slot = 0; slot < TX_SLOTS; slot++) {
         if (s->tx_pending & (1u << slot)) {
-            s->regs[(R_TX_RESULT0 - slot * TX_RESULT_STRIDE) / 4] =
-                TX_RESULT_SUCCESS;
+            s->regs[(R_TX_RESULT0 - slot * TX_RESULT_STRIDE) / 4] = result[slot];
         }
     }
     s->regs[R_TX_DONE_SLOTS / 4] =
@@ -1611,6 +1752,11 @@ static void wifi_reset(void *opaque)
     s->have_key = false;
     memset(s->tk, 0, sizeof(s->tk));
     s->offered_delivered = false;
+    s->offered_unacked = false;
+    s->offered_len = 0;
+    s->offered_attempts = 0;
+    s->answer_attempts = 0;
+    s->backlog_count = 0;
     memset(s->awaiting, 0, sizeof(s->awaiting));
     wifi_raise(s, 0);
 }
