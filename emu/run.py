@@ -281,8 +281,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--wifi-ap", default=None, metavar="SSID[,MS[,CHANNEL]]",
                     help="put an access point in the air: its name, how often "
                          "it beacons in milliseconds (100 by default), and the "
-                         "channel it claims (by default whichever the "
-                         "controller is tuned to)")
+                         "one channel it is on (1 by default, ADR 0110)")
     ap.add_argument("--wifi-wpa2", action="store_true",
                     help="the access point has a passphrase: it advertises "
                          "WPA2-PSK, which is what a station that was given "
@@ -379,7 +378,7 @@ def main(argv: list[str] | None = None) -> int:
                              "associating")
         access_point = (parts[0],
                         int(parts[1]) if len(parts) > 1 and parts[1] else 100,
-                        int(parts[2]) if len(parts) > 2 and parts[2] else 0,
+                        int(parts[2]) if len(parts) > 2 and parts[2] else 1,
                         bool(args.wifi_wpa2), args.wifi_pass or "",
                         bool(args.wifi_uplink))
     elif args.wifi_wpa2:
@@ -436,8 +435,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"bus     : {'on' if server else 'off'}")
     if access_point:
         print(f"wifi-ap : {access_point[0]!r} every {access_point[1]} ms on "
-              + (f"channel {access_point[2]}" if access_point[2]
-                 else "whichever channel the controller is tuned to")
+              f"channel {access_point[2]}"
               + (", WPA2-PSK" if access_point[3] else ", open")
               + (", uplinked to the internet" if access_point[5] else ""))
     if hw_module.SOC_DEVICES:

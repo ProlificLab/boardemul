@@ -303,15 +303,15 @@ def build(outdir: Path, air: str | None = None, ble_air: str | None = None,
         # must interrupt within the half-slot they were set for (ADR 0025).
         # Bluetooth's own air, when a scenario gives it one: a different band
         # from the radio's, so a different directory (ADR 0045).
-        # An access point in the air, when a run asks for one: the device
-        # beacons on the channel the controller is tuned to, which is what a
-        # scanning station has to hear to find a network (ADR 0057).
+        # An access point in the air, when a run asks for one, on its own
+        # channel: the station hears it only while tuned there, and it hears
+        # the station only on it (ADR 0110).
         f"esp-wifi-mac,base=0x{WIFI_MAC_BASE:x},irq={IRQ_WIFI_MAC}"
         # beacon-ms is how often the device offers the peer a chance to put
         # something on the air, not how often a beacon goes out -- the peer
         # paces those itself now, on the guest's clock. Short, so that a
         # handshake message waits milliseconds rather than a beacon period.
-        + (f",beacon-ms={min(wifi_ap[1], 5)},channel={wifi_ap[2]}"
+        + (f",beacon-ms={min(wifi_ap[1], 5)},ap-channel={wifi_ap[2] or 1}"
            f",frames={outdir / 'wifi.sock'}"
            if wifi_ap else ""),
         f"esp-ble-core,base=0x{BLE_CORE_BASE:x},irq={IRQ_RWBLE}"

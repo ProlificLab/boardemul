@@ -276,10 +276,11 @@ class Network:
     wpa2: bool = False
     passphrase: str = ""
 
-    def body(self, channel: int, tim: bytes | None = None) -> bytes:
+    def body(self, tim: bytes | None = None) -> bytes:
         """The fixed fields and elements a beacon and a probe response share,
         and a beacon's TIM after the channel when it is given one -- beacons
-        carry one and probe responses do not (ADR 0109).
+        carry one and probe responses do not (ADR 0109). The channel they
+        name is this network's, the only one it is on (ADR 0110).
 
         Ordinary 2.4 GHz g: the four b rates as basic and four more on top,
         the rest in the extended element, and an ERP element to say so. Four b
@@ -297,7 +298,7 @@ class Network:
         out += capability.to_bytes(2, "little")
         out += bytes([0x00, len(name)]) + name          # the name
         out += bytes([0x01, 0x08, 0x82, 0x84, 0x8B, 0x96, 0x0C, 0x12, 0x18, 0x24])
-        out += bytes([0x03, 0x01, channel or self.channel])
+        out += bytes([0x03, 0x01, self.channel])
         if tim is not None:
             out += tim                                  # beacons only
         out += bytes([0x2A, 0x01, 0x00])                # an ERP network
@@ -529,8 +530,11 @@ class AccessPoint:
         A handshake that owes its first message gets it here: the association
         response has already gone, and this is the next thing the station is
         waiting for.
+
+        `channel` is where the station is tuned. The access point transmits on
+        its own channel whatever that is; the device delivers only what the
+        station could hear there (ADR 0110).
         """
-        self.channel = channel or self.channel
         self.clock = clock
         self.last_offered = None
         # Anything owed comes first, and is never held back for a schedule.
@@ -585,7 +589,7 @@ class AccessPoint:
         held = {s.aid for s in self.stations.values()
                 if s.held or (s.dozing and s.owes_first)}
         return Air(header(BEACON, BROADCAST, self._next())
-                   + self.network.body(channel, tim_element(held)))
+                   + self.network.body(tim_element(held)))
 
     # --------------------------------------------------------------- frames
 
@@ -637,9 +641,16 @@ class AccessPoint:
         addressed to us carries its power-management state; a PS-Poll asks for
         one held frame; and an answer for a station that is dozing is held for
         it like anything else.
+
+        A frame sent on any channel but ours was sent where this access point
+        is not: it is not heard, not answered, changes nothing, and if it was
+        individually addressed it goes unacknowledged (ADR 0110).
         """
-        self.channel = channel or self.channel
         self.clock = clock
+        if channel and channel != self.channel:
+            self._count("frame on another channel, not heard")
+            self.last_heard = len(frame) >= 10 and bool(frame[4] & 1)
+            return None
         self.last_heard = self._heard(frame)
         sender = self.stations.get(frame[10:16]) if len(frame) >= 16 else None
         if (sender is not None and sender.associated and not frame[0] & 0x03
@@ -662,7 +673,6 @@ class AccessPoint:
     def _answer(self, frame: bytes, channel: int,
                 clock: int = 0) -> bytes | None:
         """Which frame answers this one, as bytes."""
-        self.channel = channel or self.channel
         self.clock = clock
         if len(frame) < 24:
             return None
@@ -696,7 +706,7 @@ class AccessPoint:
         if kind == PROBE_REQUEST:
             self._count("probe")
             return (header(PROBE_RESPONSE, station_address, self._next())
-                    + self.network.body(channel))
+                    + self.network.body())
         if kind == AUTH:
             return self._auth(station, clock)
         if kind == ASSOC_REQUEST:
@@ -1383,6 +1393,7 @@ class FrameChannel:
         self.gaps: list[float] = []
         self.service: list[float] = []
         self._last: float | None = None
+        self.tuned: dict[int, int] = {}
 
     def start(self) -> None:
         if os.path.exists(self.path):
@@ -1436,6 +1447,9 @@ class FrameChannel:
                 frame = self._recv(conn, length) if length else b""
                 if length and frame is None:
                     break
+                # Where the station was tuned, request by request: the record of
+                # its channel hopping that ADR 0110's rules are judged against.
+                self.tuned[channel] = self.tuned.get(channel, 0) + 1
                 # The high bit acknowledges the last frame offered on a tick
                 # (ADR 0095); it is not part of the request's type.
                 delivered = bool(kind & REQ_DELIVERED)
@@ -1496,6 +1510,12 @@ class FrameChannel:
                          1000 * max(self.gaps),
                          1000 * sum(self.service) / len(self.service),
                          1000 * max(self.service))
+            if self.tuned:
+                log.info("the station was tuned, request by request, to %s; the "
+                         "access point is on channel %d",
+                         ", ".join(f"channel {c}: {n}" for c, n
+                                   in sorted(self.tuned.items())),
+                         self.point.channel)
             log.info("the frame channel closed after %s",
                      ", ".join(f"{v} {k}" for k, v in
                                sorted(self.point.counts.items())) or "nothing")

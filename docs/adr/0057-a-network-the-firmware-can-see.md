@@ -2,6 +2,11 @@
 
 **Status:** Accepted — 2026-09-10.
 
+**Amended 2026-10-01:** decision 2 is superseded by
+[ADR 0110](0110-the-access-point-has-one-channel.md). The access point is on
+one channel and its beacons name that one; the station hears it only while
+tuned there. `BOARDEMUL_WIFI_CHANNEL` is gone.
+
 ## Context
 
 ADR 0056 got a delivered frame all the way into the flash 802.11 stack and left

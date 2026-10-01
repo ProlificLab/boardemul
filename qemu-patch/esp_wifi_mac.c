@@ -466,9 +466,9 @@ struct EspWifiMac {
      * which was a cap and not a measurement, and it sent the reasoning
      * that followed it wrong. Every new kind of frame is reported. */
     uint16_t kinds;
-    /* The channel a delivered beacon claims. Zero means "whatever the
-     * controller is tuned to". BOARDEMUL_WIFI_CHANNEL, or the property. */
-    uint32_t channel;
+    /* The access point's channel, the only one it is heard on and hears on
+     * (ADR 0110). The station hears it only while tuned there. */
+    uint32_t ap_channel;
     /* The access point this device puts in the air, if any. */
     uint32_t beacon_ms;
     bool gated;
@@ -480,8 +480,9 @@ struct EspWifiMac {
     char *frames_path;
     /* Why a delivery did not happen, so the binding constraint is a number
      * rather than a guess: no ring, the MAC not listening, the head
-     * descriptor still full, its buffer not yet pointed anywhere. */
-    unsigned stalled[5];
+     * descriptor still full, its buffer not yet pointed anywhere, the
+     * station tuned away from the access point's channel. */
+    unsigned stalled[6];
     /* Two delivery choices, switchable so the difference is measured rather
      * than argued. Defaults are what the C peer did and the suites pass on:
      * an answer skips the receive gate so it is prompt, and the beacon it
@@ -568,6 +569,30 @@ static void wifi_next_answer(EspWifiMac *s)
             s->backlog_count * sizeof(s->backlog_len[0]));
 }
 
+/* A standing access point never reaches the repeat summary, so it says how it
+ * is getting on as it goes: every hundred frames the peer put on the air,
+ * whether the station's radio took them or they were lost. Counted on both,
+ * not on deliveries alone, because a station that scans is on the access
+ * point's channel for a fraction of each sweep (ADR 0110), and a hundred
+ * deliveries can take longer than a whole run. Taken means the driver re-armed
+ * the descriptor, which is the only thing the model can see. */
+static void wifi_progress(EspWifiMac *s)
+{
+    if (s->repeat || (s->deliveries + s->dropped) % 100) {
+        return;
+    }
+    qemu_log_mask(LOG_UNIMP, "esp-wifi-mac: %u frame(s) put on the air, "
+                  "the driver took %u, and it has sent %u; stalled on "
+                  "no ring %u, off channel %u, mac held %u, receiver off "
+                  "%u, no free descriptor %u, no buffer %u; %u frame(s) the peer "
+                  "offered were lost to a closed radio; %u retr(ies), "
+                  "%u frame(s) given up unacknowledged%c",
+                  s->deliveries, s->taken, s->transmits,
+                  s->stalled[0], s->stalled[5], s->stalled[1], s->stalled[4],
+                  s->stalled[2], s->stalled[3], s->dropped,
+                  s->retried, s->gave_up, 10);
+}
+
 /* The station's radio did not take the frame being delivered: held, deaf, or
  * out of buffers. To an individually addressed frame that is a missing
  * acknowledgement, and the access point tries it again with the Retry bit set,
@@ -587,6 +612,7 @@ static int64_t wifi_not_taken(EspWifiMac *s)
         if (!answer) {
             s->offered_len = 0;
             s->dropped++;
+            wifi_progress(s);
         }
         return 0;
     }
@@ -609,6 +635,7 @@ static int64_t wifi_not_taken(EspWifiMac *s)
         s->offered_attempts = 0;
         s->offered_unacked = true;
         s->dropped++;
+        wifi_progress(s);
     }
     return 0;
 }
@@ -961,12 +988,11 @@ static hwaddr wifi_free_descriptor(EspWifiMac *s, uint32_t *word_out)
     return 0;
 }
 
-/* The channel the controller is tuned to, or the one a run pinned. */
+/* The channel the station's controller is tuned to: wDevCtrl+44, the byte
+ * the ROM stamps a received frame with (ADR 0057). Compared with the access
+ * point's own channel, it decides what each can hear of the other (ADR 0110). */
 static unsigned wifi_channel(EspWifiMac *s)
 {
-    if (s->channel) {
-        return s->channel;
-    }
     uint32_t control = 0;
     uint8_t current = 0;
     address_space_read(&address_space_memory, WDEV_CTRL_PTR,
@@ -1041,6 +1067,18 @@ static void wifi_deliver(void *opaque)
         s->offered_len = wifi_ask(s, FRAME_TICK, wifi_channel(s), NULL, 0,
                                   s->offered, FRAME_MAX, &flags);
         s->offered_awaited = (flags & REPLY_AWAITED) != 0;
+    }
+    /* The station hears the access point only while tuned to its channel
+     * (ADR 0110). Nothing is exempt from this one: an answer or an awaited
+     * frame cannot arrive on a channel its sender is not on. A beacon sent
+     * meanwhile is missed; anything individually addressed is retried and
+     * then given up, as ADR 0109 says. */
+    if ((s->pending_len || s->offered_len) && wifi_channel(s) != s->ap_channel) {
+        s->stalled[5]++;
+        int64_t again = wifi_not_taken(s);
+        timer_mod_ns(s->hatch, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL)
+                               + (again ? again : wifi_retry_ns(s)));
+        return;
     }
     /* Nothing is heard while the MAC is held. ic_mac_deinit waits for the
      * two busy bits to drop and then sets these eight-plus-one bits;
@@ -1178,8 +1216,9 @@ static void wifi_deliver(void *opaque)
      * memory from a device is a shortcut, and an honest one only because the
      * alternative is not available: the channel is programmed through the
      * radio's front-end windows, which this project models in Python, and this
-     * device cannot see them. BOARDEMUL_WIFI_CHANNEL, or the channel property,
-     * pins it instead. */
+     * device cannot see them. The beacon now names the access point's own
+     * channel, and is only delivered while the station is tuned there, so the
+     * two always agree (ADR 0110). */
     /* An answer the station is waiting for goes first; a beacon is what there
      * is to say when nothing was asked. */
     size_t frame_len;
@@ -1288,21 +1327,7 @@ static void wifi_deliver(void *opaque)
          * the peer on the next request, as an acknowledgement would. */
         s->offered_delivered = true;
     }
-    /* A standing access point never reaches the summary below, so it says how
-     * it is getting on as it goes. Taken means the driver re-armed the
-     * descriptor, which is the only thing the model can see. */
-    if (!s->repeat && s->deliveries % 100 == 0) {
-        qemu_log_mask(LOG_UNIMP, "esp-wifi-mac: %u frame(s) put on the air, "
-                      "the driver took %u, and it has sent %u; stalled on "
-                      "no ring %u, mac held %u, receiver off %u, no free "
-                      "descriptor %u, no buffer %u; %u frame(s) the peer "
-                      "offered were lost to a closed radio; %u retr(ies), "
-                      "%u frame(s) given up unacknowledged%c",
-                      s->deliveries, s->taken, s->transmits,
-                      s->stalled[0], s->stalled[1], s->stalled[4],
-                      s->stalled[2], s->stalled[3], s->dropped,
-                      s->retried, s->gave_up, 10);
-    }
+    wifi_progress(s);
     /* A data frame delivered is worth a line each, because EAPOL is the only
      * thing that is one and there are a handful per handshake -- against
      * thousands of beacons, which would drown it. Without this there was no
@@ -1834,10 +1859,6 @@ static void wifi_realize(DeviceState *dev, Error **errp)
         }
         g_free(dup);
     }
-    const char *pinned = getenv("BOARDEMUL_WIFI_CHANNEL");
-    if (pinned) {
-        s->channel = (uint32_t)strtoul(pinned, NULL, 0);
-    }
     /* Normally the trace window opens on the first frame delivered, which is
      * after the station is up. BOARDEMUL_WIFI_TRACE_AT opens it at once
      * instead, for the questions that are about what the driver does before
@@ -1884,12 +1905,12 @@ static Property wifi_props[] = {
     /* The WiFi MAC's own source number. Which one the driver actually listens
      * on is not settled, so it is a property rather than a constant. */
     DEFINE_PROP_INT32("irq", EspWifiMac, irq_source, 0),
-    /* An access point in the air: what it is called, how often it beacons in
-     * milliseconds (zero for none), and which channel it claims (zero to
-     * claim whichever the controller is tuned to). */
+    /* An access point in the air: how often it beacons in milliseconds (zero
+     * for none), where the peer that speaks for it listens, and the one channel
+     * it is on (ADR 0110). */
     DEFINE_PROP_UINT32("beacon-ms", EspWifiMac, beacon_ms, 0),
     DEFINE_PROP_STRING("frames", EspWifiMac, frames_path),
-    DEFINE_PROP_UINT32("channel", EspWifiMac, channel, 0),
+    DEFINE_PROP_UINT32("ap-channel", EspWifiMac, ap_channel, 1),
     DEFINE_PROP_END_OF_LIST(),
 };
 

@@ -5,8 +5,8 @@ This is the last thing on either board that had nothing behind it. The window
 was a trace region for months: the driver would start its station and scan, and
 there was never anything to find (ADR 0054). What it took was the interrupt bit
 the driver's own handler routes to its receive path (ADR 0056), a forty-eight
-byte header with the frame's length in it, and a beacon that claims the channel
-it arrives on (ADR 0057).
+byte header with the frame's length in it, and a beacon whose channel agrees
+with where it arrives (ADRs 0057, 0110).
 
 The assertion is the firmware's own verdict, not this project's. Arduino's
 WiFiMulti prints `[WIFI] no networks found` when a scan returned nothing at

@@ -62,7 +62,7 @@ superseded ADR is marked superseded and points forward.
 | [0054](0054-what-wifi-would-need-to-hear-something.md) | What WiFi would need to hear something | Mostly answered by 0055 |
 | [0055](0055-a-frame-the-wifi-driver-accepts.md) | A frame the WiFi driver accepts | Accepted |
 | [0056](0056-what-tells-the-driver-a-frame-arrived.md) | What tells the driver a frame arrived | Accepted (supersedes half of 0055) |
-| [0057](0057-a-network-the-firmware-can-see.md) | A network the firmware can see | Accepted (one cost corrected by 0060) |
+| [0057](0057-a-network-the-firmware-can-see.md) | A network the firmware can see | Accepted (one cost corrected by 0060; decision 2 superseded by 0110) |
 | [0058](0058-the-firmware-tries-to-connect.md) | The firmware tries to connect, and where it stops | Accepted (central claim corrected by 0059) |
 | [0059](0059-the-transmit-engine.md) | The transmit engine | Accepted |
 | [0060](0060-an-access-point-that-answers.md) | An access point that answers | Accepted (its account of the failure corrected by 0061) |
@@ -115,3 +115,4 @@ superseded ADR is marked superseded and points forward.
 | [0107](0107-a-skipped-event-is-decided-on-the-kick.md) | A skipped Bluetooth event is decided on the kick | Accepted (refines 0025) |
 | [0108](0108-the-sensor-hub-boots-its-firmware.md) | The Max's sensor hub boots the firmware it is given | Accepted (closes 0106 item 5) |
 | [0109](0109-the-air-acknowledges-retries-and-holds-for-a-dozing-station.md) | The air acknowledges, retries, and holds frames for a dozing station | Accepted (closes 0106 item 6) |
+| [0110](0110-the-access-point-has-one-channel.md) | The access point has one channel | Accepted (supersedes 0057 decision 2) |
