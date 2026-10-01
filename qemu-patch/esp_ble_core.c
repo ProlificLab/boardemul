@@ -233,7 +233,7 @@ struct EspBleCore {
     unsigned fifo_len;
 
     /* Exchange-table entries kicked and not yet ended, by start time. */
-    struct { unsigned idx; int64_t start_hus; bool received; } events[ET_MAX_PENDING];
+    struct { unsigned idx; int64_t start_hus; bool received; bool late; } events[ET_MAX_PENDING];
     unsigned n_events;
     QEMUTimer *event_timer;
 
@@ -774,7 +774,7 @@ static void ble_event_done(void *opaque)
         return;
     }
     unsigned idx = s->events[0].idx;
-    bool late = s->events[0].start_hus + EVENT_HUS < ble_now_hus() - EVENT_HUS;
+    bool late = s->events[0].late;
     bool took = s->events[0].received;
     hwaddr entry = ble_et_entry(s, idx);
     uint16_t word0 = 0;
@@ -864,6 +864,13 @@ static void ble_kick(EspBleCore *s, uint32_t value)
     s->events[i].idx = idx;
     s->events[i].start_hus = start;
     s->events[i].received = received;
+    /* An entry already past when it is kicked is skipped (ADR 0025). That is
+     * decided here, on the kick: deciding it when the end timer runs measured
+     * the timer, not the guest, and under -icount's clock warp a loaded host
+     * runs that timer late on its own, which made an event the guest had
+     * programmed in time look skipped. The tolerance is the one the end-time
+     * test amounted to while the timer was punctual: two event lengths. */
+    s->events[i].late = ble_now_hus() > start + 2 * EVENT_HUS;
     s->n_events++;
     ble_arm_event_timer(s);
 }
