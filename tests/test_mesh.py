@@ -28,7 +28,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from emu.devices import lora  # noqa: E402
 from emu.devices.air import AirMedium  # noqa: E402
 from tests.support import (  # noqa: E402
-    FIRMWARE_MESHTASTIC, MESHTASTIC_LITTLEFS, REPO_ROOT, qemu_available,
+    BOOT_BANNER, FIRMWARE_MESHTASTIC, MESHTASTIC_LITTLEFS, REPO_ROOT,
+    qemu_available,
 )
 
 pytestmark = [
@@ -51,8 +52,6 @@ RUN_SECONDS = 300
 # in the middle of answering.
 GRACE_SECONDS = 2
 RECEIVED = "sx1262: heard a"
-# The ROM prints this once per boot, with the reset cause after it.
-BOOT_BANNER = "rst:0x"
 
 
 @pytest.fixture(scope="module")
