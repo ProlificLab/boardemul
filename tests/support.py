@@ -355,6 +355,21 @@ def audio_streams(outdir: Path) -> list[tuple[str, str, float, int, int]]:
     return streams
 
 
+def bus_clocks(outdir: Path) -> dict[str, list[float]]:
+    """Every clock each bus ran at, in the order the controllers reported them
+    (ADRs 0120, 0121): "spi2:1" for an SPI controller's select, "i2c0" for an
+    I2C controller's SCL."""
+    clocks: dict[str, list[float]] = {}
+    for log in outdir.glob("*.qemu.log"):
+        text = log.read_text(errors="replace")
+        for bus, cs, hz in re.findall(
+                r"esp-spi-master\((\w+)\): select (\d+) clocked at ([0-9.]+) Hz", text):
+            clocks.setdefault(f"{bus}:{cs}", []).append(float(hz))
+        for bus, hz in re.findall(r"esp-i2c-master\((\w+)\): SCL at ([0-9.]+) Hz", text):
+            clocks.setdefault(bus, []).append(float(hz))
+    return clocks
+
+
 def _frames(outdir: Path) -> list[Path]:
     return sorted((outdir / "frames").glob("frame-*.png"))
 

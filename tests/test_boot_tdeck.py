@@ -25,9 +25,9 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from tests.support import (  # noqa: E402
-    FIRMWARE_TDECK, FIRMWARE_TDECK_BUILDS, Run, audio_streams, by_boot,
-    last_boot, qemu_available, radio_busy, run_emulator, unexplained_resets,
-    unforgiven,
+    FIRMWARE_TDECK, FIRMWARE_TDECK_BUILDS, Run, audio_streams, bus_clocks,
+    by_boot, last_boot, qemu_available, radio_busy, run_emulator,
+    unexplained_resets, unforgiven,
 )
 
 pytestmark = [
@@ -174,6 +174,17 @@ def test_the_microphone_is_clocked_at_the_rate_the_firmware_set(booted: Run) -> 
     assert mic, f"no capture was paced by its clock: {streams}"
     _block, _direction, hz, _channels, bits = mic[0]
     assert abs(hz - 16000) < 16 and bits == 16, mic[0]
+
+
+def test_the_radio_and_i2c_buses_run_at_their_drivers_clocks(booted: Run) -> None:
+    """RadioLib talks to the radio at its default 2 MHz (RADIOLIB_DEFAULT_SPI_
+    SETTINGS for Arduino), and Wire, begun without a frequency, runs at the
+    100 kHz i2cInit gives it. Each transfer now takes that long on the bus
+    (ADRs 0120, 0121)."""
+    clocks = bus_clocks(booted.outdir)
+    assert 2e6 in clocks.get("spi2:1", []), clocks
+    scl = clocks.get("i2c0", [])
+    assert scl and abs(scl[0] - 100e3) < 1e3, clocks
 
 
 def test_it_reads_its_battery_and_keeps_drawing(booted: Run) -> None:

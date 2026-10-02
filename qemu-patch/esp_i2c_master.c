@@ -19,6 +19,7 @@
 #include "qemu/osdep.h"
 #include "qemu/cutils.h"
 #include "qemu/error-report.h"
+#include "qemu/log.h"
 #include "hw/qdev-properties.h"
 #include "hw/qdev-core.h"
 #include "hw/irq.h"
@@ -47,6 +48,12 @@ OBJECT_DECLARE_SIMPLE_TYPE(EspI2cMaster, ESP_I2C_MASTER)
 #define R_INT_CLR    0x24
 #define R_INT_ENA    0x28
 #define R_INT_STATUS 0x2C
+#define R_SCL_HIGH         0x38
+#define R_SCL_START_HOLD   0x40
+#define R_SCL_RSTART_SETUP 0x44
+#define R_SCL_STOP_HOLD    0x48
+#define R_SCL_STOP_SETUP   0x4C
+#define R_CLK_CONF         0x54
 #define R_COMD0      0x58
 #define R_DATE       0xF8
 #define TXFIFO_BASE  0x100
@@ -72,6 +79,16 @@ OBJECT_DECLARE_SIMPLE_TYPE(EspI2cMaster, ESP_I2C_MASTER)
 #define CMD_STOP   2
 #define CMD_END    4
 #define CMD_DONE   (1u << 31)
+
+/* What sets the bus's pace (ADR 0121), from ESP-IDF v4.4.6's
+ * soc/esp32s3/include/soc/i2c_struct.h: nine-bit periods in I2C_SCLK cycles,
+ * and the clock's own fractional divider. */
+#define PERIOD(v)              ((v) & 0x1FF)
+#define SCL_WAIT_HIGH(v)       (((v) >> 9) & 0x7F)
+#define CLK_DIV_NUM(v)         ((v) & 0xFF)
+#define CLK_DIV_A(v)           (((v) >> 8) & 0x3F)
+#define CLK_DIV_B(v)           (((v) >> 14) & 0x3F)
+#define CLK_SEL_RC_FAST        (1u << 20)
 
 #define I2C_REG_COUNT  (0x1000 / 4)
 #define I2C_FIFO_DEPTH 32
@@ -124,6 +141,11 @@ struct EspI2cMaster {
     qemu_irq irq_line;
     int irq_level;
     QEMUTimer *irq_timer;          /* the deferred interrupt (ESP_IRQ_DEFER_NS) */
+    /* Completion bits raised by a command list still on the bus, and when it
+     * comes off it (ADR 0121). */
+    uint32_t int_pending;
+    int64_t int_at;
+    double scl_said;
     int fd;
     bool broken;
 };
@@ -173,9 +195,22 @@ static void i2c_fail(EspI2cMaster *s, const char *what)
     }
 }
 
+/* Fold in the completion bits of a command list whose bus time has passed.
+ * Asked whenever they could be seen, on the guest's own clock. */
+static void i2c_settle(EspI2cMaster *s)
+{
+    if (s->int_pending
+        && qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) >= s->int_at) {
+        s->int_raw |= s->int_pending;
+        s->int_pending = 0;
+    }
+}
+
 static void i2c_irq_due(void *opaque)
 {
     EspI2cMaster *s = opaque;
+
+    i2c_settle(s);
     int level = (s->int_raw & s->regs[R_INT_ENA / 4]) ? 1 : 0;
 
     if (!s->irq_line || level == s->irq_level) {
@@ -196,9 +231,54 @@ static void i2c_irq_due(void *opaque)
  * on the host (ESP_IRQ_DEFER_NS, ADR 0113). */
 static void i2c_update_irq(EspI2cMaster *s)
 {
-    if (s->irq_timer && !timer_pending(s->irq_timer)) {
-        timer_mod_ns(s->irq_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL)
-                                   + ESP_IRQ_DEFER_NS);
+    int64_t at = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + ESP_IRQ_DEFER_NS;
+
+    if (s->int_pending) {
+        at = MAX(at, s->int_at);    /* when the bits it would carry appear */
+    }
+    if (s->irq_timer && (!timer_pending(s->irq_timer)
+                         || (int64_t)timer_expire_time_ns(s->irq_timer) < at)) {
+        timer_mod_ns(s->irq_timer, at);
+    }
+}
+
+/* I2C_SCLK (TRM 27.4.1): XTAL_CLK or RC_FAST_CLK, over
+ * DIV_NUM + 1 + DIV_A / DIV_B. */
+static double i2c_sclk_hz(EspI2cMaster *s)
+{
+    uint32_t conf = s->regs[R_CLK_CONF / 4];
+    double divisor = CLK_DIV_NUM(conf) + 1.0;
+
+    if (CLK_DIV_B(conf)) {
+        divisor += (double)CLK_DIV_A(conf) / CLK_DIV_B(conf);
+    }
+    return ((conf & CLK_SEL_RC_FAST) ? 17.5e6 : 40e6) / divisor;
+}
+
+/* One SCL period in I2C_SCLK cycles, when nothing stretches it (27.4). */
+static uint32_t i2c_scl_cycles(EspI2cMaster *s)
+{
+    uint32_t high = s->regs[R_SCL_HIGH / 4];
+
+    return PERIOD(s->regs[R_SCL_LOW / 4]) + PERIOD(high) + SCL_WAIT_HIGH(high)
+           + 3;
+}
+
+/* The I2C_SCLK cycles one command puts on the bus (ADR 0121). */
+static uint64_t i2c_command_cycles(EspI2cMaster *s, uint32_t op, uint32_t count)
+{
+    switch (op) {
+    case CMD_RSTART:
+        return PERIOD(s->regs[R_SCL_RSTART_SETUP / 4]) + 1
+               + PERIOD(s->regs[R_SCL_START_HOLD / 4]) + 1;
+    case CMD_WRITE:
+    case CMD_READ:
+        return (uint64_t)count * 9 * i2c_scl_cycles(s);
+    case CMD_STOP:
+        return PERIOD(s->regs[R_SCL_STOP_SETUP / 4]) + 1
+               + PERIOD(s->regs[R_SCL_STOP_HOLD / 4]) + 1;
+    default:
+        return 0;
     }
 }
 
@@ -250,11 +330,15 @@ static void i2c_execute(EspI2cMaster *s)
         return;
     }
     s->int_raw &= ~(INT_NACK | INT_TRANS_COMPLETE | INT_END_DETECT);
+    uint32_t before = s->int_raw;
+    uint64_t cycles = 0;
 
     for (int slot = 0; slot < 8; slot++) {
         uint32_t cmd = s->regs[(R_COMD0 + slot * 4) / 4];
         uint32_t op = (cmd >> 11) & 0x7;
         uint32_t count = cmd & 0xFF;
+
+        cycles += i2c_command_cycles(s, op, count);
 
         s->ack_check = (cmd & (1u << 8)) != 0;
 
@@ -351,6 +435,20 @@ done:
     if (s->rx_count > s->rx_pos) {
         s->int_raw |= INT_RXFIFO_WM;
     }
+
+    /* What this list raised appears once its bus time has passed. */
+    double sclk = i2c_sclk_hz(s);
+    double scl = sclk / i2c_scl_cycles(s);
+    if (scl != s->scl_said) {
+        s->scl_said = scl;
+        qemu_log_mask(LOG_UNIMP, "esp-i2c-master(%s): SCL at %.0f Hz\n",
+                      s->region_name ? s->region_name : "?", scl);
+    }
+    uint32_t fresh = s->int_raw & ~before;
+    s->int_raw &= ~fresh;
+    s->int_pending |= fresh;
+    s->int_at = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL)
+                + (int64_t)(cycles * 1e9 / sclk);
     i2c_update_irq(s);
 }
 
@@ -369,8 +467,10 @@ static uint64_t i2c_read(void *opaque, hwaddr offset, unsigned size)
     case R_DATA:
         return s->rx_pos < s->rx_count ? s->rxfifo[s->rx_pos++] : 0;
     case R_INT_RAW:
+        i2c_settle(s);
         return s->int_raw;
     case R_INT_STATUS:
+        i2c_settle(s);
         return s->int_raw & s->regs[R_INT_ENA / 4];
     case R_FIFO_ST:
         return ((s->rx_count - s->rx_pos) & 0x3F) << 8 | (s->tx_count & 0x3F) << 18;
@@ -406,7 +506,9 @@ static void i2c_write(void *opaque, hwaddr offset, uint64_t val, unsigned size)
         }
         return;
     case R_INT_CLR:
+        /* Whether or not it has appeared yet (ADR 0121). */
         s->int_raw &= ~value;
+        s->int_pending &= ~value;
         i2c_update_irq(s);
         return;
     case R_INT_ENA:
