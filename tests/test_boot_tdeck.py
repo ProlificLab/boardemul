@@ -98,9 +98,9 @@ def test_it_reboots_only_from_the_forgiven_panic(booted: Run) -> None:
 
     Before the board could reboot, any reset ended the run and failed what came
     after it. So a boot that ended some other way -- a watchdog, an abort, a
-    reset with no panic before it -- still fails, here. The canary's own reset
-    can land twice, leaving a boot of nothing but the ROM's banner; that one is
-    the canary's too (ADR 0114).
+    reset with no panic before it -- still fails, here (ADR 0114). So does a
+    boot of nothing but the ROM's banner: the canary's reset used to print two,
+    until QEMU held core 0 where the restart stalls it (ADR 0123).
     """
     unexplained = unexplained_resets(booted.uart)
     boots = by_boot(booted.uart)

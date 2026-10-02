@@ -280,32 +280,22 @@ def unforgiven(text: str) -> list[str]:
     return [p for p in firsts if not IPC1_CANARY.match(p)]
 
 
-def rom_only(boot: str) -> bool:
-    """Whether a boot said nothing past the ROM's banner.
-
-    That is a reset landing again while the ROM prints it. The panic handler on
-    core 1 resets core 0 and then core 1, and QEMU's ESP32-S3 makes each CPU
-    reset a reset of the whole machine (hw/xtensa/esp32s3.c), so two banners
-    can come from one reboot (ADR 0114).
-    """
-    return all(not line.strip() or line.startswith(("ESP-ROM:", "Build:", BOOT_BANNER))
-               for line in boot.splitlines())
-
-
 def unexplained_resets(text: str) -> list[int]:
     """The boots, numbered from 1, that ended for a reason other than the
     forgiven panic. Before a run could reboot, any reset ended it; now each
     one has to be accounted for (ADR 0114).
 
-    A boot that said nothing past the ROM's banner was ended by the same reset
-    that started it, so it is accounted for by the boot before it.
+    A boot that said nothing past the ROM's banner is not excused. It was one
+    reboot from core 1 printing two banners, because QEMU let core 0 run while
+    the restart had it stalled, and ADR 0123 fixed that, so another one means
+    the restart has gone wrong again.
     """
     def ended_in_the_canary(boot: str) -> bool:
         first = panics(boot)[:1]
         return bool(first) and IPC1_CANARY.match(first[0]) is not None
 
     return [n for n, boot in enumerate(by_boot(text)[:-1], 1)
-            if not (ended_in_the_canary(boot) or (n > 1 and rom_only(boot)))]
+            if not ended_in_the_canary(boot)]
 
 
 def _uart(outdir: Path) -> str:

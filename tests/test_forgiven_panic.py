@@ -16,7 +16,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from tests.support import (  # noqa: E402
-    Run, by_boot, last_boot, panics, rom_only, unexplained_resets, unforgiven,
+    Run, by_boot, last_boot, panics, unexplained_resets, unforgiven,
 )
 
 BANNER = "ESP-ROM:esp32s3-20210327\nBuild:Mar 27 2021\nrst:{cause}\n"
@@ -98,22 +98,15 @@ def test_a_reset_with_no_panic_is_not() -> None:
     assert unexplained_resets(uart) == [1]
 
 
-def test_a_reset_delivered_twice_is_one_reboot() -> None:
-    """Seen under load: the canary's reset, a banner, and at once another. The
-    boot in between said nothing past the ROM, so the canary accounts for it."""
+def test_a_reset_delivered_twice_is_not_one_reboot() -> None:
+    """Seen under load before ADR 0123: the canary's reset, a banner, and at
+    once another. It was QEMU letting the stalled core 0 run its ROM, and it is
+    fixed, so the boot of nothing but the banner is a reset to account for."""
     uart = (POWER_ON + IPC1_WITH_ITS_CORE_DUMP + SW_RESET_CUT_SHORT + SW_RESET
             + "ADC_CALI\n")
-    boots = by_boot(uart)
-    assert len(boots) == 3 and rom_only(boots[1]) and not rom_only(boots[2])
-    assert unexplained_resets(uart) == []
-
-
-def test_a_boot_of_only_the_rom_needs_a_reason_before_it() -> None:
-    """It is accounted for by the boot it followed, so it cannot come first,
-    and it does not excuse a boot that ended badly."""
+    assert len(by_boot(uart)) == 3
+    assert unexplained_resets(uart) == [2]
     assert unexplained_resets(SW_RESET_CUT_SHORT + SW_RESET) == [1]
-    uart = POWER_ON + "Start Radio success!\n" + SW_RESET_CUT_SHORT + SW_RESET
-    assert unexplained_resets(uart) == [1]
 
 
 def test_a_run_is_split_at_each_rom_banner() -> None:
