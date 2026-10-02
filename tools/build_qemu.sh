@@ -111,7 +111,7 @@ fi
 #   gdma-out-eof-desc.patch  ADR 0017  issue 168, offered as PR 176
 #   spi1-dummy-lanes.patch    ADR 0022  issue 169, offered as PR 177
 #   system-bt-lpck-regs.patch ADR 0023  issue 171, offered as PR 178
-#   tlb-flush-owning-thread.patch ADR 0066  issue 175, offered as PR 179
+#   tlb-flush-owning-thread.patch ADR 0066  issue 175, offered as PR 179; QEMU core: gitlab 4633
 #   gdma-reaches-psram.patch      ADR 0083  issue 180, offered as PR 181
 #   intmatrix-level-mirror.patch  ADR 0101  issue 184, fix offered by another user as PR 185
 #   uart2-chardev.patch           ADR 0105  issue 186, offered as PR 187
