@@ -27,9 +27,9 @@ source for it:
       $GNRMC,014230.00,A,4722.80340,N,00831.68218,E,0.000,,120477,,,A,V*14
 
   The model writes `0.00,0.00`.
-- **Invalid or unknown data (2.5.6):** "By default the receiver will not
-  output invalid data. In such cases, it will output empty fields". Its
-  example with no time is `$GPGLL,,,,,,V,N*64`.
+- **Invalid or unknown data (2.5.6):** by default the receiver does not output
+  invalid data; "it will output empty fields" instead. Its example with no time
+  is `$GPGLL,,,,,,V,N*64`.
 
 And the model stamps a report with whenever Python polled it, to the whole
 second. Its first report comes one second after the clock was first heard. So
