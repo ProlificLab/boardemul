@@ -30,6 +30,10 @@ FIRMWARE_TDECK = REPO_ROOT / "firmware" / "T-Deck_UnitTest_251113.bin"
 FIRMWARE_TDECK_BUILDS = sorted((REPO_ROOT / "firmware").glob("T-Deck_UnitTest_2*.bin"))
 FIRMWARE_MESHTASTIC = REPO_ROOT / "firmware" / "firmware-t-deck-tft-2.7.10.94d4bdf.bin"
 MESHTASTIC_LITTLEFS = REPO_ROOT / "firmware" / "littlefs-t-deck-tft-2.7.10.94d4bdf.bin"
+# Not vendor firmware: built from tools/restart_probe by its build.py, so it
+# is neither downloaded nor pinned, and its test skips until it is built
+# (ADR 0123).
+FIRMWARE_RESTART_PROBE = REPO_ROOT / "firmware" / "restart_probe.bin"
 
 
 PNG_MAGIC = bytes([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])

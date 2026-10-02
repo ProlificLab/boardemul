@@ -14,6 +14,11 @@
 # That shared boot stage is why the examples work as controls: boot any one of
 # them to the ROM's `entry` line and the flash/cache/MMU/UART/eFuse path is
 # validated for all of them. See docs/BOOT.md.
+#
+# One image here is not a vendor's and is not listed below:
+# restart_probe.bin, which tools/restart_probe/build.py builds from source
+# (ADR 0123). It records its build time, so it has no stable hash to pin, and
+# tests/test_restart_probe.py skips until it has been built.
 
 source_repo = "https://github.com/Xinyuan-LilyGO/T-Deck-MAX"
 retrieved   = "2026-08-21"

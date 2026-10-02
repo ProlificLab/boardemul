@@ -3,6 +3,19 @@
 **Status:** Accepted — 2026-10-02. Withdraws ADR 0114's exception for a boot
 of nothing but the ROM's banner (its decision 3).
 
+**Amended 2026-10-02:** decision 4 is reversed for the probe. It is now a
+slow test, `tests/test_restart_probe.py`, which boots
+`firmware/restart_probe.bin` as built by `tools/restart_probe/build.py` and
+skips when that image is absent. It is the first slow test to boot a
+firmware of ours rather than a vendor's (ADR 0012, decision 1). It checks one
+ROM banner per restart from each core, on one translation thread and on a
+thread per core, and that without `--reboot` a restart from core 1 still ends
+the run. Without this ADR's patch the one-thread arm fails all four of its
+checks: three banners for core 1's first restart, then an assertion inside
+FreeRTOS. The thread-per-core arm passed without it, and the `-no-reboot`
+check passes either way by design, so those two guard the patch's other paths
+rather than the defect.
+
 ## Context
 
 ADR 0114 saw the T-Deck boot test's canary reboots print the ROM's banner
@@ -131,7 +144,7 @@ from core 1 the tests had seen.
    restart had gone wrong again. `test_mesh`'s boot count now counts boots.
 
 4. **The diagnostic stays an experiment, and the probe stays out of the
-   suite.** The slow tier boots vendor firmware (ADR 0012), and the probe is
+   suite** (reversed for the probe: see the amendment above). The slow tier boots vendor firmware (ADR 0012), and the probe is
    ours. Its source is kept in `tools/restart_probe`, with the commands to
    build and run it, so the measurement can be repeated.
 

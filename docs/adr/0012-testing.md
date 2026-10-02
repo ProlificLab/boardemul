@@ -2,6 +2,13 @@
 
 **Status:** Accepted — 2026-08-26
 
+**Amended 2026-10-02:** one slow test boots a firmware of ours, not a
+vendor's. `tests/test_restart_probe.py` boots `tools/restart_probe`, which
+restarts the chip from each core on purpose, because no vendor image does that
+reliably. The image is built from source rather than downloaded, so it is not
+pinned, and the test skips until it is built
+([ADR 0123](0123-one-core-resets-the-other-and-holds-it.md)).
+
 ## Context
 
 Until now nothing verified this emulator except running it for a few minutes and

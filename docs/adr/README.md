@@ -17,7 +17,7 @@ superseded ADR is marked superseded and points forward.
 | [0009](0009-desktop-viewer.md) | A desktop viewer that watches a file and draws its own device | Accepted |
 | [0010](0010-input-path.md) | Deliver input by modelling GPIO interrupts and pushing them out of band | Accepted |
 | [0011](0011-transaction-granularity-boundary.md) | Carry transactions, not register accesses; scope the C tier to SoC silicon | Accepted |
-| [0012](0012-testing.md) | Two tiers of test: device models in milliseconds, pixels in minutes | Accepted |
+| [0012](0012-testing.md) | Two tiers of test: device models in milliseconds, pixels in minutes | Accepted (one slow test boots a probe of ours, 0123) |
 | [0013](0013-coprocessor-enable-at-reset.md) | Enable the FPU at reset, per board, and say so out loud | Accepted |
 | [0014](0014-what-counts-as-a-frame.md) | Decide what a frame is, for a display that does not have any | Accepted |
 | [0015](0015-i2s-left-unmodelled.md) | Leave I2S unmodelled, and record why the obvious route fails | Superseded by 0016 |
@@ -128,4 +128,4 @@ superseded ADR is marked superseded and points forward.
 | [0120](0120-an-spi-transfer-takes-its-bus-time.md) | An SPI transfer takes its bus time | Accepted (refines 0032) |
 | [0121](0121-an-i2c-transaction-takes-its-bus-time.md) | An I2C transaction takes its bus time | Accepted (refines 0011) |
 | [0122](0122-a-serial-line-keeps-no-backlog.md) | A serial line keeps no backlog | Accepted (carried patch; found by 0120/0121) |
-| [0123](0123-one-core-resets-the-other-and-holds-it.md) | One core resets the other, and holds it | Accepted (withdraws 0114's banner-only exception) |
+| [0123](0123-one-core-resets-the-other-and-holds-it.md) | One core resets the other, and holds it | Accepted (withdraws 0114's banner-only exception; decision 4 amended) |
