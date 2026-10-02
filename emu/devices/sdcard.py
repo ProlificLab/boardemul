@@ -14,6 +14,10 @@ Responses come in the shapes the specification names:
     R7  R1 then the four bytes echoing the interface condition
     data  R1, then a gap, then the token 0xFE and the block, then a CRC
 
+A multiple-block read is open-ended: block follows block until the host sends
+CMD12, and the byte after that command is a stuff byte. A multiple-block write
+takes blocks behind 0xFC until the host sends 0xFD (ADR 0118).
+
 The gap matters. A real card takes a few byte times to answer, and hosts are
 written to skip up to eight bytes looking for a response that is not 0xFF; a
 card that answers instantly is not what they are written against.
@@ -56,9 +60,11 @@ SET_BLOCKLEN = 16
 READ_SINGLE_BLOCK = 17
 READ_MULTIPLE_BLOCK = 18
 WRITE_BLOCK = 24
+WRITE_MULTIPLE_BLOCK = 25
 APP_CMD = 55
 CRC_ON_OFF = 59
 READ_OCR = 58
+APP_SET_WR_BLK_ERASE_COUNT = 23 # ACMD23: how many blocks it may erase ahead
 APP_SEND_OP_COND = 41           # ACMD41, after CMD55
 APP_SET_CLR_CARD_DETECT = 42    # ACMD42: the pull-up on the detect line
 APP_SEND_SCR = 51               # ACMD51: the configuration register
@@ -68,7 +74,10 @@ R1_READY = 0x00
 R1_ILLEGAL = 0x04
 
 DATA_TOKEN = 0xFE               # starts a block, both directions
+MULTIPLE_TOKEN = 0xFC           # starts each block of a multiple-block write
+STOP_TOKEN = 0xFD               # ends a multiple-block write
 DATA_ACCEPTED = 0x05            # the card took a written block
+BUSY = 0x00                     # what a card says while it programs
 
 # High capacity, powered up and ready. Bit 30 is the flag that tells the host
 # to address blocks rather than bytes, which is what makes this an SDHC card.
@@ -92,9 +101,15 @@ class SdCard(SpiDevice):
         self.expect_app_cmd = False
         self.initialised = False
         self.crc_enabled = False
-        # Set when a write command is waiting for its data token and block.
+        # Set when a write command is waiting for its data token and block:
+        # the block it goes to, the token that starts it, and whether more
+        # follow (CMD25) or it is the only one (CMD24).
         self.writing_to: int | None = None
+        self.write_token = DATA_TOKEN
+        self.writing_more = False
         self.write_buffer: list[int] = []
+        # The next block of a multiple-block read, while one is open.
+        self.streaming: int | None = None
         self.commands = 0
         self.blocks_read = 0
         self.blocks_written = 0
@@ -104,6 +119,12 @@ class SdCard(SpiDevice):
     def on_segment(self, dc: int, data: bytes, duplex: bool) -> bytes | None:
         reply = bytearray()
         for byte in data:
+            if not self.out and self.streaming is not None:
+                # An open read has the next block ready whenever the last one
+                # has been clocked out, for as long as the host keeps going.
+                self._block(self._read_block(self.streaming))
+                self.streaming += 1
+                self.blocks_read += 1
             reply.append(self.out.pop(0) if self.out else IDLE)
             self._consume(byte)
         return bytes(reply) if duplex else None
@@ -125,8 +146,14 @@ class SdCard(SpiDevice):
                       int.from_bytes(bytes(frame[1:5]), "big"))
 
     def _consume_write(self, byte: int) -> None:
-        if not self.write_buffer and byte != DATA_TOKEN:
-            return                                  # still waiting for the token
+        if not self.write_buffer:
+            if self.writing_more and byte == STOP_TOKEN:
+                # The end of a multiple-block write, and busy after it.
+                self.writing_to, self.writing_more = None, False
+                self.out += [BUSY, BUSY]
+                return
+            if byte != self.write_token:
+                return                              # still waiting for the token
         self.write_buffer.append(byte)
         if len(self.write_buffer) < 1 + BLOCK + 2:  # token, block, CRC
             return
@@ -135,10 +162,14 @@ class SdCard(SpiDevice):
         if 0 <= at and at + BLOCK <= len(self.image):
             self.image[at:at + BLOCK] = block
             self.blocks_written += 1
-        self.writing_to = None
         self.write_buffer = []
-        # Accepted, then a moment of being busy, which a host waits out.
-        self.out += [IDLE, DATA_ACCEPTED, 0x00, 0x00, IDLE]
+        if self.writing_more:
+            self.writing_to += 1
+        else:
+            self.writing_to = None
+        # Accepted, in the very next byte, which is where a host reads it
+        # from; then a moment of being busy, which it waits out.
+        self.out += [DATA_ACCEPTED, BUSY, BUSY]
 
     def _command(self, number: int, argument: int) -> None:
         self.commands += 1
@@ -154,6 +185,10 @@ class SdCard(SpiDevice):
         elif app and number == APP_SET_CLR_CARD_DETECT:
             # Whether the detect line keeps its pull-up. Nothing here has a
             # detect line, but refusing the command stopped a host dead.
+            self._respond([self._status()])
+        elif app and number == APP_SET_WR_BLK_ERASE_COUNT:
+            # Leave to erase that many blocks ahead of a write; a card held in
+            # memory has nothing to gain from it.
             self._respond([self._status()])
         elif app and number == APP_SEND_SCR:
             self._respond([self._status()])
@@ -181,14 +216,25 @@ class SdCard(SpiDevice):
         elif number in (SEND_CSD, SEND_CID):
             self._respond([self._status()])
             self._block(self._csd() if number == SEND_CSD else self._cid())
-        elif number in (READ_SINGLE_BLOCK, READ_MULTIPLE_BLOCK):
+        elif number == READ_SINGLE_BLOCK:
             self._respond([self._status()])
             self._block(self._read_block(argument))
             self.blocks_read += 1
-        elif number == WRITE_BLOCK:
+        elif number == READ_MULTIPLE_BLOCK:
+            # Open-ended: the blocks follow from on_segment until CMD12.
+            self._respond([self._status()])
+            self.streaming = argument
+        elif number in (WRITE_BLOCK, WRITE_MULTIPLE_BLOCK):
             self._respond([self._status()])
             self.writing_to = argument
+            self.writing_more = number == WRITE_MULTIPLE_BLOCK
+            self.write_token = MULTIPLE_TOKEN if self.writing_more else DATA_TOKEN
         elif number == STOP_TRANSMISSION:
+            # What of an open read had not been clocked out yet is not sent.
+            # The first byte of the gap is the stuff byte the host discards.
+            if self.streaming is not None:
+                self.streaming = None
+                self.out.clear()
             self._respond([self._status()])
         elif number == SEND_STATUS:
             # R2: the usual status byte and a second one for the faults a card

@@ -18,8 +18,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from emu import sdimage  # noqa: E402
 from emu.devices.sdcard import (  # noqa: E402
-    DATA_TOKEN, IDLE, OCR_READY_SDHC, R1_IDLE, R1_ILLEGAL, R1_READY, SdCard,
-    crc16,
+    BUSY, DATA_ACCEPTED, DATA_TOKEN, IDLE, MULTIPLE_TOKEN, OCR_READY_SDHC,
+    R1_IDLE, R1_ILLEGAL, R1_READY, STOP_TOKEN, SdCard, crc16,
 )
 
 SECTOR = sdimage.SECTOR
@@ -135,6 +135,112 @@ def test_a_written_block_reads_back(card: SdCard) -> None:
 def test_a_read_past_the_end_is_zeros_not_a_crash(card: SdCard) -> None:
     initialise(card)
     assert read_block(card, len(card.image) // SECTOR + 10)[1:1 + SECTOR] == bytes(SECTOR)
+
+
+# -- runs of blocks, as the host drives them (ADR 0118) -----------------------
+#
+# These follow arduino-esp32's sd_diskio.cpp (2.0.17), the driver the
+# Meshtastic build links: what it sends, and which byte it reads each answer
+# from.
+
+def xfer(card: SdCard, byte: int = IDLE) -> int:
+    return card.on_segment(1, bytes([byte]), True)[0]
+
+
+def host_command(card: SdCard, number: int, argument: int = 0) -> int:
+    """sdCommand: the frame, with a stuff byte after CMD12, its replies
+    ignored; then up to nine bytes looking for one with the top bit clear."""
+    frame = bytes([0x40 | number]) + argument.to_bytes(4, "big") + b"\x01"
+    card.on_segment(1, frame + (b"\xff" if number == 12 else b""), False)
+    token = IDLE
+    for _ in range(9):
+        token = xfer(card)
+        if not token & 0x80:
+            break
+    return token
+
+
+def host_read_bytes(card: SdCard, patience: int = 64) -> bytes:
+    """sdReadBytes: poll for the token, then the block, and check its CRC."""
+    token = IDLE
+    for _ in range(patience):
+        token = xfer(card)
+        if token != IDLE:
+            break
+    assert token == DATA_TOKEN, f"no data token, got 0x{token:02x}"
+    data = card.on_segment(1, b"\xff" * (SECTOR + 2), True)
+    block = data[:SECTOR]
+    assert int.from_bytes(data[SECTOR:], "big") == crc16(block)
+    return block
+
+
+def host_wait(card: SdCard, patience: int = 64) -> int:
+    """sdWait: clock until the card stops saying busy."""
+    for _ in range(patience):
+        byte = xfer(card)
+        if byte != BUSY:
+            return byte
+    return BUSY
+
+
+def host_write_bytes(card: SdCard, payload: bytes, token: int) -> int:
+    """sdWriteBytes: wait, then token, block and CRC, and the data response
+    from the very next byte."""
+    assert host_wait(card) != BUSY
+    card.on_segment(1, bytes([token]) + payload + crc16(payload).to_bytes(2, "big"), False)
+    return xfer(card) & 0x1F
+
+
+def blocks(first: int, count: int) -> list[bytes]:
+    return [bytes([first + n]) * SECTOR for n in range(count)]
+
+
+def test_a_multiple_block_read_streams_until_it_is_stopped(card: SdCard) -> None:
+    """sdReadSectors: one CMD18 for a run of sectors, then CMD12. A card that
+    sent one block left the host polling 500 ms for the second."""
+    initialise(card)
+    wanted = blocks(100, 3)
+    for n, block in enumerate(wanted):
+        card.image[(100 + n) * SECTOR:(101 + n) * SECTOR] = block
+    assert host_command(card, 18, 100) == R1_READY
+    assert [host_read_bytes(card) for _ in wanted] == wanted
+    assert host_command(card, 12) == R1_READY
+    assert all(xfer(card) == IDLE for _ in range(SECTOR + 8)), "still streaming"
+
+
+def test_a_read_stopped_partway_through_a_block_sends_nothing_more(card: SdCard) -> None:
+    initialise(card)
+    assert host_command(card, 18, 0) == R1_READY
+    while xfer(card) != DATA_TOKEN:
+        pass
+    card.on_segment(1, b"\xff" * 100, True)
+    assert host_command(card, 12) == R1_READY
+    assert all(xfer(card) == IDLE for _ in range(SECTOR + 8))
+
+
+def test_a_multiple_block_write_lands_every_block(card: SdCard) -> None:
+    """sdWriteSectors: ACMD23, CMD25, each block behind 0xFC answered 0x05,
+    then 0xFD and busy, then the card's status."""
+    initialise(card)
+    payloads = blocks(7, 3)
+    assert host_command(card, 55) == R1_READY
+    assert host_command(card, 23, len(payloads)) == R1_READY
+    assert host_command(card, 25, 200) == R1_READY
+    assert [host_write_bytes(card, p, MULTIPLE_TOKEN) for p in payloads] == [DATA_ACCEPTED] * 3
+    assert host_wait(card) != BUSY
+    card.on_segment(1, bytes([STOP_TOKEN]), False)           # sdStop
+    assert xfer(card) == BUSY, "busy follows the stop token"
+    assert host_wait(card) != BUSY
+    assert host_command(card, 13) == R1_READY and xfer(card) == 0x00
+    assert card.blocks_written == 3
+    assert [read_block(card, 200 + n)[1:1 + SECTOR] for n in range(3)] == payloads
+
+
+def test_a_single_write_is_answered_in_the_byte_after_its_crc(card: SdCard) -> None:
+    """Where sdWriteBytes reads it. An idle byte there read as 0x1F."""
+    initialise(card)
+    assert host_command(card, 24, 60) == R1_READY
+    assert host_write_bytes(card, bytes(SECTOR), DATA_TOKEN) == DATA_ACCEPTED
 
 
 # -- what is on the card ----------------------------------------------------
