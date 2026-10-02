@@ -119,7 +119,7 @@ superseded ADR is marked superseded and points forward.
 | [0111](0111-the-radio-says-when-it-is-busy.md) | The radio says when it is busy | Accepted (closes 0106 item 7; supersedes 0102 decision 2) |
 | [0112](0112-the-radio-keeps-the-guests-time.md) | The radio keeps the guest's time | Accepted (moves 0037's timing onto the guest clock) |
 | [0113](0113-boards-on-one-air-keep-one-time.md) | Boards on one air keep one time | Accepted (finishes 0112; closes 0111's last cost) |
-| [0114](0114-the-boot-test-forgives-one-panic-by-name.md) | The boot test forgives one panic, by name | Accepted (extends 0099 decision 3) |
+| [0114](0114-the-boot-test-forgives-one-panic-by-name.md) | The boot test forgives one panic, by name | Accepted (extends 0099 decision 3; decision 3's banner-only exception withdrawn by 0123) |
 | [0115](0115-the-guest-clock-does-not-follow-the-host.md) | The guest's clock does not follow the host's | Accepted (answers 0113 decision 7) |
 | [0116](0116-the-l76k-keeps-the-boards-time.md) | The L76K keeps the board's time, and talks from power-on | Accepted (withdraws 0052's silence; narrows its two-sentence cost) |
 | [0117](0117-the-u-blox-writes-what-its-description-writes.md) | The u-blox writes what its interface description writes | Accepted (refines 0105 decision 2; answers a 0116 cost) |
@@ -128,3 +128,4 @@ superseded ADR is marked superseded and points forward.
 | [0120](0120-an-spi-transfer-takes-its-bus-time.md) | An SPI transfer takes its bus time | Accepted (refines 0032) |
 | [0121](0121-an-i2c-transaction-takes-its-bus-time.md) | An I2C transaction takes its bus time | Accepted (refines 0011) |
 | [0122](0122-a-serial-line-keeps-no-backlog.md) | A serial line keeps no backlog | Accepted (carried patch; found by 0120/0121) |
+| [0123](0123-one-core-resets-the-other-and-holds-it.md) | One core resets the other, and holds it | Accepted (withdraws 0114's banner-only exception) |

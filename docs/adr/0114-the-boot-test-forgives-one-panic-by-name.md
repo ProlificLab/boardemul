@@ -3,6 +3,14 @@
 **Status:** Accepted — 2026-10-01. Extends ADR 0099's decision 3 from
 `test_mesh` to `test_boot_tdeck`.
 
+**Amended 2026-10-02:** decision 3's exception for a boot of nothing but the
+ROM's banner is withdrawn by
+[ADR 0123](0123-one-core-resets-the-other-and-holds-it.md). The doubled
+banner was not the second reset request restarting the ROM, as guessed below.
+QEMU did not hold core 0 where the restart stalls it, and core 0 ran its ROM
+between its two resets. With that fixed, a restart prints one banner, so a
+banner-only boot is now an unexplained reset.
+
 ## Context
 
 `test_boot_tdeck` boots each vendor T-Deck UnitTest build once, in a module
