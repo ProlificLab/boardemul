@@ -342,6 +342,19 @@ def radio_busy(outdir: Path) -> tuple[int, int] | None:
     return None
 
 
+def audio_streams(outdir: Path) -> list[tuple[str, str, float, int, int]]:
+    """Each I2S stream the controller paced by its sample clock (ADR 0119):
+    block, direction, sample rate in Hz, channels and bits, in the order they
+    started."""
+    streams = []
+    for log in outdir.glob("*.qemu.log"):
+        for block, direction, hz, channels, bits in re.findall(
+                r"esp-i2s-master\((\w+)\): (receive|transmit) at ([0-9.]+) Hz, "
+                r"(\d+) channel\(s\) of (\d+) bit\(s\)", log.read_text(errors="replace")):
+            streams.append((block, direction, float(hz), int(channels), int(bits)))
+    return streams
+
+
 def _frames(outdir: Path) -> list[Path]:
     return sorted((outdir / "frames").glob("frame-*.png"))
 

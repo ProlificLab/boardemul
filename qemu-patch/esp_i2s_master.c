@@ -14,7 +14,8 @@
  * then hands the DMA engine a buffer of silence whenever the next descriptor
  * in the ring belongs to the hardware. Silence is the honest sample value:
  * there is no audio into this emulator, and what the firmware waits for is the
- * transfer, not sound.
+ * transfer, not sound. The transfer still takes as long as the sample clock
+ * the guest set says it does, in both directions (ADR 0119).
  *
  * Every register number and bit position here comes from Espressif's headers
  * and the ESP32-S3 technical reference manual. An earlier attempt inferred them
@@ -25,6 +26,7 @@
  */
 
 #include "qemu/osdep.h"
+#include "qemu/bitops.h"
 #include "qemu/error-report.h"
 #include "qemu/log.h"
 #include "qemu/main-loop.h"
@@ -68,10 +70,41 @@ OBJECT_DECLARE_SIMPLE_TYPE(EspI2sMaster, ESP_I2S_MASTER)
  * only carries twenty bits of address. */
 #define DRAM_TOP_BITS   ((ESP_GDMA_RAM_ADDR >> 20) << 20)
 
-/* How often the receiver looks for a buffer to fill. A real one delivers on
- * its sample clock; this is fast enough that a driver waiting on a buffer is
- * not visibly delayed, and costs nothing while no capture is running. */
+/* How often an idle block looks for a stream to start, and how a stream whose
+ * rate cannot be known is paced (ADR 0119): fast enough that a driver waiting
+ * on a buffer is not visibly delayed, and nothing while no stream runs. */
 #define I2S_POLL_NS (5 * 1000 * 1000)
+
+/* Where each direction's clock and frame are set (i2s_reg.h). Receive and
+ * transmit have the same fields at their own offsets. */
+typedef struct I2sDirection {
+    const char *name;
+    hwaddr conf, conf1, clkm_conf, clkm_div_conf, tdm_ctrl;
+} I2sDirection;
+
+static const I2sDirection I2S_RX = { "receive", 0x20, 0x28, 0x30, 0x38, 0x50 };
+static const I2sDirection I2S_TX = { "transmit", 0x24, 0x2C, 0x34, 0x3C, 0x54 };
+
+#define CONF_SLAVE_MOD          (1u << 3)
+#define CONF_24_FILL_EN         (1u << 16)
+#define CONF_TDM_EN             (1u << 19)
+#define CONF_PDM_EN             (1u << 20)
+#define CONF1_BCK_DIV_NUM(v)    (((v) >> 7) & 0x3F)
+#define CONF1_BITS_MOD(v)       (((v) >> 13) & 0x1F)
+#define CONF1_HALF_SAMPLE(v)    (((v) >> 18) & 0x3F)
+#define CLKM_DIV_NUM(v)         ((v) & 0xFF)
+#define CLKM_ACTIVE             (1u << 26)
+#define CLKM_SEL(v)             (((v) >> 27) & 0x3)
+#define DIV_Z(v)                ((v) & 0x1FF)
+#define DIV_Y(v)                (((v) >> 9) & 0x1FF)
+#define DIV_X(v)                (((v) >> 18) & 0x1FF)
+#define DIV_YN1(v)              (((v) >> 27) & 0x1)
+#define TDM_CHAN_EN(v)          ((v) & 0xFFFF)
+#define TDM_TOT_CHAN_NUM(v)     (((v) >> 16) & 0xF)
+
+/* TRM 28.6: CLK_SEL 0 is XTAL_CLK, 1 PLL_D2_CLK, 2 PLL_F160M_CLK; 3 is the
+ * MCLK input, whose rate nothing here knows. */
+static const double I2S_SOURCE_HZ[3] = { 40e6, 240e6, 160e6 };
 
 /* Descriptor: size 0..11, length 12..23, suc_eof at 30, owner at 31. */
 #define DESC_BYTES 12
@@ -97,6 +130,13 @@ struct EspI2sMaster {
     bool tx_armed;
     uint32_t rx_cursor;         /* our way around the receive ring */
     uint32_t tx_head;           /* start of the queued transmit list */
+    /* When the buffer each direction is clocking began, or 0 while none is
+     * (ADR 0119); and whether this stream's rate has been reported. */
+    int64_t rx_start;
+    int64_t tx_start;
+    int64_t tx_end;             /* when the last transmit list finished */
+    bool rx_said;
+    bool tx_said;
     uint64_t buffers;
     uint64_t bytes;
     bool complained;
@@ -189,23 +229,129 @@ static void i2s_aim(EspI2sMaster *s, int dir, uint32_t chan, uint32_t cursor)
                                  cursor & LINK_ADDR);
 }
 
-static void i2s_receive(EspI2sMaster *s)
+/* The bytes a second a direction moves through memory, from its registers
+ * (TRM 28.6 and 28.9; ADR 0119), or 0 with the reason it cannot be known.
+ * The counting fields hold their value less one, as ESP-IDF's i2s_ll.h
+ * writes them. */
+static double i2s_byte_rate(EspI2sMaster *s, const I2sDirection *d,
+                            const char **why, char *how, size_t how_len)
+{
+    uint32_t conf = s->regs[d->conf / 4];
+    uint32_t conf1 = s->regs[d->conf1 / 4];
+    uint32_t clkm = s->regs[d->clkm_conf / 4];
+    uint32_t div = s->regs[d->clkm_div_conf / 4];
+    uint32_t tdm = s->regs[d->tdm_ctrl / 4];
+
+    if (conf & CONF_SLAVE_MOD) {
+        *why = "slave mode: BCK comes from the codec, which is not modelled";
+        return 0;
+    }
+    if ((conf & CONF_PDM_EN) || !(conf & CONF_TDM_EN)) {
+        *why = "not TDM mode";
+        return 0;
+    }
+    if (!(clkm & CLKM_ACTIVE)) {
+        *why = "its clock is not active";
+        return 0;
+    }
+    if (CLKM_SEL(clkm) == 3) {
+        *why = "its clock is the MCLK input";
+        return 0;
+    }
+
+    /* N + b/a: N is CLKM_DIV_NUM, but 0 means 256 and 1 means 2; a and b
+     * come back out of x, y, z and yn1 by the TRM's formulas, and z of 0 is
+     * the integer divider. */
+    unsigned n = CLKM_DIV_NUM(clkm);
+    double divider = n == 0 ? 256 : n == 1 ? 2 : n;
+    unsigned z = DIV_Z(div);
+    if (z) {
+        double a = (double)(DIV_X(div) + 1) * z + DIV_Y(div);
+        double b = DIV_YN1(div) ? a - z : z;
+        divider += b / a;
+    }
+    double bck = I2S_SOURCE_HZ[CLKM_SEL(clkm)] / divider
+                 / (CONF1_BCK_DIV_NUM(conf1) + 1);
+    double ws = bck / (2.0 * (CONF1_HALF_SAMPLE(conf1) + 1));
+
+    unsigned bits = CONF1_BITS_MOD(conf1) + 1;
+    unsigned bytes = (bits == 24 && (conf & CONF_24_FILL_EN)) ? 4
+                     : (bits + 7) / 8;
+    uint32_t slots = (2u << TDM_TOT_CHAN_NUM(tdm)) - 1;
+    unsigned channels = ctpop32(TDM_CHAN_EN(tdm) & slots);
+    if (!channels) {
+        *why = "no channel is enabled";
+        return 0;
+    }
+    snprintf(how, how_len, "%.0f Hz, %u channel(s) of %u bit(s)",
+             ws, channels, bits);
+    return ws * channels * bytes;
+}
+
+/* The rate for a direction, saying once per stream what it is or why it is
+ * not known. */
+static double i2s_rate(EspI2sMaster *s, const I2sDirection *d, bool *said)
+{
+    const char *why = NULL;
+    char how[64] = "";
+    double rate = i2s_byte_rate(s, d, &why, how, sizeof(how));
+
+    if (!*said) {
+        *said = true;
+        if (rate > 0) {
+            qemu_log_mask(LOG_UNIMP, "esp-i2s-master(%s): %s at %s, %.0f "
+                          "bytes a second\n", s->name ? s->name : "i2s",
+                          d->name, how, rate);
+        } else {
+            qemu_log_mask(LOG_UNIMP, "esp-i2s-master(%s): %s paced every "
+                          "%d ms: %s\n", s->name ? s->name : "i2s", d->name,
+                          I2S_POLL_NS / 1000000, why);
+        }
+    }
+    return rate;
+}
+
+static int64_t i2s_clocked_ns(uint32_t bytes, double rate)
+{
+    return (int64_t)(bytes * 1e9 / rate);
+}
+
+/* Fill the receive descriptor being clocked once it is full. Returns when it
+ * will be, if that is still to come, or 0 to be looked at on the next poll. */
+static int64_t i2s_receive(EspI2sMaster *s, int64_t now)
 {
     uint32_t chan = 0, bytes = 0, next = 0;
     bool eof = false;
 
     if (!(s->regs[R_RX_CONF / 4] & RX_START)) {
         s->rx_armed = false;
-        return;
+        s->rx_start = 0;
+        s->rx_said = false;
+        return 0;
     }
     if (!i2s_find_channel(s, ESP_GDMA_IN_IDX, &s->rx_armed, &s->rx_cursor,
                           &chan)) {
-        return;
+        s->rx_start = 0;
+        return 0;
     }
     if (!i2s_descriptor(s->rx_cursor, true, &bytes, &next, &eof)) {
         /* The CPU still owns it. On real hardware that is an overrun and the
-         * receiver stalls, which is what happens here too. */
-        return;
+         * receiver stalls, which is what happens here too; what it would
+         * have heard meanwhile is lost, not made up later. */
+        s->rx_start = 0;
+        return 0;
+    }
+
+    double rate = i2s_rate(s, &I2S_RX, &s->rx_said);
+    if (rate > 0) {
+        if (!s->rx_start) {
+            s->rx_start = now;
+        }
+        int64_t full = s->rx_start + i2s_clocked_ns(bytes, rate);
+        if (now < full) {
+            return full;
+        }
+        s->rx_start = full;     /* the next descriptor fills from here */
     }
 
     i2s_aim(s, ESP_GDMA_IN_IDX, chan, s->rx_cursor);
@@ -219,13 +365,14 @@ static void i2s_receive(EspI2sMaster *s)
             warn_report("%s: GDMA refused %u receive bytes on channel %u",
                         s->name ? s->name : "i2s", bytes, chan);
         }
-        return;
+        return 0;
     }
     if (next) {
         s->rx_cursor = DRAM_TOP_BITS | (next & LINK_ADDR);
     }
     s->buffers++;
     s->bytes += bytes;
+    return 0;
 }
 
 /* Total the queued transmit list, from its head to its end marker.
@@ -296,7 +443,10 @@ static void i2s_idle(EspI2sMaster *s, const char *reason)
                 reason, s->regs[R_TX_CONF / 4]);
 }
 
-static void i2s_transmit(EspI2sMaster *s)
+/* Take the queued transmit list once its bytes have been clocked out. Returns
+ * when they will have been, if that is still to come, or 0 to be looked at on
+ * the next poll. */
+static int64_t i2s_transmit(EspI2sMaster *s, int64_t now)
 {
     uint32_t chan = 0;
     uint32_t total = 0;
@@ -304,19 +454,36 @@ static void i2s_transmit(EspI2sMaster *s)
 
     if (!(s->regs[R_TX_CONF / 4] & TX_START)) {
         s->tx_armed = false;
+        s->tx_start = s->tx_end = 0;
+        s->tx_said = false;
         i2s_idle(s, "stopped: TX_START clear");
-        return;
+        return 0;
     }
     if (!i2s_find_channel(s, ESP_GDMA_OUT_IDX, &s->tx_armed, &s->tx_head,
                           &chan)) {
         i2s_idle(s, "waiting: no GDMA channel bound to this block");
-        return;
+        return 0;
     }
     if (!i2s_tx_total(s->tx_head, &total, &after)) {
         i2s_idle(s, "waiting: descriptor list has no end marker we own");
-        return;
+        return 0;
     }
     i2s_idle(s, "running");
+
+    double rate = i2s_rate(s, &I2S_TX, &s->tx_said);
+    if (rate > 0) {
+        /* A list starts clocking when the last one finished, or when it was
+         * found if the transmitter had run dry -- that gap is not made up. */
+        if (!s->tx_start) {
+            s->tx_start = MAX(s->tx_end, now);
+        }
+        int64_t done = s->tx_start + i2s_clocked_ns(total, rate);
+        if (now < done) {
+            return done;
+        }
+        s->tx_end = done;
+        s->tx_start = 0;
+    }
 
     i2s_aim(s, ESP_GDMA_OUT_IDX, chan, s->tx_head);
 
@@ -329,7 +496,7 @@ static void i2s_transmit(EspI2sMaster *s)
             warn_report("%s: GDMA refused %u transmit bytes on channel %u",
                         s->name ? s->name : "i2s", total, chan);
         }
-        return;
+        return 0;
     }
 
     /* Where the next list comes from depends on what kind of transfer this is,
@@ -348,6 +515,7 @@ static void i2s_transmit(EspI2sMaster *s)
     }
     s->buffers++;
     s->bytes += total;
+    return 0;
 }
 
 /* Investigation hatch, off unless BOARDEMUL_PC_SAMPLE is set: on every tick,
@@ -383,9 +551,27 @@ static void i2s_tick(void *opaque)
     if (!s->gdma) {
         return;
     }
-    i2s_receive(s);
-    i2s_transmit(s);
-    timer_mod_ns(s->timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + I2S_POLL_NS);
+
+    /* Each direction says when it next has something to do. A buffer that
+     * completed may have the next one due at once, so go round until neither
+     * does, within reason. */
+    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    int64_t wake = now + I2S_POLL_NS;
+    for (int pass = 0; pass < 64; pass++) {
+        uint64_t before = s->buffers;
+        int64_t rx = i2s_receive(s, now);
+        int64_t tx = i2s_transmit(s, now);
+        if (rx) {
+            wake = MIN(wake, rx);
+        }
+        if (tx) {
+            wake = MIN(wake, tx);
+        }
+        if (s->buffers == before) {
+            break;
+        }
+    }
+    timer_mod_ns(s->timer, wake);
 }
 
 static uint64_t i2s_read(void *opaque, hwaddr addr, unsigned size)
@@ -401,7 +587,8 @@ static void i2s_write(void *opaque, hwaddr addr, uint64_t value, unsigned size)
 
     /* Stored rather than decoded (ADR 0008): returning zero for a register the
      * driver has just written breaks its read-modify-write, and this block is
-     * full of them. Only RX_CONF is ever read back, in i2s_deliver(). */
+     * full of them. The start bits and each direction's clock and frame
+     * are read back, to pace the streams (ADR 0119). */
     s->regs[(addr / 4) % I2S_REG_COUNT] = (uint32_t)value;
 }
 

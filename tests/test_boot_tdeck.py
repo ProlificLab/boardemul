@@ -25,8 +25,9 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from tests.support import (  # noqa: E402
-    FIRMWARE_TDECK, FIRMWARE_TDECK_BUILDS, Run, by_boot, last_boot,
-    qemu_available, radio_busy, run_emulator, unexplained_resets, unforgiven,
+    FIRMWARE_TDECK, FIRMWARE_TDECK_BUILDS, Run, audio_streams, by_boot,
+    last_boot, qemu_available, radio_busy, run_emulator, unexplained_resets,
+    unforgiven,
 )
 
 pytestmark = [
@@ -162,6 +163,17 @@ def test_the_radio_comes_up_waiting_on_its_busy_line(booted: Run) -> None:
     assert busy is not None, "the controller never reported the radio's BUSY line"
     holds, longest = busy
     assert holds >= 1 and longest >= 3500, busy
+
+
+def test_the_microphone_is_clocked_at_the_rate_the_firmware_set(booted: Run) -> None:
+    """The vendor sets its microphone's I2S to 16 kHz, 16-bit
+    (MIC_I2S_SAMPLE_RATE in its UnitTest sources), and a capture takes as long
+    as that clock says, not a fixed tick per buffer (ADR 0119)."""
+    streams = audio_streams(booted.outdir)
+    mic = [s for s in streams if s[:2] == ("i2s1", "receive")]
+    assert mic, f"no capture was paced by its clock: {streams}"
+    _block, _direction, hz, _channels, bits = mic[0]
+    assert abs(hz - 16000) < 16 and bits == 16, mic[0]
 
 
 def test_it_reads_its_battery_and_keeps_drawing(booted: Run) -> None:
