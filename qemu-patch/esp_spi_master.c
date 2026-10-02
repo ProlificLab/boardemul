@@ -47,11 +47,47 @@ OBJECT_DECLARE_SIMPLE_TYPE(EspSpiMaster, ESP_SPI_MASTER)
 #define R_W0        0x98
 #define R_W15       0xD4
 
+#define R_CLK_GATE  0xE8
+
 #define CMD_UPDATE  (1u << 23)
 #define CMD_USR     (1u << 24)
 
 #define USER_USR_MOSI (1u << 27)
 #define USER_USR_MISO (1u << 28)
+
+/* What a transaction is made of, for how long it lasts (ADR 0120): the field
+ * positions are ESP-IDF v4.4.6's soc/esp32s3/include/soc/spi_struct.h, and
+ * the lengths hold their value less one. */
+#define USER_DOUTDIN        (1u << 0)
+#define USER_QPI_MODE       (1u << 3)
+#define USER_OPI_MODE       (1u << 4)
+#define USER_CS_HOLD        (1u << 6)
+#define USER_CS_SETUP       (1u << 7)
+#define USER_FWRITE_DUAL    (1u << 12)
+#define USER_FWRITE_QUAD    (1u << 13)
+#define USER_FWRITE_OCT     (1u << 14)
+#define USER_USR_DUMMY      (1u << 29)
+#define USER_USR_ADDR       (1u << 30)
+#define USER_USR_COMMAND    (1u << 31)
+#define USER1_DUMMY_CYCLELEN(v) ((v) & 0xFF)
+#define USER1_CS_SETUP_TIME(v)  (((v) >> 17) & 0x1F)
+#define USER1_CS_HOLD_TIME(v)   (((v) >> 22) & 0x1F)
+#define USER1_ADDR_BITLEN(v)    (((v) >> 27) & 0x1F)
+#define USER2_COMMAND_BITLEN(v) (((v) >> 28) & 0xF)
+#define CTRL_FADDR_DUAL     (1u << 5)
+#define CTRL_FADDR_QUAD     (1u << 6)
+#define CTRL_FADDR_OCT      (1u << 7)
+#define CTRL_FCMD_DUAL      (1u << 8)
+#define CTRL_FCMD_QUAD      (1u << 9)
+#define CTRL_FCMD_OCT       (1u << 10)
+#define CTRL_FREAD_DUAL     (1u << 14)
+#define CTRL_FREAD_QUAD     (1u << 15)
+#define CTRL_FREAD_OCT      (1u << 16)
+#define CLOCK_CLKCNT_N(v)   (((v) >> 12) & 0x3F)
+#define CLOCK_CLKDIV_PRE(v) (((v) >> 18) & 0xF)
+#define CLOCK_EQU_SYSCLK    (1u << 31)
+#define CLK_GATE_MST_ACTIVE (1u << 1)
+#define CLK_GATE_MST_SEL    (1u << 2)
 
 #define SPI_REG_COUNT   (0x1000 / 4)
 #define SPI_FIFO_BYTES  64
@@ -156,6 +192,11 @@ struct EspSpiMaster {
 
     int fd;
     bool broken;
+
+    /* SPI_USR reads as set until the transaction's bus time has passed
+     * (ADR 0120). */
+    int64_t usr_until;
+    double clock_said[SPI_SELECTS];
 };
 
 /* Which device is selected, or -1 for none.
@@ -444,6 +485,112 @@ static void spi_duplex(EspSpiMaster *s, uint8_t *data, uint32_t len)
     }
 }
 
+/* SPI_CLK (TRM 30.7): clk_spi_mst, PLL_F80M or XTAL by SPI_MST_CLK_SEL, over
+ * (CLKCNT_N + 1)(CLKDIV_PRE + 1), or undivided with CLK_EQU_SYSCLK. Until the
+ * guest powers the module clock the register's own description holds: the
+ * 80 MHz APB clock. */
+static double spi_clock_hz(EspSpiMaster *s)
+{
+    uint32_t clock = s->regs[R_CLOCK / 4];
+    uint32_t gate = s->regs[R_CLK_GATE / 4];
+    double source = 80e6;
+
+    if ((gate & CLK_GATE_MST_ACTIVE) && !(gate & CLK_GATE_MST_SEL)) {
+        source = 40e6;
+    }
+    if (clock & CLOCK_EQU_SYSCLK) {
+        return source;
+    }
+    return source / ((CLOCK_CLKCNT_N(clock) + 1.0)
+                     * (CLOCK_CLKDIV_PRE(clock) + 1.0));
+}
+
+static unsigned spi_lines(uint32_t user, bool dual, bool quad, bool oct)
+{
+    if (oct || (user & USER_OPI_MODE)) {
+        return 8;
+    }
+    if (quad || (user & USER_QPI_MODE)) {
+        return 4;
+    }
+    return dual ? 2 : 1;
+}
+
+/* The SPI_CLK cycles a transaction takes, state by state (TRM 30.5.8.1). */
+static uint64_t spi_cycles(EspSpiMaster *s)
+{
+    uint32_t user = s->regs[R_USER / 4];
+    uint32_t user1 = s->regs[R_USER1 / 4];
+    uint32_t user2 = s->regs[R_USER2 / 4];
+    uint32_t ctrl = s->regs[R_CTRL / 4];
+    uint32_t bits = (s->regs[R_MS_DLEN / 4] & 0x3FFFF) + 1;
+    uint64_t cycles = 0;
+
+    if (user & USER_CS_SETUP) {
+        cycles += USER1_CS_SETUP_TIME(user1) + 1;
+    }
+    if (user & USER_USR_COMMAND) {
+        cycles += DIV_ROUND_UP(USER2_COMMAND_BITLEN(user2) + 1,
+                               spi_lines(user, ctrl & CTRL_FCMD_DUAL,
+                                         ctrl & CTRL_FCMD_QUAD,
+                                         ctrl & CTRL_FCMD_OCT));
+    }
+    if (user & USER_USR_ADDR) {
+        cycles += DIV_ROUND_UP(USER1_ADDR_BITLEN(user1) + 1,
+                               spi_lines(user, ctrl & CTRL_FADDR_DUAL,
+                                         ctrl & CTRL_FADDR_QUAD,
+                                         ctrl & CTRL_FADDR_OCT));
+    }
+    if (user & USER_USR_DUMMY) {
+        cycles += USER1_DUMMY_CYCLELEN(user1) + 1;
+    }
+    uint64_t out = DIV_ROUND_UP(bits, spi_lines(user, user & USER_FWRITE_DUAL,
+                                                user & USER_FWRITE_QUAD,
+                                                user & USER_FWRITE_OCT));
+    uint64_t in = DIV_ROUND_UP(bits, spi_lines(user, ctrl & CTRL_FREAD_DUAL,
+                                               ctrl & CTRL_FREAD_QUAD,
+                                               ctrl & CTRL_FREAD_OCT));
+    bool writes = user & USER_USR_MOSI;
+    bool reads = user & USER_USR_MISO;
+    if (writes && reads && (user & USER_DOUTDIN)) {
+        cycles += MAX(out, in);         /* full duplex: one data phase */
+    } else {
+        cycles += (writes ? out : 0) + (reads ? in : 0);
+    }
+    if (user & USER_CS_HOLD) {
+        cycles += USER1_CS_HOLD_TIME(user1) + 1;
+    }
+    return cycles;
+}
+
+/* Whether a transaction is still on the bus. Asked at the moment the guest
+ * looks, on its own clock, so the answer changes exactly when the last bit
+ * goes: a timer would fire whenever the host got round to it. */
+static bool spi_on_bus(EspSpiMaster *s)
+{
+    return (s->regs[R_CMD / 4] & CMD_USR)
+           && qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) < s->usr_until;
+}
+
+/* Hold SPI_USR set for the transaction just begun. One begun while another
+ * is still on the bus follows it. */
+static void spi_occupy(EspSpiMaster *s)
+{
+    double hz = spi_clock_hz(s);
+    int cs = spi_selected(s);
+    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+
+    if (cs >= 0 && cs < SPI_SELECTS && s->clock_said[cs] != hz) {
+        s->clock_said[cs] = hz;
+        qemu_log_mask(LOG_UNIMP, "esp-spi-master(%s): select %d clocked at "
+                      "%.0f Hz\n", s->region_name ? s->region_name : "?",
+                      cs, hz);
+    }
+    s->usr_until = MAX(now, s->usr_until)
+                   + (int64_t)(spi_cycles(s) * 1e9 / hz);
+    s->regs[R_CMD / 4] |= CMD_USR;
+}
+
 static void spi_start(EspSpiMaster *s)
 {
     uint32_t user = s->regs[R_USER / 4];
@@ -564,6 +711,9 @@ static uint64_t spi_read(void *opaque, hwaddr offset, unsigned size)
     if (offset / 4 >= SPI_REG_COUNT) {
         return 0;
     }
+    if (offset == R_CMD && (s->regs[R_CMD / 4] & CMD_USR) && !spi_on_bus(s)) {
+        s->regs[R_CMD / 4] &= ~CMD_USR;
+    }
     return s->regs[offset / 4];
 }
 
@@ -581,10 +731,14 @@ static void spi_write(void *opaque, hwaddr offset, uint64_t val, unsigned size)
     }
     if (offset == R_CMD) {
         /* USR and UPDATE are self-clearing triggers. Storing them verbatim
-         * makes the driver's own read-modify-write re-fire the transfer. */
-        s->regs[R_CMD / 4] = value & ~(CMD_USR | CMD_UPDATE);
+         * makes the driver's own read-modify-write re-fire the transfer. USR
+         * reads as set while a transaction is on the bus (ADR 0120). */
+        bool busy = spi_on_bus(s);
+        s->regs[R_CMD / 4] = (value & ~(CMD_USR | CMD_UPDATE))
+                             | (busy ? CMD_USR : 0);
         if (value & CMD_USR) {
             spi_start(s);
+            spi_occupy(s);
         }
         return;
     }

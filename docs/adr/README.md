@@ -125,3 +125,4 @@ superseded ADR is marked superseded and points forward.
 | [0117](0117-the-u-blox-writes-what-its-description-writes.md) | The u-blox writes what its interface description writes | Accepted (refines 0105 decision 2; answers a 0116 cost) |
 | [0118](0118-the-card-streams-a-multiple-block-transfer.md) | The card streams a multiple-block transfer | Accepted (extends 0033) |
 | [0119](0119-audio-runs-at-its-sample-rate.md) | Audio runs at its sample rate | Accepted (refines 0016 decision 2) |
+| [0120](0120-an-spi-transfer-takes-its-bus-time.md) | An SPI transfer takes its bus time | Accepted (refines 0032) |
