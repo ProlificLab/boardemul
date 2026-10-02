@@ -293,10 +293,12 @@ def build(outdir: Path, air: str | None = None, ble_air: str | None = None,
     # the radio only reaches an air when one is given (ADR 0052). The firmware
     # probes the machine's second UART for a u-blox part first and then for
     # this one; an L76K does not answer u-blox either, so that probe failing is
-    # the part behaving, not the model falling short.
+    # the part behaving, not the model falling short. It reports by the
+    # board's clock, from power-on (ADR 0116).
     receiver = SerialServer(outdir / "gps.sock",
                             L76K(latitude=gps[0], longitude=gps[1],
-                                 altitude_m=gps[2]), name="gps") if gps else None
+                                 altitude_m=gps[2], clock=clock.seconds),
+                            name="gps") if gps else None
 
     regions: list[Region] = [_claim(n, b) for n, b in UNMODELLED.items()]
     for name, (base, size) in EXTRA_REGIONS.items():

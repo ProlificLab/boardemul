@@ -75,3 +75,17 @@ def test_it_goes_on_to_configure_the_module_it_found(booted: Run) -> None:
     seen = log.read_text(errors="replace")
     for command in ("PCAS03", "PCAS04", "PCAS06", "PCAS11"):
         assert command in seen, f"{command} never reached the module: {seen[-1500:]}"
+
+
+def test_it_silenced_a_module_that_was_already_talking(booted: Run) -> None:
+    """The module streams from power-on, as the part does (ADR 0116), so the
+    firmware's "Wait stop" step had a live line to quiet and drain, not an
+    empty one, before it asked its question."""
+    log = next(iter(booted.outdir.glob("*.bus.log")), None)
+    assert log is not None, "no bus log; the run did not use --bus"
+    seen = log.read_text(errors="replace")
+    first_report = seen.find("first report, at")
+    first_command = seen.find("asked for PCAS03")
+    assert first_report != -1, f"the module never spoke unprompted: {seen[-1500:]}"
+    assert first_report < first_command, (
+        "the firmware spoke before the module had: " + seen[-1500:])

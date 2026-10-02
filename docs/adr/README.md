@@ -121,3 +121,4 @@ superseded ADR is marked superseded and points forward.
 | [0113](0113-boards-on-one-air-keep-one-time.md) | Boards on one air keep one time | Accepted (finishes 0112; closes 0111's last cost) |
 | [0114](0114-the-boot-test-forgives-one-panic-by-name.md) | The boot test forgives one panic, by name | Accepted (extends 0099 decision 3) |
 | [0115](0115-the-guest-clock-does-not-follow-the-host.md) | The guest's clock does not follow the host's | Accepted (answers 0113 decision 7) |
+| [0116](0116-the-l76k-keeps-the-boards-time.md) | The L76K keeps the board's time, and talks from power-on | Accepted (withdraws 0052's silence; narrows its two-sentence cost) |

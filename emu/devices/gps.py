@@ -16,7 +16,9 @@ first and waits for the line to go quiet, which is why a part that says nothing
 at all still gets past the first step and fails the second -- the timeout the
 emulator produced before this model existed.
 
-What the part then streams is ordinary NMEA. It is generated rather than
+What the part streams is ordinary NMEA, from power-on and once a second of the
+board's time. Which sentences, and in what form, is Quectel's *L76K GNSS
+Protocol Specification* V1.1 (ADR 0116). They are generated rather than
 replayed, because a position is a scenario input here as it is for the radio
 (ADR 0038): a run says where the board is, and the sentences follow from it.
 """
@@ -36,10 +38,12 @@ IDENTITY = "GPTXT,01,01,02,SW=URANUS5,V5.3.0.0"
 # One position report a second, which is what the part does out of the box and
 # what the firmware's rate fields ask for.
 FIX_INTERVAL = 1.0
-# Where the fields the firmware asks for sit in a $PCAS03. The rest are other
-# sentences this model does not send.
-RATE_GGA = 0
-RATE_RMC = 4
+# The fields of a $PCAS03, in order (the specification's 2.3.3). Each is a
+# rate: a sentence once every N fixes, or never for 0.
+PCAS03_FIELDS = ("gga", "gll", "gsa", "gsv", "rmc", "vtg", "zda", "ant")
+# The ones sent, in that order. GSA and GSV describe a sky and ANT an antenna,
+# neither of which this model has (ADR 0116).
+SENT = ("gga", "gll", "rmc", "vtg", "zda")
 # A fix, rather than a receiver still looking for one. Runs are reproducible,
 # so a fix that only arrives after a plausible search would only make every
 # test wait for it.
@@ -60,15 +64,17 @@ def sentence(body: str) -> bytes:
     return f"${body}*{checksum(body)}\r\n".encode("ascii")
 
 
-def degrees_to_nmea(value: float, hemispheres: str) -> tuple[str, str]:
+def degrees_to_nmea(value: float, hemispheres: str,
+                    places: int = 4) -> tuple[str, str]:
     """NMEA writes an angle as whole degrees and decimal minutes, with the
-    sign carried by a letter rather than by the number."""
+    sign carried by a letter rather than by the number. How many decimals of a
+    minute is the part's choice: the L76K writes five."""
     hemisphere = hemispheres[0] if value >= 0 else hemispheres[1]
     value = abs(value)
     degrees = int(value)
     minutes = (value - degrees) * 60.0
     width = 2 if hemispheres == "NS" else 3
-    return f"{degrees:0{width}d}{minutes:07.4f}", hemisphere
+    return f"{degrees:0{width}d}{minutes:0{places + 3}.{places}f}", hemisphere
 
 
 class L76K(SerialDevice):
@@ -76,40 +82,45 @@ class L76K(SerialDevice):
 
     `latitude` and `longitude` are where the board is; `epoch` is the moment
     its clock reads at the start of the run, stated so that two runs of the
-    same scenario produce the same sentences.
+    same scenario produce the same sentences. `clock` is the board's (ADR
+    0104), which it reports by; without one it keeps the host's, which only a
+    test with no board needs.
     """
 
     def __init__(self, latitude: float = 0.0, longitude: float = 0.0,
-                 altitude_m: float = 0.0, epoch: float | None = None):
+                 altitude_m: float = 0.0, epoch: float | None = None,
+                 clock=None):
         self.latitude = latitude
         self.longitude = longitude
         self.altitude_m = altitude_m
         # A stated instant, not the host's clock: a run that reports a
         # different time each time it is run cannot be compared with itself.
         self.epoch = 1_767_225_600.0 if epoch is None else epoch  # 2026-01-01Z
-        self.streaming = {"gga": True, "rmc": True}
-        # Nothing is said until the firmware has spoken. A real module streams
-        # from power-on, and this one cannot: it has no way to see the guest's
-        # clock, so a fix a second on the host's is a flood on a guest running
-        # slower -- and the firmware's first act is to command silence and wait
-        # for the line to go quiet. Fed a backlog it cannot drain in time, it
-        # gives up with "Wait L76K stop NMEA timeout!", which is what a loaded
-        # suite produced. A module that has not started yet is indistinguishable
-        # from one that stops promptly, and what actually tells the firmware
-        # there is something on the line is the answer to its query.
-        self.heard_from_the_guest = False
+        # Out of the box every sentence is on, once a fix (the specification's
+        # Table 17). The ones this model cannot send keep their rates too, so
+        # what was set is what is held.
+        self.rates = dict.fromkeys(PCAS03_FIELDS, 1)
+        # It talks from power-on, as the part does. By the board's clock that
+        # is a report a second for the firmware to drain when it silences the
+        # module; by the host's it was a flood on a slow guest, which is why
+        # this model once waited to be spoken to (ADRs 0052, 0116).
+        self._clock = clock
+        self._started = time.monotonic()
+        self._fixes = 0           # the last fix reported, in the board's seconds
         self.commands: list[str] = []
         self.sentences = 0
         self._buffer = b""
-        self._started = time.monotonic()
-        self._next_fix = 0.0
+
+    def _now(self) -> float | None:
+        if self._clock is None:
+            return time.monotonic() - self._started
+        return self._clock()
 
     # -- what the guest says to it ---------------------------------------
 
     def receive(self, data: bytes) -> bytes:
         """Commands arrive as whole NMEA lines, so answer them line by line."""
         self._buffer += data
-        self.heard_from_the_guest = True
         answer = b""
         while b"\n" in self._buffer:
             line, _, self._buffer = self._buffer.partition(b"\n")
@@ -134,9 +145,14 @@ class L76K(SerialDevice):
         # console as one that was.
         log.info("asked for %s", body)
         if fields[0] == "PCAS03":
-            rates = [f for f in fields[1:]]
-            self.streaming["gga"] = _rate(rates, RATE_GGA)
-            self.streaming["rmc"] = _rate(rates, RATE_RMC)
+            # A rate per sentence; an empty field keeps the one already set.
+            for name, value in zip(PCAS03_FIELDS, fields[1:]):
+                if not value:
+                    continue
+                try:
+                    self.rates[name] = int(value)
+                except ValueError:
+                    log.info("a %s rate of %r is not a number", name, value)
             return b""
         if fields[0] == "PCAS06":
             # The only thing the firmware waits for an answer to.
@@ -149,43 +165,68 @@ class L76K(SerialDevice):
     # -- what it says on its own -----------------------------------------
 
     def poll(self) -> bytes:
-        if not self.heard_from_the_guest or not any(self.streaming.values()):
+        now = self._now()
+        if now is None:
             return b""
-        now = time.monotonic() - self._started
-        if now < self._next_fix:
+        # Fixes fall on the board's whole seconds, the first one a second after
+        # power-on. Each is stamped with its own instant, not with whenever
+        # this was asked, so the stamps are the same in every run. A fix missed
+        # while the reader stalled is skipped, not queued.
+        fix = int(now // FIX_INTERVAL)
+        if fix <= self._fixes:
             return b""
-        self._next_fix = now + FIX_INTERVAL
-        stamp = self.epoch + now
+        self._fixes = fix
+        stamp = self.epoch + fix * FIX_INTERVAL
+        if not self.sentences and any(self.rates[name] > 0 for name in SENT):
+            log.info("first report, at %d s of the board's time", fix)
         out = b""
-        if self.streaming["gga"]:
-            out += sentence(self._gga(stamp))
-            self.sentences += 1
-        if self.streaming["rmc"]:
-            out += sentence(self._rmc(stamp))
-            self.sentences += 1
+        for name in SENT:
+            rate = self.rates[name]
+            if rate > 0 and fix % rate == 0:
+                out += sentence(getattr(self, f"_{name}")(stamp))
+                self.sentences += 1
         return out
 
+    def _position(self) -> str:
+        lat, ns = degrees_to_nmea(self.latitude, "NS", places=5)
+        lon, ew = degrees_to_nmea(self.longitude, "EW", places=5)
+        return f"{lat},{ns},{lon},{ew}"
+
     def _gga(self, stamp: float) -> str:
-        clock, _date = nmea_clock(stamp)
-        lat, ns = degrees_to_nmea(self.latitude, "NS")
-        lon, ew = degrees_to_nmea(self.longitude, "EW")
-        return (f"GNGGA,{clock},{lat},{ns},{lon},{ew},1,{SATELLITES:02d},"
+        clock, _date = nmea_clock(stamp, places=3)
+        return (f"GNGGA,{clock},{self._position()},1,{SATELLITES:02d},"
                 f"{HDOP},{self.altitude_m:.1f},M,{GEOID_SEPARATION_M},M,,")
 
+    def _gll(self, stamp: float) -> str:
+        clock, _date = nmea_clock(stamp, places=3)
+        return f"GNGLL,{self._position()},{clock},A,A"
+
     def _rmc(self, stamp: float) -> str:
-        clock, date = nmea_clock(stamp)
-        lat, ns = degrees_to_nmea(self.latitude, "NS")
-        lon, ew = degrees_to_nmea(self.longitude, "EW")
-        # Standing still: no speed and so no meaningful course.
-        return (f"GNRMC,{clock},A,{lat},{ns},{lon},{ew},0.00,0.00,{date},,,A")
+        clock, date = nmea_clock(stamp, places=3)
+        # Standing still: no speed and so no meaningful course. Magnetic
+        # variation is not supported, and the navigational status is "not
+        # valid", as in the specification's example.
+        return f"GNRMC,{clock},A,{self._position()},0.00,0.00,{date},,,A,V"
+
+    def _vtg(self, stamp: float) -> str:
+        # Standing still. The magnetic course is not supported.
+        return "GNVTG,0.00,T,,M,0.00,N,0.00,K,A"
+
+    def _zda(self, stamp: float) -> str:
+        clock, _date = nmea_clock(stamp, places=3)
+        year, month, day = _civil_from_days(int(stamp) // 86400)
+        # The local zone is not supported, and always reads 00,00.
+        return f"GNZDA,{clock},{day:02d},{month:02d},{year},00,00"
 
     def summary(self) -> str:
         asked = ", ".join(sorted(set(self.commands))) or "nothing"
         return (f"L76K: {self.sentences} sentence(s) sent, asked for {asked}")
 
 
-def nmea_clock(stamp: float) -> tuple[str, str]:
-    """A Unix time as NMEA's hhmmss.ss and ddmmyy, in UTC."""
+def nmea_clock(stamp: float, places: int = 2) -> tuple[str, str]:
+    """A Unix time as NMEA's hhmmss and ddmmyy, in UTC, with `places`
+    decimals of a second: u-blox writes two and the L76K three. A fraction of
+    a second is not reported."""
     whole = int(stamp)
     seconds = whole % 60
     minutes = (whole // 60) % 60
@@ -194,17 +235,8 @@ def nmea_clock(stamp: float) -> tuple[str, str]:
     # Days since 1970 to a calendar date, without importing a timezone
     # database for a part that only ever reports UTC.
     year, month, day = _civil_from_days(days)
-    return (f"{hours:02d}{minutes:02d}{seconds:02d}.00",
+    return (f"{hours:02d}{minutes:02d}{seconds:02d}.{'0' * places}",
             f"{day:02d}{month:02d}{year % 100:02d}")
-
-
-def _rate(rates: list[str], index: int) -> bool:
-    if index >= len(rates):
-        return False
-    try:
-        return int(rates[index] or 0) > 0
-    except ValueError:
-        return False
 
 
 def _civil_from_days(days: int) -> tuple[int, int, int]:
@@ -254,7 +286,7 @@ class UBloxM10(SerialDevice):
     characters have arrived after thirty seconds. So it streams from power-on,
     as the part does, once a second of the *board's* time (ADR 0104) -- on the
     host's clock a slow guest would be flooded, which is what kept the L76K
-    silent (ADR 0052).
+    silent until ADR 0116.
 
     It answers UBX configuration (class 0x06) with ACK-ACK, which the demo waits
     for after each command it sends. Without a position it is a receiver indoors:
