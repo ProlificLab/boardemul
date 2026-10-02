@@ -64,17 +64,16 @@ def sentence(body: str) -> bytes:
     return f"${body}*{checksum(body)}\r\n".encode("ascii")
 
 
-def degrees_to_nmea(value: float, hemispheres: str,
-                    places: int = 4) -> tuple[str, str]:
+def degrees_to_nmea(value: float, hemispheres: str) -> tuple[str, str]:
     """NMEA writes an angle as whole degrees and decimal minutes, with the
-    sign carried by a letter rather than by the number. How many decimals of a
-    minute is the part's choice: the L76K writes five."""
+    sign carried by a letter rather than by the number. Both parts here write
+    five decimals of a minute, as their documents do (ADRs 0116, 0117)."""
     hemisphere = hemispheres[0] if value >= 0 else hemispheres[1]
     value = abs(value)
     degrees = int(value)
     minutes = (value - degrees) * 60.0
     width = 2 if hemispheres == "NS" else 3
-    return f"{degrees:0{width}d}{minutes:0{places + 3}.{places}f}", hemisphere
+    return f"{degrees:0{width}d}{minutes:08.5f}", hemisphere
 
 
 class L76K(SerialDevice):
@@ -188,8 +187,8 @@ class L76K(SerialDevice):
         return out
 
     def _position(self) -> str:
-        lat, ns = degrees_to_nmea(self.latitude, "NS", places=5)
-        lon, ew = degrees_to_nmea(self.longitude, "EW", places=5)
+        lat, ns = degrees_to_nmea(self.latitude, "NS")
+        lon, ew = degrees_to_nmea(self.longitude, "EW")
         return f"{lat},{ns},{lon},{ew}"
 
     def _gga(self, stamp: float) -> str:
@@ -260,6 +259,13 @@ def _civil_from_days(days: int) -> tuple[int, int, int]:
 # -- the T-Deck Max's receiver ----------------------------------------------
 
 UBX_SYNC = b"\xb5\x62"
+# The NMEA sentences on by default on its UART (CFG-MSGOUT, Table 69 of the
+# interface description) that a position and a time decide, in message-ID
+# order. GSA and GSV, also on, describe a sky this model does not have.
+UBLOX_SENT = ("gga", "gll", "rmc", "vtg")
+# Each of them with no fix and no time: "it will output empty fields" (2.5.6).
+UBLOX_NO_FIX = ("GNGGA,,,,,,0,00,99.99,,,,,,", "GNGLL,,,,,,V,N",
+                "GNRMC,,V,,,,,,,,,,N,V", "GNVTG,,,,,,,,,N")
 UBX_CFG = 0x06
 UBX_ACK, UBX_ACK_ACK = 0x05, 0x01
 
@@ -286,7 +292,8 @@ class UBloxM10(SerialDevice):
     characters have arrived after thirty seconds. So it streams from power-on,
     as the part does, once a second of the *board's* time (ADR 0104) -- on the
     host's clock a slow guest would be flooded, which is what kept the L76K
-    silent until ADR 0116.
+    silent until ADR 0116. Which sentences, and in what form, is u-blox's *M10
+    SPG 5.10 Interface Description* (ADR 0117).
 
     It answers UBX configuration (class 0x06) with ACK-ACK, which the demo waits
     for after each command it sends. Without a position it is a receiver indoors:
@@ -316,7 +323,7 @@ class UBloxM10(SerialDevice):
         # a test with no board needs.
         self._clock = clock
         self._started = time.monotonic()
-        self._next_fix: float | None = None
+        self._fixes = 0           # the last fix reported, in the board's seconds
         self._buffer = b""
         self.sentences = 0
         self.acknowledged: list[tuple[int, int]] = []
@@ -385,33 +392,45 @@ class UBloxM10(SerialDevice):
         now = self._now()
         if now is None:
             return b""
-        if self._next_fix is None:
-            self._next_fix = now + FIX_INTERVAL
+        # As the L76K's (ADR 0116): fixes on the board's whole seconds, the
+        # first a second after power-on, each stamped with its own instant
+        # rather than with whenever this was asked. One missed while the
+        # reader stalled is skipped, not queued.
+        fix = int(now // FIX_INTERVAL)
+        if fix <= self._fixes:
             return b""
-        if now < self._next_fix:
-            return b""
-        self._next_fix += FIX_INTERVAL
-        if self._next_fix <= now:              # a stalled reader, not a backlog
-            self._next_fix = now + FIX_INTERVAL
-        self.sentences += 2
+        self._fixes = fix
+        self.sentences += len(UBLOX_SENT)
         if self.position is None:
             # No satellites, so no position and no time either.
-            return sentence("GNRMC,,V,,,,,,,,,,N,V") + sentence("GNGGA,,,,,,0,00,99.99,,,,,,")
-        stamp = self.epoch + now
-        return sentence(self._rmc(stamp)) + sentence(self._gga(stamp))
+            return b"".join(sentence(body) for body in UBLOX_NO_FIX)
+        stamp = self.epoch + fix * FIX_INTERVAL
+        return b"".join(sentence(getattr(self, f"_{name}")(stamp))
+                        for name in UBLOX_SENT)
+
+    def _position(self) -> str:
+        lat, ns = degrees_to_nmea(self.position[0], "NS")
+        lon, ew = degrees_to_nmea(self.position[1], "EW")
+        return f"{lat},{ns},{lon},{ew}"
 
     def _gga(self, stamp: float) -> str:
         clock, _date = nmea_clock(stamp)
-        lat, ns = degrees_to_nmea(self.position[0], "NS")
-        lon, ew = degrees_to_nmea(self.position[1], "EW")
-        return (f"GNGGA,{clock},{lat},{ns},{lon},{ew},1,{SATELLITES:02d},"
-                f"{HDOP},{self.altitude_m:.1f},M,{GEOID_SEPARATION_M},M,,")
+        return (f"GNGGA,{clock},{self._position()},1,{SATELLITES:02d},"
+                f"{HDOP:.2f},{self.altitude_m:.1f},M,{GEOID_SEPARATION_M:.1f},M,,")
+
+    def _gll(self, stamp: float) -> str:
+        clock, _date = nmea_clock(stamp)
+        return f"GNGLL,{self._position()},{clock},A,A"
 
     def _rmc(self, stamp: float) -> str:
         clock, date = nmea_clock(stamp)
-        lat, ns = degrees_to_nmea(self.position[0], "NS")
-        lon, ew = degrees_to_nmea(self.position[1], "EW")
-        return f"GNRMC,{clock},A,{lat},{ns},{lon},{ew},0.00,0.00,{date},,,A,V"
+        # Standing still: the speed is 0.000 knots and the course is left
+        # empty, as in the receiver output quoted in 2.5.3.
+        return f"GNRMC,{clock},A,{self._position()},0.000,,{date},,,A,V"
+
+    def _vtg(self, stamp: float) -> str:
+        # Standing still, as in RMC: no course, and zero speed in both units.
+        return "GNVTG,,T,,M,0.000,N,0.000,K,A"
 
     def summary(self) -> str:
         cfg = ", ".join(f"0x{i:02x}" for _c, i in self.acknowledged) or "none"

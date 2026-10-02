@@ -103,9 +103,10 @@ more than the clock:
   deterministic, as no Python serial part's is.
 - The module still always has a fix (ADR 0052). There are no satellites in
   view and no DOP sentence, and no antenna status.
-- The u-blox model shares the coordinate formatter and still writes four
-  decimals of minutes. u-blox's own interface description would decide that,
-  and it is not to hand, so that model is unchanged.
+- *(Answered by ADR 0117.)* The u-blox model shares the coordinate
+  formatter and still writes four decimals of minutes. u-blox's own interface
+  description would decide that, and it is not to hand, so that model is
+  unchanged.
 
 ## Alternatives rejected
 

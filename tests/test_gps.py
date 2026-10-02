@@ -214,10 +214,8 @@ def test_the_position_reported_is_the_one_it_was_given(module, clock) -> None:
 
 def test_an_angle_south_and_east_flips_both_letters() -> None:
     """The other half of every sign, which a single position cannot show."""
-    assert degrees_to_nmea(-33.8688, "NS", places=5) == ("3352.12800", "S")
-    assert degrees_to_nmea(151.2093, "EW", places=5) == ("15112.55800", "E")
-    # Four places is what the u-blox model still writes (ADR 0116).
-    assert degrees_to_nmea(-33.8688, "NS") == ("3352.1280", "S")
+    assert degrees_to_nmea(-33.8688, "NS") == ("3352.12800", "S")
+    assert degrees_to_nmea(151.2093, "EW") == ("15112.55800", "E")
 
 
 def test_it_says_it_has_a_fix(module, clock) -> None:
