@@ -127,3 +127,4 @@ superseded ADR is marked superseded and points forward.
 | [0119](0119-audio-runs-at-its-sample-rate.md) | Audio runs at its sample rate | Accepted (refines 0016 decision 2) |
 | [0120](0120-an-spi-transfer-takes-its-bus-time.md) | An SPI transfer takes its bus time | Accepted (refines 0032) |
 | [0121](0121-an-i2c-transaction-takes-its-bus-time.md) | An I2C transaction takes its bus time | Accepted (refines 0011) |
+| [0122](0122-a-serial-line-keeps-no-backlog.md) | A serial line keeps no backlog | Accepted (carried patch; found by 0120/0121) |
