@@ -95,6 +95,34 @@ suspecting QEMU again:
 
     BOARDEMUL_QEMU_EXPERIMENTS=report-watchpoint-hits tools/build_qemu.sh
 
+### `report-cpu-resets.patch` — a diagnostic, and it found two defects
+
+Written to find out why one reboot after the ipc1 canary printed the ROM's
+banner twice (ADR 0114). Three kinds of line, all under `-d unimp`:
+
+- `cpu-reset: PROCPU requested by core 1 at … ns; core0 pc …, core1 pc …`:
+  each CPU reset the guest writes to RTC_CNTL, who wrote it, and where both
+  cores were. `(halted)` marks a core that was not running.
+- `cpu-stall: core 0 stalled by core 1 at … ns`: each change of a stall.
+  The firmware's read-modify-writes pass through an unstalled value, so a
+  stall that is already on shows as four quick lines.
+- `cpu-reset: machine reset at … ns resets core0`: each reset QEMU then made
+  of the machine, and which cores it reset.
+
+The requests and stalls are logged in `hw/misc/esp32s3_rtc_cntl.c`, where the
+guest writes them, so the patch also applies on top of
+`../core-reset-and-stall.patch` and shows the fix's timeline.
+
+What it found, driven by `tools/restart_probe` (one restart from each core, by
+`esp_restart()` and by `abort()`): ESP-IDF's restart from core 1 resets core 0
+and stalls it, then resets it again and releases it. The stall did nothing,
+and each reset was a machine reset after which core 0 ran first for a whole
+time slice. The stall arrived 106 ms after the first reset, with core 0 deep
+in its ROM, and the last reset found core 0 in the bootloader. ADR 0123 has
+the numbers and the fix.
+
+    BOARDEMUL_QEMU_EXPERIMENTS=report-cpu-resets tools/build_qemu.sh
+
 ### `amplify-cross-thread-tlb-flush.patch` — makes a 1% race a visible one
 
 `accel/tcg/cputlb.c`, in `tlb_flush_by_mmuidx_async_work`: if this flush is

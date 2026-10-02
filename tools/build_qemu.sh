@@ -118,6 +118,7 @@ fi
 #   icount-sleep-off-deterministic.patch  ADR 0115  QEMU core; not yet reported
 #   flash-writes-synchronously.patch      ADR 0115  issue 188
 #   uart-rx-overflows.patch               ADR 0122  not yet reported
+#   core-reset-and-stall.patch            ADR 0123  issue 189, offered as PR 190
 # Each PR of ours is the same diff as the patch beside it, against esp-develop,
 # from github.com/ProlificLab/qemu; PR 185 is another user's fix for the same
 # defect, equivalent rather than identical. When one is merged and the pinned tag moves past
@@ -128,7 +129,8 @@ for name in gdma-out-eof-desc.patch spi1-dummy-lanes.patch system-bt-lpck-regs.p
             tlb-flush-owning-thread.patch gdma-reaches-psram.patch \
             intmatrix-level-mirror.patch uart2-chardev.patch \
             icount-sleep-off-deterministic.patch flash-writes-synchronously.patch \
-            uart-rx-overflows.patch; do
+            uart-rx-overflows.patch \
+            core-reset-and-stall.patch; do
     PATCH="${REPO_ROOT}/qemu-patch/${name}"
     if git -C "${SRC}" apply --reverse --check "${PATCH}" 2>/dev/null; then
         echo "==> ${name} already applied"

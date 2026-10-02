@@ -1,0 +1,83 @@
+diff --git a/hw/xtensa/esp32s3.c b/hw/xtensa/esp32s3.c
+--- a/hw/xtensa/esp32s3.c
++++ b/hw/xtensa/esp32s3.c
+@@ -206,6 +206,14 @@
+     if (s->requested_reset == 0) {
+         s->requested_reset = ESP32S3_SOC_RESET_ALL;
+     }
++    /* report-cpu-resets: what this machine reset actually resets. */
++    qemu_log_mask(LOG_UNIMP, "cpu-reset: machine reset at %" PRId64
++                  " ns, core0 pc %08x, core1 pc %08x, resets%s%s%s\n",
++                  qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL),
++                  s->cpu[0].env.pc, s->cpu[1].env.pc,
++                  s->requested_reset & ESP32S3_SOC_RESET_PROCPU ? " core0" : "",
++                  s->requested_reset & ESP32S3_SOC_RESET_APPCPU ? " core1" : "",
++                  s->requested_reset & ESP32S3_SOC_RESET_PERIPH ? " periph" : "");
+     if (s->requested_reset & ESP32S3_SOC_RESET_PERIPH) {
+         device_cold_reset(DEVICE(&s->intmatrix));
+         for (int i = 0; i < ESP32S3_UART_COUNT; ++i) {
+diff --git a/hw/misc/esp32s3_rtc_cntl.c b/hw/misc/esp32s3_rtc_cntl.c
+--- a/hw/misc/esp32s3_rtc_cntl.c
++++ b/hw/misc/esp32s3_rtc_cntl.c
+@@ -20,10 +20,30 @@
+ #include "hw/qdev-properties.h"
+ #include "hw/misc/esp32s3_reg.h"
+ #include "hw/misc/esp32s3_rtc_cntl.h"
++#include "hw/core/cpu.h"
+ 
+ static void esp32s3_rtc_update_cpu_stall(Esp32s3RtcCntlState* s);
+ static void esp32s3_rtc_update_clk(Esp32s3RtcCntlState* s);
+ 
++/*
++ * report-cpu-resets (experiment, diagnostic -- see the experiments README).
++ * Who asked for which core's reset, and where both cores were then. A core
++ * that is running may report a pc up to one translation block old.
++ */
++static void report_core_reset(const char *which)
++{
++    CPUState *c0 = qemu_get_cpu(0), *c1 = qemu_get_cpu(1);
++
++    qemu_log_mask(LOG_UNIMP, "cpu-reset: %s requested by core %d at %" PRId64
++                  " ns; core0 pc %08" PRIx64 "%s, core1 pc %08" PRIx64 "%s\n",
++                  which, current_cpu ? current_cpu->cpu_index : -1,
++                  qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL),
++                  c0 ? (uint64_t)c0->cc->get_pc(c0) : 0,
++                  c0 && c0->halted ? " (halted)" : "",
++                  c1 ? (uint64_t)c1->cc->get_pc(c1) : 0,
++                  c1 && c1->halted ? " (halted)" : "");
++}
++
+ static uint64_t esp32s3_rtc_cntl_read(void *opaque, hwaddr addr, unsigned int size)
+ {
+     Esp32s3RtcCntlState *s = ESP32S3_RTC_CNTL(opaque);
+@@ -90,11 +110,13 @@
+         }
+         if (value & R_RTC_CNTL_OPTIONS0_SW_APPCPU_RESET_MASK) {
+             s->reset_cause[1] = ESP32_SW_CPU_RESET;
++            report_core_reset("APPCPU");
+             qemu_irq_pulse(s->cpu_reset_req[1]);
+             value &= ~(R_RTC_CNTL_OPTIONS0_SW_APPCPU_RESET_MASK);
+         }
+         if (value & R_RTC_CNTL_OPTIONS0_SW_PROCPU_RESET_MASK) {
+             s->reset_cause[0] = ESP32_SW_CPU_RESET;
++            report_core_reset("PROCPU");
+             qemu_irq_pulse(s->cpu_reset_req[0]);
+             value &= ~(R_RTC_CNTL_OPTIONS0_SW_PROCPU_RESET_MASK);
+         }
+@@ -155,6 +177,16 @@
+ 
+     const uint32_t stall_magic_val = 0x86;
+ 
++    /* report-cpu-resets (experiment, diagnostic): each change of a stall. */
++    for (int i = 0; i < ESP32S3_CPU_COUNT; i++) {
++        bool stall = (i == 0 ? procpu_stall : appcpu_stall) == stall_magic_val;
++        if (stall != s->cpu_stall_state[i]) {
++            qemu_log_mask(LOG_UNIMP, "cpu-stall: core %d %s by core %d at %"
++                          PRId64 " ns\n", i, stall ? "stalled" : "unstalled",
++                          current_cpu ? current_cpu->cpu_index : -1,
++                          qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
++        }
++    }
+     s->cpu_stall_state[0] = procpu_stall == stall_magic_val;
+     s->cpu_stall_state[1] = appcpu_stall == stall_magic_val;
+ 
