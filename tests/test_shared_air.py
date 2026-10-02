@@ -78,7 +78,7 @@ def listen(radio: Sx1262, at_ns: int) -> None:
 
 def test_a_packet_heard_from_its_start_is_received_at_its_end(radio: Sx1262) -> None:
     listen(radio, 0)
-    assert radio.barrier(1 * MS, [packet(1 * MS)]) == (0, ends(1 * MS))
+    assert radio.barrier(2 * MS, [packet(1 * MS)]) == (0, ends(1 * MS))
     assert radio.heard == 0
     assert radio.barrier(ends(1 * MS), []) == (1, 0)
     assert radio.heard == 1 and radio.irq & IRQ_RX_DONE
@@ -88,7 +88,7 @@ def test_a_receiver_that_comes_late_locks_on_while_preamble_remains(radio: Sx126
     """Twelve and a quarter symbols of preamble, eight needed: there are
     4.25 symbols to spare (ADR 0113)."""
     assert lock_symbols(7) == 8
-    radio.barrier(1 * MS, [packet(1 * MS)])
+    radio.barrier(2 * MS, [packet(1 * MS)])
     listen(radio, 1 * MS + 4 * SYMBOL)
     radio.barrier(1 * MS + 5 * SYMBOL, [])
     radio.barrier(ends(1 * MS), [])
@@ -96,7 +96,7 @@ def test_a_receiver_that_comes_late_locks_on_while_preamble_remains(radio: Sx126
 
 
 def test_one_that_comes_too_late_was_not_listening(radio: Sx1262) -> None:
-    radio.barrier(1 * MS, [packet(1 * MS)])
+    radio.barrier(2 * MS, [packet(1 * MS)])
     listen(radio, 1 * MS + 5 * SYMBOL)
     radio.barrier(ends(1 * MS), [])
     assert radio.heard == 0 and radio.not_listening == 1
@@ -104,7 +104,7 @@ def test_one_that_comes_too_late_was_not_listening(radio: Sx1262) -> None:
 
 def test_a_receiver_that_leaves_part_way_loses_the_packet(radio: Sx1262) -> None:
     listen(radio, 0)
-    radio.barrier(1 * MS, [packet(1 * MS)])
+    radio.barrier(2 * MS, [packet(1 * MS)])
     window(radio, [SET_STANDBY, 0x00], 10 * MS)
     radio.barrier(ends(1 * MS), [])
     assert radio.heard == 0 and radio.cut_off == 1
@@ -112,7 +112,7 @@ def test_a_receiver_that_leaves_part_way_loses_the_packet(radio: Sx1262) -> None
 
 def test_a_transmitting_radio_is_deaf(radio: Sx1262) -> None:
     window(radio, [SET_TX, 0, 0, 0], 0)
-    radio.barrier(1 * MS, [packet(1 * MS)])
+    radio.barrier(2 * MS, [packet(1 * MS)])
     radio.barrier(ends(1 * MS) + 100 * MS, [])
     assert radio.heard == 0 and radio.deaf == 1
 
@@ -120,6 +120,7 @@ def test_a_transmitting_radio_is_deaf(radio: Sx1262) -> None:
 def test_two_packets_on_top_of_each_other_are_both_lost(radio: Sx1262) -> None:
     listen(radio, 0)
     radio.barrier(2 * MS, [packet(1 * MS, sender="a"), packet(2 * MS, sender="b")])
+    radio.barrier(3 * MS, [])
     radio.barrier(ends(2 * MS), [])
     assert radio.heard == 0 and radio.collisions == 1
 
@@ -135,7 +136,7 @@ def test_a_packet_that_has_not_started_waits(radio: Sx1262) -> None:
 
 def test_a_sweep_sees_a_packet_on_the_air(radio: Sx1262) -> None:
     """6.1.5: detected if LoRa symbols were heard during it. Then STBY_RC."""
-    radio.barrier(1 * MS, [packet(1 * MS)])
+    radio.barrier(2 * MS, [packet(1 * MS)])
     window(radio, [SET_CAD_PARAMS, 0x01, 0x16, 0x0A, 0x00, 0, 0, 0], 2 * MS)
     window(radio, [SET_CAD], 2 * MS)
     radio.barrier(2 * MS + 3 * SYMBOL, [])
@@ -154,11 +155,27 @@ def test_an_empty_channel_reads_clear(radio: Sx1262) -> None:
 
 
 def test_cad_rx_stays_listening_when_it_detects(radio: Sx1262) -> None:
-    radio.barrier(1 * MS, [packet(1 * MS)])
+    radio.barrier(2 * MS, [packet(1 * MS)])
     window(radio, [SET_CAD_PARAMS, 0x01, 0x16, 0x0A, 0x01, 0, 0, 0], 2 * MS)
     window(radio, [SET_CAD], 2 * MS)
     radio.barrier(2 * MS + 3 * SYMBOL, [])
     assert radio.mode == MODE_RX
+
+
+def test_a_frame_counts_from_the_first_barrier_after_it_started(radio: Sx1262) -> None:
+    """What a board knows at a barrier is fixed by the barrier: a frame that
+    started at or after it may or may not be in hand yet, depending on how far
+    the host let its sender run, so it waits for the next one (ADR 0115)."""
+    listen(radio, 0)
+    window(radio, [SET_CAD_PARAMS, 0x01, 0x16, 0x0A, 0x00, 0, 0, 0], 0)
+    radio.barrier(1 * MS, [packet(1 * MS)])
+    window(radio, [SET_CAD], 1 * MS)
+    flags = window(radio, [GET_IRQ, 0, 0, 0], 1 * MS + 3 * SYMBOL)
+    assert not (flags[2] << 8 | flags[3]) & IRQ_CAD_DETECTED, (
+        "known before its barrier: the sweep would see it in some runs only")
+    radio.barrier(1 * MS + 3 * SYMBOL, [])
+    assert radio._candidates or radio._receiving or radio.not_listening, (
+        "known from the next barrier on")
 
 
 def test_the_detected_flag_is_bit_eight() -> None:

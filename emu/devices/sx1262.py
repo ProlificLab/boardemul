@@ -215,6 +215,9 @@ class Sx1262(SpiDevice):
         self._history: list[tuple[int, int]] = []
         self._candidates: list[Heard] = []
         self._recent: list[Heard] = []
+        # Frames in hand but not yet known: a frame counts from the first
+        # barrier after it started (ADR 0115).
+        self._arriving: list[tuple[str, bytes]] = []
         self.cut_off = 0
         self.cad_detected = 0
         self.sent = 0
@@ -512,7 +515,15 @@ class Sx1262(SpiDevice):
         sent, judge what can now be judged, and say where DIO1 goes."""
         with self._lock:
             self.now_ns = max(self.now_ns, ns)
-            for sender, frame in frames:
+            self._arriving += frames
+            # What this board knows of the air at a barrier is fixed by the
+            # barrier, not by when frames happened to arrive. Every frame that
+            # started before `ns` was sent before its sender reached this
+            # barrier, so it is surely in hand; one that started later may or
+            # may not be, depending on how far the host let its sender run,
+            # and waits for the barrier after its start (ADR 0115).
+            known, self._arriving = self._split_known(ns)
+            for sender, frame in known:
                 heard = self._intake(frame, sender, None)
                 if heard is not None:
                     self._candidates.append(heard)
@@ -530,6 +541,18 @@ class Sx1262(SpiDevice):
             keep = max(0, bisect.bisect_right(self._history, (since, 1 << 30)) - 1)
             del self._history[:keep]
             return self.line()
+
+    def _split_known(self, ns: int) -> tuple[list, list]:
+        """The frames in hand that started before `ns`, in an order of their
+        own -- start, sender, contents -- and those that did not."""
+        known, later = [], []
+        for sender, frame in self._arriving:
+            decoded = lora.decode(frame)
+            start = round(decoded.sent_at * 1e9) if decoded is not None else ns - 1
+            (known if start < ns else later).append((start, sender, frame))
+        known.sort()
+        return ([(sender, frame) for _, sender, frame in known],
+                [(sender, frame) for _, sender, frame in later])
 
     def _judge(self, now_ns: int) -> None:
         """Decide every packet that started by `now_ns` and can be decided:
