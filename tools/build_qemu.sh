@@ -115,6 +115,8 @@ fi
 #   gdma-reaches-psram.patch      ADR 0083  issue 180, offered as PR 181
 #   intmatrix-level-mirror.patch  ADR 0101  issue 184, fix offered by another user as PR 185
 #   uart2-chardev.patch           ADR 0105  issue 186, offered as PR 187
+#   icount-sleep-off-deterministic.patch  ADR 0115  QEMU core; not yet reported
+#   flash-writes-synchronously.patch      ADR 0115  QEMU core; not yet reported
 # Each PR of ours is the same diff as the patch beside it, against esp-develop,
 # from github.com/ProlificLab/qemu; PR 185 is another user's fix for the same
 # defect, equivalent rather than identical. When one is merged and the pinned tag moves past
@@ -123,7 +125,8 @@ fi
 # reviewed like anything else, and fail loudly if a tag bump moves the code.
 for name in gdma-out-eof-desc.patch spi1-dummy-lanes.patch system-bt-lpck-regs.patch \
             tlb-flush-owning-thread.patch gdma-reaches-psram.patch \
-            intmatrix-level-mirror.patch uart2-chardev.patch; do
+            intmatrix-level-mirror.patch uart2-chardev.patch \
+            icount-sleep-off-deterministic.patch flash-writes-synchronously.patch; do
     PATCH="${REPO_ROOT}/qemu-patch/${name}"
     if git -C "${SRC}" apply --reverse --check "${PATCH}" 2>/dev/null; then
         echo "==> ${name} already applied"

@@ -1,0 +1,94 @@
+--- a/accel/tcg/icount-common.c
++++ b/accel/tcg/icount-common.c
+@@ -45,6 +45,13 @@
+  * is TCG-specific, and does not need to be built for other accels.
+  */
+ static bool icount_sleep = true;
++
++/* For the TCG accelerator: whether an idle vCPU's clock follows real time. */
++bool icount_sleeps(void)
++{
++    return icount_sleep;
++}
++
+ /* Arbitrarily pick 1MIPS as the minimum allowable speed.  */
+ #define MAX_ICOUNT_SHIFT 10
+ 
+@@ -304,6 +311,17 @@
+     }
+ 
+     if (replay_mode != REPLAY_MODE_PLAY) {
++        /*
++         * Without sleep, the jump to the next deadline is made by the vCPU
++         * thread alone, once every vCPU is idle and its count accounted
++         * (rr_cpu_thread_fn). From here the halted flag a vCPU sets before
++         * that accounting can be seen early, and the jump computed from a
++         * clock still missing that vCPU's last instructions: the deadline
++         * is overshot by however many, which depends on the host.
++         */
++        if (!icount_sleep && !qemu_in_vcpu_thread()) {
++            return;
++        }
+         if (!all_cpu_threads_idle()) {
+             return;
+         }
+--- a/include/sysemu/cpu-timers.h
++++ b/include/sysemu/cpu-timers.h
+@@ -101,4 +101,10 @@
+ void cpus_set_virtual_clock(int64_t new_time);
+ int64_t cpus_get_elapsed_ticks(void);
+ 
++/*
++ * Whether an idle vCPU's virtual clock follows real time (-icount sleep=on)
++ * or jumps to the next deadline (sleep=off, the deterministic setting).
++ */
++bool icount_sleeps(void);
++
+ #endif /* SYSEMU_CPU_TIMERS_H */
+--- a/accel/tcg/tcg-accel-ops-icount.c
++++ b/accel/tcg/tcg-accel-ops-icount.c
+@@ -45,10 +45,18 @@
+          */
+         deadline = qemu_clock_deadline_ns_all(QEMU_CLOCK_VIRTUAL,
+                                               QEMU_TIMER_ATTR_ALL);
+-        /* Check realtime timers, because they help with input processing */
+-        deadline = qemu_soonest_timeout(deadline,
+-                qemu_clock_deadline_ns_all(QEMU_CLOCK_REALTIME,
+-                                           QEMU_TIMER_ATTR_ALL));
++        /*
++         * Check realtime timers, because they help with input processing.
++         * Not when the clock does not sleep: a realtime deadline is a host
++         * time, and cutting a vCPU's budget at it moves where the round
++         * robin hands over to the next CPU -- so the guest's own timeline
++         * would depend on the host, which sleep=off exists to prevent.
++         */
++        if (icount_sleeps()) {
++            deadline = qemu_soonest_timeout(deadline,
++                    qemu_clock_deadline_ns_all(QEMU_CLOCK_REALTIME,
++                                               QEMU_TIMER_ATTR_ALL));
++        }
+ 
+         /*
+          * Maintain prior (possibly buggy) behaviour where if no deadline
+--- a/accel/tcg/tcg-accel-ops-rr.c
++++ b/accel/tcg/tcg-accel-ops-rr.c
+@@ -290,6 +290,19 @@
+             qatomic_set_mb(&cpu->exit_request, 0);
+         }
+ 
++        if (icount_enabled() && !icount_sleeps() && all_cpu_threads_idle()) {
++            /*
++             * Without sleep, jump to the next deadline here, with every
++             * vCPU's count accounted, and go and run what is then due
++             * rather than waiting for the main loop to do it at a moment
++             * of the host's choosing.
++             */
++            icount_start_warp_timer();
++            if (qemu_clock_deadline_ns_all(QEMU_CLOCK_VIRTUAL,
++                                           QEMU_TIMER_ATTR_ALL) == 0) {
++                continue;
++            }
++        }
+         if (icount_enabled() && all_cpu_threads_idle()) {
+             /*
+              * When all cpus are sleeping (e.g in WFI), to avoid a deadlock

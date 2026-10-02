@@ -120,3 +120,4 @@ superseded ADR is marked superseded and points forward.
 | [0112](0112-the-radio-keeps-the-guests-time.md) | The radio keeps the guest's time | Accepted (moves 0037's timing onto the guest clock) |
 | [0113](0113-boards-on-one-air-keep-one-time.md) | Boards on one air keep one time | Accepted (finishes 0112; closes 0111's last cost) |
 | [0114](0114-the-boot-test-forgives-one-panic-by-name.md) | The boot test forgives one panic, by name | Accepted (extends 0099 decision 3) |
+| [0115](0115-the-guest-clock-does-not-follow-the-host.md) | The guest's clock does not follow the host's | Accepted (answers 0113 decision 7) |

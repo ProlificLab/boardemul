@@ -112,8 +112,8 @@ stops nothing.
    it ends. Receptions are exact, since their outcome is decided at their end,
    tens of milliseconds later.
 
-7. **The test is the shared clock's physics. Determinism was the aim, and
-   it is not reached yet.**
+7. *(Answered by ADR 0115: runs are now identical.)* **The test is the
+   shared clock's physics. Determinism was the aim, and it is not reached yet.**
    - `tests/test_mesh_timed.py` runs two Meshtastic nodes on a timed air. It
      asks that each transmits and that a packet crosses. It also asks that
      every packet heard ended, on the receiver's clock, exactly when the
