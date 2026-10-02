@@ -129,3 +129,4 @@ superseded ADR is marked superseded and points forward.
 | [0121](0121-an-i2c-transaction-takes-its-bus-time.md) | An I2C transaction takes its bus time | Accepted (refines 0011) |
 | [0122](0122-a-serial-line-keeps-no-backlog.md) | A serial line keeps no backlog | Accepted (carried patch; found by 0120/0121) |
 | [0123](0123-one-core-resets-the-other-and-holds-it.md) | One core resets the other, and holds it | Accepted (withdraws 0114's banner-only exception; decision 4 amended) |
+| [0124](0124-the-max-test-reboots-from-the-same-panic.md) | The Max's test reboots from the same panic | Accepted (extends 0114 to test_max_parts) |

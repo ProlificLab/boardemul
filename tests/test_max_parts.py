@@ -5,11 +5,15 @@ The demo brings each part up in turn and reports on it over its USB serial
 port (ADR 0100). Its verdicts are the assertions here, part by part: they are
 the firmware's, not this project's. A part joins this file when the board
 models it well enough to pass the firmware's own check.
+
+The board may reboot from the firmware's own ipc1 stack overflow, as a Max in
+a hand would, and is then judged on the boot that came back (ADR 0124).
 """
 
 from __future__ import annotations
 
 import sys
+import warnings
 from pathlib import Path
 
 import pytest
@@ -17,7 +21,8 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from tests.support import (  # noqa: E402
-    FIRMWARE, Run, qemu_available, radio_busy, run_emulator, usb_text,
+    FIRMWARE, Run, by_boot, last_boot, qemu_available, radio_busy,
+    run_emulator, unexplained_resets, unforgiven, usb_text,
 )
 
 pytestmark = [
@@ -33,8 +38,34 @@ CHECKED = "[[HYN]] Touch init"
 @pytest.fixture(scope="module")
 def checked(tmp_path_factory) -> Run:
     outdir = tmp_path_factory.mktemp("maxparts")
-    return run_emulator(outdir, firmware=FIRMWARE, board="tdeck-max", timeout=300,
-                        until=lambda _uart, _frames: CHECKED in usb_text(outdir))
+
+    def done(_uart, _frames) -> bool:
+        return CHECKED in last_boot(usb_text(outdir))
+
+    run = run_emulator(outdir, firmware=FIRMWARE, board="tdeck-max", timeout=300,
+                       extra=("--reboot",), until=done)
+    if run.boots > 1:
+        warnings.warn(f"the Max booted {run.boots} times (ADR 0124)")
+    # Every check below is on the boot that came back, as a board in a hand
+    # would be judged.
+    run.usb = last_boot(run.usb)
+    return run
+
+
+def test_it_panics_only_with_the_forgiven_overflow(checked: Run) -> None:
+    """ADR 0099's ipc1 canary is the firmware's own and a board reboots from
+    it; any other panic, in any boot, fails here (ADR 0124)."""
+    assert not unforgiven(checked.uart), (unforgiven(checked.uart), checked.uart[-1500:])
+
+
+def test_it_reboots_only_from_the_forgiven_panic(checked: Run) -> None:
+    """A reset for any other reason -- a watchdog, an abort, a restart with no
+    panic before it -- still fails (ADRs 0114, 0124)."""
+    unexplained = unexplained_resets(checked.uart)
+    boots = by_boot(checked.uart)
+    assert not unexplained, (
+        f"boot {unexplained[0]} of {len(boots)} ended without the ipc1 canary "
+        "panic: " + boots[unexplained[0] - 1][-1500:])
 
 
 def test_the_demo_got_through_its_checks(checked: Run) -> None:
