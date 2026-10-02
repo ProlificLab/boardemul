@@ -115,9 +115,9 @@ fi
 #   gdma-reaches-psram.patch      ADR 0083  issue 180, offered as PR 181
 #   intmatrix-level-mirror.patch  ADR 0101  issue 184, fix offered by another user as PR 185
 #   uart2-chardev.patch           ADR 0105  issue 186, offered as PR 187
-#   icount-sleep-off-deterministic.patch  ADR 0115  QEMU core; not yet reported
+#   icount-sleep-off-deterministic.patch  ADR 0115  QEMU core: gitlab qemu-project/qemu 4632
 #   flash-writes-synchronously.patch      ADR 0115  issue 188
-#   uart-rx-overflows.patch               ADR 0122  not yet reported
+#   uart-rx-overflows.patch               ADR 0122  issue 191, offered as PR 192
 #   core-reset-and-stall.patch            ADR 0123  issue 189, offered as PR 190
 # Each PR of ours is the same diff as the patch beside it, against esp-develop,
 # from github.com/ProlificLab/qemu; PR 185 is another user's fix for the same
