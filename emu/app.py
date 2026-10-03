@@ -45,6 +45,15 @@ from emu.skin import (  # noqa: E402
 )
 from emu.devices.tdeck_trackball import NOTCH  # noqa: E402
 
+# The keyboard backlight's halo: from the plate's grey towards a white LED.
+C_GLOW_FROM = "#5a5d61"
+C_GLOW_TO = "#eef4ff"
+
+
+def _mix(a: str, b: str, t: float) -> str:
+    from emu.raster import hex_colour, mix
+    return "#%02x%02x%02x" % mix(hex_colour(a), hex_colour(b), t)
+
 # The host's arrow keys roll the T-Deck's trackball a notch (ADR 0128).
 ROLLS = {"Up": "up", "Down": "down", "Left": "left", "Right": "right"}
 
@@ -123,6 +132,10 @@ class DeckWindow:
         self.lit: list[int] = []
         self.ball_down = False
         self.ball_items: list[int] = []
+        # The keyboard's backlight, as the board reports it (ADR 0129).
+        self.board_stamp: tuple[int, int] | None = None
+        self.glow = 0.0
+        self.glow_items: list[int] = []
         self._ball_after: str | None = None
 
         self.ui = _family(root, "Segoe UI", "DejaVu Sans", "Helvetica")
@@ -397,8 +410,10 @@ class DeckWindow:
         for t in face.texts:
             size = -max(6, round(t.size))
             font = (legend, size, "bold") if t.bold else (small, size)
+            # A cap's legend is tagged with its printed colour, for the glow.
+            tags = ("legend", t.colour) if t.glows else ()
             self.canvas.create_text(t.x, t.y, text=t.text, fill=t.colour, font=font,
-                                    anchor=t.anchor)
+                                    anchor=t.anchor, tags=tags)
         self.key_hits = [(x0 / self.scale, y0 / self.scale, x1 / self.scale,
                           y1 / self.scale, name) for x0, y0, x1, y1, name in face.keys]
         self.face = face
@@ -616,8 +631,45 @@ class DeckWindow:
                 if stamp != self.stamp and self._load():
                     self.stamp = stamp
                     self._refresh_status()
+            if self.skin.face:
+                self._poll_board()
         finally:
             self.root.after(POLL_MS, self._poll)
+
+    def _poll_board(self) -> None:
+        """Read the board's state file when it changes (ADR 0129)."""
+        path = self.path.parent / "board.json"
+        try:
+            st = path.stat()
+            stamp = (st.st_mtime_ns, st.st_size)
+            if stamp == self.board_stamp:
+                return
+            state = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return
+        self.board_stamp = stamp
+        glow = float(state.get("keyboard_backlight", 0.0))
+        if glow != self.glow:
+            self.glow = glow
+            self._show_glow()
+
+    def _show_glow(self) -> None:
+        """The keyboard's LEDs sit under the caps: lit, light leaks round
+        every cap's edge and the legends shine, in proportion to the duty."""
+        for item in self.glow_items:
+            self.canvas.delete(item)
+        self.glow_items = []
+        legend = "#ffffff" if self.glow > 0 else None
+        for item in self.canvas.find_withtag("legend"):
+            self.canvas.itemconfigure(item, fill=legend or self.canvas.gettags(item)[1])
+        if self.glow <= 0:
+            return
+        level = min(1.0, self.glow)
+        halo = _mix(C_GLOW_FROM, C_GLOW_TO, 0.35 + 0.65 * level)
+        width = max(1, round((0.8 + 1.2 * level) * self.scale))
+        for x0, y0, x1, y1, _name in self.key_hits:
+            self.glow_items.append(self._rr(x0 - 0.5, y0 - 0.5, x1 + 0.5, y1 + 0.5, 5,
+                                            fill="", outline=halo, width=width))
 
     def _refresh_status(self) -> None:
         head = f"frames {self.frames:<3d} last {self.note:<13s} "

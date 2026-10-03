@@ -93,6 +93,7 @@ class Text:
     colour: str
     bold: bool = False
     anchor: str = "center"
+    glows: bool = False             # a cap's legend, lit by the keyboard backlight
 
 
 @dataclass
@@ -309,13 +310,16 @@ def _legend(face: Face, img: Raster, name: str, second: str, x0, y0, x1, y1, k) 
     cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
     w = 0.16 * k
     if len(name) == 1:
-        face.texts.append(Text(cx, cy + 0.75 * k, name, 3.0 * k, "#f3f4f5", bold=True))
+        face.texts.append(Text(cx, cy + 0.75 * k, name, 3.0 * k, "#f3f4f5", bold=True,
+                               glows=True))
         if second:
-            face.texts.append(Text(cx - 0.55 * k, cy - 1.55 * k, second, 1.75 * k, "#e4e6e8"))
+            face.texts.append(Text(cx - 0.55 * k, cy - 1.55 * k, second, 1.75 * k, "#e4e6e8",
+                                   glows=True))
         if name == "$":                             # [photo] a speaker above the $
             _speaker(img, cx + 0.2 * k, cy - 1.5 * k, k)
     elif name in ("ALT", "SYM"):
-        face.texts.append(Text(cx, cy + 0.2 * k, name.lower(), 2.1 * k, "#f3f4f5"))
+        face.texts.append(Text(cx, cy + 0.2 * k, name.lower(), 2.1 * k, "#f3f4f5",
+                               glows=True))
     elif name == "DEL":
         _backspace(img, cx, cy, k, w)
     elif name == "ENTER":
@@ -335,7 +339,8 @@ def _legend(face: Face, img: Raster, name: str, second: str, x0, y0, x1, y1, k) 
             p1 = (cx + r * math.cos(math.radians(a1)), cy - 0.05 * k - r * math.sin(math.radians(a1)))
             img.segment(*p0, *p1, w * 1.3, C_INK)
         img.segment(cx, cy + 0.8 * k, cx, cy + 1.25 * k, w * 1.3, C_INK)
-        face.texts.append(Text(cx - 1.3 * k, cy - 1.45 * k, "0", 1.7 * k, "#e4e6e8"))
+        face.texts.append(Text(cx - 1.3 * k, cy - 1.45 * k, "0", 1.7 * k, "#e4e6e8",
+                               glows=True))
     elif name == "SPACE":
         img.segment(cx - 2.6 * k, cy + 0.5 * k, cx + 2.6 * k, cy + 0.5 * k, w * 1.8, C_INK)
         for side in (-1, 1):
