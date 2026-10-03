@@ -20,13 +20,16 @@ from __future__ import annotations
 
 import re
 import sys
+import warnings
 from pathlib import Path
 
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from tests.support import REPO_ROOT, Run, qemu_available, run_emulator  # noqa: E402
+from tests.support import (  # noqa: E402
+    REPO_ROOT, Run, last_boot, qemu_available, reset_trouble, run_emulator,
+)
 
 # The build that brings its station up and scans on a loop, every seven seconds.
 FIRMWARE = REPO_ROOT / "firmware" / "T-Deck_UnitTest_250620.bin"
@@ -46,34 +49,49 @@ def _heard_the_network(uart: str, frames: list) -> bool:
 
     Waiting for two rather than one because a single scan hearing a beacon
     could be luck; a long run has every scan hearing it, which is what a real
-    access point beaconing ten times a second looks like.
+    access point beaconing ten times a second looks like. Counted in the boot
+    in progress: the board may reboot (ADR 0125).
     """
+    uart = last_boot(uart)
     scans = uart.count(SCAN_DONE)
     return scans >= 4 and scans - uart.count(NOTHING_HEARD) >= 2
 
 
 @pytest.fixture(scope="module")
 def scanned(tmp_path_factory) -> Run:
-    return run_emulator(tmp_path_factory.mktemp("wifi"), firmware=FIRMWARE,
-                        board="tdeck", timeout=400,
-                        extra=("--psram-octal", "--wifi-ap", f"{SSID},100"),
-                        until=_heard_the_network)
+    """The board may reboot from the firmware's ipc1 overflow, and is judged on
+    the boot that came back (ADR 0125)."""
+    run = run_emulator(tmp_path_factory.mktemp("wifi"), firmware=FIRMWARE,
+                       board="tdeck", timeout=400,
+                       extra=("--psram-octal", "--wifi-ap", f"{SSID},100",
+                              "--reboot"),
+                       until=_heard_the_network)
+    if run.boots > 1:
+        warnings.warn(f"build 250620 booted {run.boots} times (ADR 0125)")
+    return run
+
+
+def test_it_reboots_only_from_the_forgiven_panic(scanned: Run) -> None:
+    """Any panic but ADR 0099's ipc1 canary, or a reset for any other reason,
+    fails here with the boot it ended (ADR 0125)."""
+    assert not reset_trouble(scanned.uart), reset_trouble(scanned.uart)
 
 
 def test_the_station_keeps_scanning_with_beacons_arriving(scanned: Run) -> None:
     """A frame arriving used to stop the scan dead: the driver took four and
     then never handed a descriptor back, and the station stopped looking. So
     that it goes on scanning at all is worth asserting on its own."""
-    assert scanned.uart.count(SCAN_DONE) >= 3, scanned.uart[-1500:]
+    assert scanned.last_uart.count(SCAN_DONE) >= 3, scanned.last_uart[-1500:]
 
 
 def test_a_scan_hears_the_beacon(scanned: Run) -> None:
     """The firmware's own words. Every scan said `no networks found` before
     this, and the ones that hear the beacon do not."""
-    scans = scanned.uart.count(SCAN_DONE)
-    silent = scanned.uart.count(NOTHING_HEARD)
+    said = scanned.last_uart
+    scans = said.count(SCAN_DONE)
+    silent = said.count(NOTHING_HEARD)
     assert silent < scans, (
-        f"all {scans} scan(s) reported nothing: {scanned.uart[-1500:]}")
+        f"all {scans} scan(s) reported nothing: {said[-1500:]}")
 
 
 def test_the_station_transmits_and_the_access_point_answers(scanned: Run) -> None:

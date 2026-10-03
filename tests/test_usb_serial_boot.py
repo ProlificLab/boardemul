@@ -11,6 +11,7 @@ enables it before routing it (ADR 0101), and the scan matches the board.
 from __future__ import annotations
 
 import sys
+import warnings
 from pathlib import Path
 
 import pytest
@@ -18,7 +19,8 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from tests.support import (  # noqa: E402
-    REPO_ROOT, Run, qemu_available, run_emulator, usb_text,
+    REPO_ROOT, Run, last_boot, qemu_available, reset_trouble, run_emulator,
+    usb_text,
 )
 
 WIRESCAN = REPO_ROOT / "firmware" / "examples" / "WireScan.bin"
@@ -37,13 +39,28 @@ ADDRESSES = ("18", "1a", "20", "28", "34", "55", "5a", "6a")
 
 @pytest.fixture(scope="module")
 def scanned(tmp_path_factory) -> Run:
+    """The board may reboot from the firmware's ipc1 overflow, and is judged on
+    the boot that came back (ADR 0125)."""
     outdir = tmp_path_factory.mktemp("wirescan")
-    return run_emulator(outdir, firmware=WIRESCAN, board="tdeck-max", timeout=120,
-                        until=lambda _uart, _frames: SWEPT in usb_text(outdir))
+
+    def swept(_uart, _frames) -> bool:
+        return SWEPT in last_boot(usb_text(outdir))
+
+    run = run_emulator(outdir, firmware=WIRESCAN, board="tdeck-max", timeout=120,
+                       extra=("--reboot",), until=swept)
+    if run.boots > 1:
+        warnings.warn(f"WireScan booted {run.boots} times (ADR 0125)")
+    return run
+
+
+def test_it_reboots_only_from_the_forgiven_panic(scanned: Run) -> None:
+    """Any panic but ADR 0099's ipc1 canary, or a reset for any other reason,
+    fails here with the boot it ended (ADR 0125)."""
+    assert not reset_trouble(scanned.uart), reset_trouble(scanned.uart)
 
 
 def test_the_sketch_speaks_through_the_usb_port(scanned: Run) -> None:
-    assert SWEPT in scanned.usb, scanned.usb[-1500:]
+    assert SWEPT in scanned.last_usb, scanned.last_usb[-1500:]
 
 
 def test_its_serial_output_is_not_on_the_uart(scanned: Run) -> None:
@@ -53,10 +70,11 @@ def test_its_serial_output_is_not_on_the_uart(scanned: Run) -> None:
 
 def test_long_lines_arrive_whole(scanned: Run) -> None:
     """A line longer than the 64-byte FIFO is sent in two packets, not cut."""
-    assert "Initialising I2C Master: sda=13 scl=14 freq=100000" in scanned.usb
+    assert "Initialising I2C Master: sda=13 scl=14 freq=100000" in scanned.last_usb
 
 
 def test_the_scan_finds_the_boards_parts(scanned: Run) -> None:
-    table = scanned.usb[: scanned.usb.index(SWEPT)]
+    said = scanned.last_usb
+    table = said[: said.index(SWEPT)]
     for address in ADDRESSES:
         assert f" {address} " in table, f"0x{address} missing from:\n{table}"

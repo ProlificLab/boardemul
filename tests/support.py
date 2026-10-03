@@ -234,6 +234,18 @@ class Run:
         it reboot (ADR 0099) and it did."""
         return self.uart.count(BOOT_BANNER)
 
+    @property
+    def last_uart(self) -> str:
+        """What the guest said on its UART since it last came out of reset:
+        what a test that lets the board reboot judges it on (ADR 0125)."""
+        return last_boot(self.uart)
+
+    @property
+    def last_usb(self) -> str:
+        """The same, on the USB serial port, where the ROM's banner goes too
+        (ADR 0114)."""
+        return last_boot(self.usb)
+
 
 # -- boots and panics ---------------------------------------------------------
 
@@ -300,6 +312,21 @@ def unexplained_resets(text: str) -> list[int]:
 
     return [n for n, boot in enumerate(by_boot(text)[:-1], 1)
             if not ended_in_the_canary(boot)]
+
+
+def reset_trouble(text: str) -> str:
+    """Why a run's resets are not all the forgiven panic, or "" when they are:
+    ADR 0114's two checks in one message, for the tests ADR 0125 lets reboot.
+    The message carries the boot that ended badly."""
+    wrong = unforgiven(text)
+    if wrong:
+        return f"a panic other than ADR 0099's ipc1 canary: {wrong[0]!r}"
+    unexplained = unexplained_resets(text)
+    if unexplained:
+        boots = by_boot(text)
+        return (f"boot {unexplained[0]} of {len(boots)} ended without the ipc1 "
+                "canary panic: " + boots[unexplained[0] - 1][-1500:])
+    return ""
 
 
 def _uart(outdir: Path) -> str:

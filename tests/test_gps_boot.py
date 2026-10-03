@@ -13,13 +13,16 @@ module it decided it is talking to.
 from __future__ import annotations
 
 import sys
+import warnings
 from pathlib import Path
 
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from tests.support import REPO_ROOT, Run, qemu_available, run_emulator  # noqa: E402
+from tests.support import (  # noqa: E402
+    REPO_ROOT, Run, last_boot, qemu_available, reset_trouble, run_emulator,
+)
 
 # The build that probes at boot. The later ones do it much further into their
 # sequence, which would make this a much longer test for the same fact.
@@ -43,26 +46,41 @@ def _past_the_gps_stage(uart: str, frames: list) -> bool:
     """The firmware's verdict, and then far enough past it that it has finished
     configuring what it found. It says nothing of its own when it does that, so
     the marker is the first thing it reaches afterwards -- the same one the
-    other vendor tests wait for.
+    other vendor tests wait for. Read from the boot in progress: the board may
+    reboot (ADR 0125).
     """
+    uart = last_boot(uart)
     verdict = SUCCESS in uart or FAILURE in uart or NO_QUIET in uart
     return verdict and "ADC_CALI" in uart
 
 
 @pytest.fixture(scope="module")
 def booted(tmp_path_factory) -> Run:
-    return run_emulator(tmp_path_factory.mktemp("gps"), firmware=FIRMWARE,
-                        board="tdeck", timeout=240,
-                        extra=("--psram-octal", "--gps", WHERE),
-                        until=_past_the_gps_stage)
+    """The board may reboot from the firmware's ipc1 overflow; this is the
+    build ADR 0099 traced it on (ADR 0125). The module is a part on the board,
+    so its log spans both boots; the firmware is judged on the last."""
+    run = run_emulator(tmp_path_factory.mktemp("gps"), firmware=FIRMWARE,
+                       board="tdeck", timeout=240,
+                       extra=("--psram-octal", "--gps", WHERE, "--reboot"),
+                       until=_past_the_gps_stage)
+    if run.boots > 1:
+        warnings.warn(f"build 250620 booted {run.boots} times (ADR 0125)")
+    return run
+
+
+def test_it_reboots_only_from_the_forgiven_panic(booted: Run) -> None:
+    """Any panic but ADR 0099's ipc1 canary, or a reset for any other reason,
+    fails here with the boot it ended (ADR 0125)."""
+    assert not reset_trouble(booted.uart), reset_trouble(booted.uart)
 
 
 def test_the_firmware_finds_the_module(booted: Run) -> None:
     """Its own words. Without the model this line is the timeout instead."""
-    assert SUCCESS in booted.uart, booted.uart[-1500:]
-    assert FAILURE not in booted.uart, booted.uart[-1500:]
-    assert NO_QUIET not in booted.uart, (
-        "the module would not go quiet when told to: " + booted.uart[-1500:])
+    said = booted.last_uart
+    assert SUCCESS in said, said[-1500:]
+    assert FAILURE not in said, said[-1500:]
+    assert NO_QUIET not in said, (
+        "the module would not go quiet when told to: " + said[-1500:])
 
 
 def test_it_goes_on_to_configure_the_module_it_found(booted: Run) -> None:

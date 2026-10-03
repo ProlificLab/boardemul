@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import sys
+import warnings
 from pathlib import Path
 
 import pytest
@@ -23,7 +24,8 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from tests.support import (  # noqa: E402
-    FIRMWARE_MESHTASTIC, REPO_ROOT, Run, qemu_available, run_emulator,
+    FIRMWARE_MESHTASTIC, REPO_ROOT, Run, qemu_available, reset_trouble,
+    run_emulator,
 )
 
 CONFIGURED = REPO_ROOT / "build" / "littlefs-configured.bin"
@@ -43,15 +45,32 @@ pytestmark = [
 
 
 @pytest.fixture(scope="module")
-def booted(tmp_path_factory) -> dict:
-    run: Run = run_emulator(tmp_path_factory.mktemp("backlight"),
-                            firmware=FIRMWARE_MESHTASTIC, board="tdeck",
-                            timeout=RUN_SECONDS,
-                            overlays=(f"0x{OVERLAY_AT:x}={CONFIGURED}",),
-                            extra=("--psram-octal",))
-    manifest = next(iter(run.outdir.glob("*.manifest.json")), None)
+def ran(tmp_path_factory) -> Run:
+    """The board may reboot from the firmware's ipc1 overflow, as a T-Deck in
+    a hand would (ADR 0125). The backlight is a part on the board, not in the
+    chip, so its record spans both boots."""
+    run = run_emulator(tmp_path_factory.mktemp("backlight"),
+                       firmware=FIRMWARE_MESHTASTIC, board="tdeck",
+                       timeout=RUN_SECONDS,
+                       overlays=(f"0x{OVERLAY_AT:x}={CONFIGURED}",),
+                       extra=("--psram-octal", "--reboot"))
+    if run.boots > 1:
+        warnings.warn(f"Meshtastic booted {run.boots} times (ADR 0125)")
+    return run
+
+
+@pytest.fixture(scope="module")
+def booted(ran: Run) -> dict:
+    manifest = next(iter(ran.outdir.glob("*.manifest.json")), None)
     assert manifest is not None, "the run left no manifest"
     return json.loads(manifest.read_text()).get("backlight", {})
+
+
+def test_it_reboots_only_from_the_forgiven_panic(ran: Run) -> None:
+    """A reset used to end this run early -- the screen lit, three duty
+    changes, no fade -- without a word about why. Only ADR 0099's ipc1 canary
+    is forgiven now, and anything else fails with its boot (ADR 0125)."""
+    assert not reset_trouble(ran.uart), reset_trouble(ran.uart)
 
 
 def test_the_firmware_drives_the_backlight(booted) -> None:

@@ -130,3 +130,4 @@ superseded ADR is marked superseded and points forward.
 | [0122](0122-a-serial-line-keeps-no-backlog.md) | A serial line keeps no backlog | Accepted (carried patch; found by 0120/0121) |
 | [0123](0123-one-core-resets-the-other-and-holds-it.md) | One core resets the other, and holds it | Accepted (withdraws 0114's banner-only exception; decision 4 amended) |
 | [0124](0124-the-max-test-reboots-from-the-same-panic.md) | The Max's test reboots from the same panic | Accepted (extends 0114 to test_max_parts) |
+| [0125](0125-every-single-boot-test-reboots-from-the-same-panic.md) | Every single-board boot test reboots from the same panic | Accepted (extends 0114 and 0124) |

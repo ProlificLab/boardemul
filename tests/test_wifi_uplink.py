@@ -21,6 +21,7 @@ import shutil
 import socket
 import sys
 import tempfile
+import warnings
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -28,7 +29,9 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from tests.support import REPO_ROOT, Run, qemu_available, run_emulator  # noqa: E402
+from tests.support import (  # noqa: E402
+    REPO_ROOT, Run, last_boot, qemu_available, reset_trouble, run_emulator,
+)
 
 FIRMWARE = REPO_ROOT / "firmware" / "T-Deck_UnitTest_250620.bin"
 SSID, PASSPHRASE, BEACON_MS = "xinyuandianzi", "AA15994823428", 20
@@ -52,7 +55,7 @@ def _host_has_internet() -> bool:
 
 
 def _reported(uart: str, frames: list) -> bool:
-    return "----------REMOVE TASK----------" in uart
+    return "----------REMOVE TASK----------" in last_boot(uart)
 
 
 @pytest.fixture(scope="module")
@@ -66,15 +69,27 @@ def online(tmp_path_factory) -> Run:
         run = run_emulator(scratch, firmware=FIRMWARE, board="tdeck", timeout=300,
                            extra=("--psram-octal", "--wifi-ap",
                                   f"{SSID},{BEACON_MS}", "--wifi-wpa2",
-                                  "--wifi-pass", PASSPHRASE, "--wifi-uplink"),
+                                  "--wifi-pass", PASSPHRASE, "--wifi-uplink",
+                                  # It may reboot from the firmware's ipc1
+                                  # overflow, and is judged on the boot that
+                                  # came back (ADR 0125).
+                                  "--reboot"),
                            env={"BOARDEMUL_TCG_THREADS": "multi"},
                            until=_reported)
         keep = tmp_path_factory.mktemp("uplink")
         for log in list(scratch.glob("*.uart.log")) + list(scratch.glob("*.bus.log")):
             shutil.copy2(log, keep / log.name)
+        if run.boots > 1:
+            warnings.warn(f"build 250620 booted {run.boots} times (ADR 0125)")
         return Run(outdir=keep, frames=run.frames, uart=run.uart)
     finally:
         shutil.rmtree(scratch, ignore_errors=True)
+
+
+def test_it_reboots_only_from_the_forgiven_panic(online: Run) -> None:
+    """Any panic but ADR 0099's ipc1 canary, or a reset for any other reason,
+    fails here with the boot it ended (ADR 0125)."""
+    assert not reset_trouble(online.uart), reset_trouble(online.uart)
 
 
 def _peer(run: Run) -> str:
@@ -99,7 +114,7 @@ def test_a_real_ntp_server_answers_and_the_firmware_sets_its_clock(online: Run) 
     assert re.search(r"\d+ uplink udp in", peer), (
         "nothing came back from the internet: " + peer[-2000:])
     assert "ntp reply" not in peer, "the gateway's own NTP answered instead"
-    assert "Got time adjustment from NTP!" in online.uart, online.uart[-2000:]
+    assert "Got time adjustment from NTP!" in online.last_uart, online.last_uart[-2000:]
 
 
 def test_the_factory_report_still_goes_to_the_lan(online: Run) -> None:

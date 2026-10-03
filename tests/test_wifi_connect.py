@@ -34,13 +34,16 @@ import re
 import shutil
 import sys
 import tempfile
+import warnings
 from pathlib import Path
 
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from tests.support import REPO_ROOT, Run, qemu_available, run_emulator  # noqa: E402
+from tests.support import (  # noqa: E402
+    REPO_ROOT, Run, last_boot, qemu_available, reset_trouble, run_emulator,
+)
 
 FIRMWARE = REPO_ROOT / "firmware" / "T-Deck_UnitTest_250620.bin"
 # The network this firmware actually wants, with the passphrase it carries, at
@@ -106,7 +109,7 @@ def _reported(outdir: Path):
     (ADR 0096). Getting an address comes first, so every earlier assertion is
     covered too. That line is on the UART, which is what this reads."""
     def check(uart: str, frames: list) -> bool:
-        return "----------REMOVE TASK----------" in uart
+        return "----------REMOVE TASK----------" in last_boot(uart)
     return check
 
 
@@ -129,9 +132,11 @@ def connected(tmp_path_factory) -> Run:
     try:
         run = run_emulator(scratch, firmware=FIRMWARE, board="tdeck",
                            timeout=300,
+                           # It may reboot from the firmware's ipc1 overflow,
+                           # and is judged on the boot that came back (ADR 0125).
                            extra=("--psram-octal", "--wifi-ap",
                                   f"{SSID},{BEACON_MS}", "--wifi-wpa2",
-                                  "--wifi-pass", PASSPHRASE),
+                                  "--wifi-pass", PASSPHRASE, "--reboot"),
                            # The four-way handshake deadlocks under one
                            # translation thread and completes under two
                            # (ADR 0066); the full connection needs multi.
@@ -142,10 +147,18 @@ def connected(tmp_path_factory) -> Run:
                     + list(scratch.glob("*.qemu.log"))
                     + list(scratch.glob("*.bus.log"))):
             shutil.copy2(log, keep / log.name)
+        if run.boots > 1:
+            warnings.warn(f"build 250620 booted {run.boots} times (ADR 0125)")
         # The assertions read the copy, so the scratch directory can go.
         return Run(outdir=keep, frames=run.frames, uart=run.uart)
     finally:
         shutil.rmtree(scratch, ignore_errors=True)
+
+
+def test_it_reboots_only_from_the_forgiven_panic(connected: Run) -> None:
+    """Any panic but ADR 0099's ipc1 canary, or a reset for any other reason,
+    fails here with the boot it ended (ADR 0125)."""
+    assert not reset_trouble(connected.uart), reset_trouble(connected.uart)
 
 
 def test_the_station_authenticates(connected: Run) -> None:
@@ -210,8 +223,8 @@ def test_the_station_gets_an_ip(connected: Run) -> None:
         "the WPA2 four-way handshake never completed: " + peer[-2000:])
     assert "dhcp offer" in peer and "dhcp ack" in peer, (
         "the DHCP exchange did not finish (offer and ack): " + peer[-2000:])
-    assert "Obtained IP address" in connected.uart, (
-        "the firmware never got an IP: " + connected.uart[-2000:])
+    assert "Obtained IP address" in connected.last_uart, (
+        "the firmware never got an IP: " + connected.last_uart[-2000:])
     # And the DHCP that finished rode over real CCMP (ADR 0094): the MAC model
     # was handed the pairwise key, and no frame failed its MIC. The exchange
     # completing at all is the proof the cipher round-trips -- a broken one drops
@@ -234,4 +247,4 @@ def test_the_station_reports_to_the_factory_test_server(connected: Run) -> None:
                      r"registered at \d{4}-\d{2}-\d{2},\d{2}:\d{2}, MAC "
                      r"02:54:44:4d:00:01 -- the address it transmits from", peer), (
         "the factory report was not registered: " + peer[-2000:])
-    assert "Send mac address success!" in connected.uart, connected.uart[-2000:]
+    assert "Send mac address success!" in connected.last_uart, connected.last_uart[-2000:]
