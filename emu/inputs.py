@@ -11,6 +11,8 @@ Events are JSON, one per line, appended by whoever is producing them:
     {"type": "key",   "key": "Q", "down": true}
     {"type": "text",  "text": "emu1"}
     {"type": "touch", "x": 120, "y": 200, "down": true}
+    {"type": "trackball", "roll": "up", "steps": 6}
+    {"type": "trackball", "press": true}
 
 A key event names a key and says whether it went down or up. A text event
 is characters, which a board types as the keys its own keyboard needs for

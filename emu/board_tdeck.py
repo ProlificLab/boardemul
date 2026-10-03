@@ -36,7 +36,8 @@ from emu.devices.spi_trace import SpiTrace
 from emu.devices.wifi_ap import AccessPoint, FrameChannel, Network
 from emu.uplink import Uplink
 from emu.devices.sx1262 import Sx1262
-from emu.devices.tdeck_i2c import GT911, TDeckKeyboard
+from emu.devices.tdeck_i2c import GT911, TRACKBALL_KEYS, TDeckKeyboard
+from emu.devices.tdeck_trackball import NOTCH, PINS as TRACKBALL_PINS, Trackball
 from emu.peripherals.adc import SarAdc
 from emu.peripherals.gpio import GpioClient
 from emu.inputs import InputTail
@@ -63,13 +64,14 @@ TFT_BACKLIGHT = 42
 DISPLAY_W, DISPLAY_H = 320, 240
 
 TOUCH_INT_PIN = 16
-# The trackball: five active-low push contacts on plain GPIOs, pulled up on
-# the board, so an idle one reads high. Our GPIO block reports an input the
+# The trackball: four direction lines that toggle as it rolls, and an
+# active-low push contact, on plain GPIOs pulled up on the board, so all five
+# read high at rest. Our GPIO block reports an input the
 # host never drove as low, which is a button held down from power-on; the
 # device-ui firmware took that as the boot logo being held, switched on
 # Bluetooth and rebooted into its programming mode (ADR 0026). The pull-up
-# lives in IO_MUX, which the fork leaves unimplemented, so the board says it.
-TRACKBALL_PINS = {"press": 0, "left": 1, "right": 2, "up": 3, "down": 15}
+# lives in IO_MUX, which the fork leaves unimplemented, so the board says it,
+# for each of TRACKBALL_PINS, which the trackball's model keeps (ADR 0128).
 KEYBOARD_INT_PIN = 46
 
 # The touch controller reports on an interrupt rather than being polled.
@@ -404,11 +406,23 @@ def attach_input(server, board: Board, outdir: Path) -> InputTail:
     tail = InputTail(Path(outdir) / "input.jsonl")
     touch = board.i2c0.devices.get(GT911().address)
     keypad = board.i2c0.devices.get(TDeckKeyboard().address)
+    # Rolls and clicks, paced onto the five lines by the ticker (ADR 0128).
+    trackball = Trackball(board.gpio.drive)
 
     def pump() -> None:
         for event in tail.drain():
             kind = event.get("type")
-            if kind == "key" and isinstance(keypad, TDeckKeyboard):
+            if kind == "key" and event.get("key") in TRACKBALL_KEYS:
+                # A direction's name is a notch of roll that way.
+                if bool(event.get("down", True)):
+                    trackball.roll(str(event["key"]).lower())
+            elif kind == "trackball":
+                if "press" in event:
+                    trackball.press(bool(event["press"]), time.monotonic())
+                elif not trackball.roll(str(event.get("roll", "")),
+                                        int(event.get("steps", NOTCH))):
+                    log.warning("no such roll %r", event)
+            elif kind == "key" and isinstance(keypad, TDeckKeyboard):
                 if not keypad.key_event(str(event.get("key", "")),
                                         bool(event.get("down", True))):
                     log.debug("no character for key %r", event.get("key"))
@@ -449,6 +463,7 @@ def attach_input(server, board: Board, outdir: Path) -> InputTail:
                 # almost no register accesses, which is the same reason the
                 # touch controller is driven from here.
                 on_air.pump()
+            trackball.tick(time.monotonic())
             if isinstance(touch, GT911):
                 # Idempotent: the client sends nothing for an unchanged level.
                 # This is where a mode write with no finger down moves the

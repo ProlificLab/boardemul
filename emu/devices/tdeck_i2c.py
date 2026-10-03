@@ -209,8 +209,8 @@ COLUMNS = 5
 MODIFIERS = ("ALT", "SYM", "LSHIFT", "RSHIFT")
 
 # The trackball is not on this bus at all. Its four directions are ordinary
-# GPIOs, so a direction pressed on the drawn device has nowhere to go until
-# that is modelled; they are accepted and send nothing.
+# GPIOs, which the board drives (ADR 0128); this keyboard accepts their names
+# and sends nothing for them.
 TRACKBALL_KEYS = {"UP", "DOWN", "LEFT", "RIGHT"}
 
 # [kbd] the commands the sketch takes, and its two backlight duties.
