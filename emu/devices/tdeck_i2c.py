@@ -183,71 +183,229 @@ class GT911(I2CDevice):
         return f"<{self.name}@0x{self.address:02x} reports={self.reports}>"
 
 
-# The keyboard reports characters, not scan codes, so the emulator's key names
-# have to become the character the firmware would have received.
-KEY_CHARS = {"SPACE": " ", "ENTER": "\r", "DEL": "\b"}
 
-# Controls the board really has which send no character of their own.
-#
-# ALT and SYM are modifiers resolved inside the keyboard's own microcontroller:
-# pressing one changes what the next key sends rather than reporting anything
-# itself. The alternate layer they select is deliberately not mapped -- it has
-# never been seen on the wire here, and ADR 0006 is that behaviour is learned
-# from the wire rather than guessed at from a keyboard that looks similar.
-#
+
+# [kbd] examples/Keyboard_ESP32C3 (ADR 0127): every key's column and row in
+# the keyboard's matrix, its character, and its symbol-layer character, from
+# the sketch's two tables. None where the sketch has NULL.
+MATRIX = {
+    "Q": (0, 0, "q", "#"), "W": (0, 1, "w", "1"), "SYM": (0, 2, None, None),
+    "A": (0, 3, "a", "*"), "ALT": (0, 4, None, None), "SPACE": (0, 5, " ", None),
+    "MIC": (0, 6, None, "0"),
+    "E": (1, 0, "e", "2"), "S": (1, 1, "s", "4"), "D": (1, 2, "d", "5"),
+    "P": (1, 3, "p", "@"), "X": (1, 4, "x", "8"), "Z": (1, 5, "z", "7"),
+    "LSHIFT": (1, 6, None, None),
+    "R": (2, 0, "r", "3"), "G": (2, 1, "g", "/"), "T": (2, 2, "t", "("),
+    "RSHIFT": (2, 3, None, None), "V": (2, 4, "v", "?"), "C": (2, 5, "c", "9"),
+    "F": (2, 6, "f", "6"),
+    "U": (3, 0, "u", "_"), "H": (3, 1, "h", ":"), "Y": (3, 2, "y", ")"),
+    "ENTER": (3, 3, None, None), "B": (3, 4, "b", "!"), "N": (3, 5, "n", ","),
+    "J": (3, 6, "j", ";"),
+    "O": (4, 0, "o", "+"), "L": (4, 1, "l", '"'), "I": (4, 2, "i", "-"),
+    "DEL": (4, 3, None, None), "$": (4, 4, "$", None), "M": (4, 5, "m", "."),
+    "K": (4, 6, "k", "'"),
+}
+COLUMNS = 5
+MODIFIERS = ("ALT", "SYM", "LSHIFT", "RSHIFT")
+
 # The trackball is not on this bus at all. Its four directions are ordinary
 # GPIOs, so a direction pressed on the drawn device has nowhere to go until
-# that is modelled.
-SILENT_KEYS = {"ALT", "SYM", "UP", "DOWN", "LEFT", "RIGHT",
-               # Both shifts and the microphone key, which the vendor's sketch
-               # lists among the 35 and which send nothing alone (ADR 0126).
-               "LSHIFT", "RSHIFT", "MIC"}
+# that is modelled; they are accepted and send nothing.
+TRACKBALL_KEYS = {"UP", "DOWN", "LEFT", "RIGHT"}
+
+# [kbd] the commands the sketch takes, and its two backlight duties.
+CMD_BRIGHTNESS = 0x01
+CMD_ALT_B_BRIGHTNESS = 0x02
+CMD_MODE_RAW = 0x03
+CMD_MODE_KEY = 0x04
+BOOT_DUTY = 0
+ALT_B_DEFAULT_DUTY = 127
+
+
+def _chords() -> dict[str, tuple[str, ...]]:
+    """Each character the keyboard can type, and the keys that type it: the
+    plain layer first, then the symbol layer, then capitals, so a character
+    with more than one way gets the simplest (ADR 0127)."""
+    chords: dict[str, tuple[str, ...]] = {"\r": ("ENTER",), "\n": ("ENTER",),
+                                          "\b": ("DEL",)}
+    for name, (_c, _r, char, _s) in MATRIX.items():
+        if char:
+            chords.setdefault(char, (name,))
+    for name, (_c, _r, _ch, symbol) in MATRIX.items():
+        if symbol:
+            chords.setdefault(symbol, ("SYM", name))
+    for name, (_c, _r, char, _s) in MATRIX.items():
+        if char and char.isalpha():
+            chords.setdefault(char.upper(), ("LSHIFT", name))
+    return chords
+
+
+CHORDS = _chords()
 
 
 class TDeckKeyboard(I2CDevice):
-    """LilyGO's keyboard co-processor: one read, one character, zero if idle."""
+    """LilyGO's keyboard co-processor, as its sketch has it (ADR 0127).
+
+    Key mode: one read, one byte, zero if nothing was pressed. Raw mode: five
+    bytes, one per matrix column. The backlight is the sketch's PWM duty.
+    """
 
     address = 0x55
     name = "T-Deck keyboard"
 
     def __init__(self, address: int = 0x55):
         self.address = address
+        self.held: set[str] = set()
         self.pending: list[int] = []
+        self.raw = False
+        # Pressed since the last raw read, so a tap between two reads is seen.
+        self._tapped: set[str] = set()
+        self.duty = BOOT_DUTY               # kb_brightness_duty
+        self.alt_b_duty = ALT_B_DEFAULT_DUTY  # kb_brightness_setting_duty
+        self.lit = False                    # BL_state
+        self.pwm = BOOT_DUTY                # what ledcWrite last set
+        self._written = bytearray()
         self._out = b""
         self._pos = 0
         self.reads = 0
         self.delivered = 0
 
-    def key_event(self, name: str, down: bool) -> bool:
-        """Queue a character, and say whether the key is one this board has.
+    # -- what the host does -------------------------------------------------
 
-        Only the press matters: the real keyboard reports on the way down and
-        says nothing on release. A control in SILENT_KEYS is accepted and
-        queues nothing, which is what the hardware does; an unrecognised name
-        is refused rather than turned into an invented keystroke.
+    def key_event(self, name: str, down: bool) -> bool:
+        """Press or release a key, and say whether the board has it.
+
+        A press of a key already held counts as a new press: a finger cannot
+        press a held key without lifting it, and drivers that send only
+        presses rely on that. An unknown name is refused rather than turned
+        into an invented keystroke.
         """
-        if not down:
-            return False
-        if name in SILENT_KEYS:
+        if name in TRACKBALL_KEYS:
             return True
-        char = KEY_CHARS.get(name)
-        if char is None:
-            if len(name) != 1:
-                return False
-            char = name.lower()
-        self.pending.append(ord(char))
+        if name not in MATRIX:
+            return False
+        if not down:
+            self.held.discard(name)
+            return True
+        self.held.add(name)
+        self._tapped.add(name)
+        value = self._reply(name)
+        if value:
+            if self.raw:
+                self.pending = [value]
+            else:
+                self.pending.append(value)
         return True
 
+    def type_text(self, text: str) -> int:
+        """Type each character as the chord the device needs, and say how
+        many could be typed. One the keyboard has no way to type is skipped."""
+        typed = 0
+        for char in text:
+            chord = CHORDS.get(char)
+            if chord is None:
+                log.info("the T-Deck keyboard cannot type %r", char)
+                continue
+            for key in chord:
+                self.key_event(key, True)
+            for key in reversed(chord):
+                self.key_event(key, False)
+            typed += 1
+        return typed
+
+    def _reply(self, name: str) -> int:
+        """The byte the sketch leaves to send after this press, in its order:
+        printMatrix(), then loop()'s Enter, backspace, Alt+B and Alt+C."""
+        _col, _row, char, symbol = MATRIX[name]
+        value = 0
+        if char is not None or symbol is not None:
+            c = symbol if "SYM" in self.held else char
+            value = ord(c) if c else 0
+            if "LSHIFT" in self.held or "RSHIFT" in self.held:
+                # (char)((int)toPrint - 32), and char is unsigned on the C3.
+                value = (value - 32) & 0xFF
+        if name == "ENTER":
+            value = 0x0D
+        if name == "DEL":
+            value = 0x08
+        if name == "B" and "ALT" in self.held:
+            self._alt_b()
+            value = 0
+        if name == "C" and "ALT" in self.held:
+            value = 0x0C
+        return value
+
+    def _alt_b(self) -> None:
+        if self.lit:
+            self.lit = False
+            self.pwm = 0
+        else:
+            self.lit = True
+            self.pwm = self.alt_b_duty if self.duty == 0 else self.duty
+
+    def columns(self) -> bytes:
+        """The raw-mode reply: per column, bit r set for a key held in row r."""
+        out = bytearray(COLUMNS)
+        for name in self.held | self._tapped:
+            col, row, _c, _s = MATRIX[name]
+            out[col] |= 1 << row
+        return bytes(out)
+
+    # -- the bus ------------------------------------------------------------
+
     def start(self, reading: bool) -> None:
+        self._take_commands()
         if reading:
             # Latched here, not in read(): a split read must not consume two
             # keystrokes to satisfy one request.
-            value = self.pending.pop(0) if self.pending else 0
-            if value:
-                self.delivered += 1
-            self._out = bytes([value])
+            if self.raw:
+                self._out = self.columns()
+                self._tapped.clear()
+            else:
+                value = self.pending.pop(0) if self.pending else 0
+                if value:
+                    self.delivered += 1
+                self._out = bytes([value])
             self._pos = 0
             self.reads += 1
+
+    def write(self, data: bytes) -> bool:
+        self._written += data
+        return True
+
+    def stop(self) -> None:
+        self._take_commands()
+
+    def _take_commands(self) -> None:
+        """onReceive(): the bytes of a finished write, as commands. 0x01 has
+        no break and runs on into 0x02, which reads one more byte; a read
+        past the end is -1, as Wire.read() returns."""
+        data, self._written = bytes(self._written), bytearray()
+        i = 0
+
+        def next_byte() -> int:
+            nonlocal i
+            if i >= len(data):
+                return -1
+            i += 1
+            return data[i - 1]
+
+        while i < len(data):
+            cmd = next_byte()
+            if cmd == CMD_BRIGHTNESS:
+                duty = next_byte()
+                if duty >= 0:
+                    self.duty = duty
+                    self.pwm = duty
+                    self.lit = duty > 0
+            if cmd in (CMD_BRIGHTNESS, CMD_ALT_B_BRIGHTNESS):
+                duty = next_byte()
+                if duty > 30:
+                    self.alt_b_duty = duty
+            elif cmd == CMD_MODE_RAW:
+                self.raw = True
+            elif cmd == CMD_MODE_KEY:
+                self.raw = False
 
     def read(self, count: int) -> bytes:
         out = self._out[self._pos:self._pos + count]

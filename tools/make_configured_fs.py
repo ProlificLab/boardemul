@@ -160,7 +160,8 @@ def main(argv: list[str] | None = None) -> int:
         tap(events, SHORT_ICON)              # binds the keypad to the field
         time.sleep(6)
         for character in args.name:
-            send(events, {"type": "key", "key": character, "down": True})
+            # As the chord that types it on the device (ADR 0127).
+            send(events, {"type": "text", "text": character})
             time.sleep(2.5)
         time.sleep(4)
         tap(events, SHORT_ICON)              # put the keyboard away

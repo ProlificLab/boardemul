@@ -255,7 +255,7 @@ def test_a_letter_arrives_as_its_character() -> None:
 
 
 @pytest.mark.parametrize("name,char", [
-    ("SPACE", b" "), ("ENTER", b"\r"), ("DEL", b"\b"), ("0", b"0"), ("$", b"$"),
+    ("SPACE", b" "), ("ENTER", b"\r"), ("DEL", b"\b"), ("$", b"$"),
 ])
 def test_named_keys_map_to_the_characters_the_firmware_expects(name, char) -> None:
     keys = TDeckKeyboard()
@@ -264,12 +264,14 @@ def test_named_keys_map_to_the_characters_the_firmware_expects(name, char) -> No
 
 
 def test_a_modifier_is_accepted_but_sends_nothing() -> None:
-    """ALT and SYM are resolved inside the keyboard's own microcontroller, and
-    the trackball is on GPIO rather than this bus. Both are keys the board has,
-    so the model accepts them; neither produces a character."""
+    """The modifiers and the microphone key are resolved inside the keyboard's
+    own microcontroller, and the trackball is on GPIO rather than this bus.
+    All are keys the board has, so the model accepts them; none produces a
+    character alone."""
     keys = TDeckKeyboard()
-    for name in ("ALT", "SYM", "UP"):
+    for name in ("ALT", "SYM", "LSHIFT", "RSHIFT", "MIC", "UP"):
         assert keys.key_event(name, True), name
+        assert keys.key_event(name, False), name
     assert read(keys, 1) == bytes(1)
 
 
@@ -277,7 +279,7 @@ def test_only_the_press_is_reported() -> None:
     """The real keyboard says nothing on release; queueing one would double
     every keystroke."""
     keys = TDeckKeyboard()
-    assert not keys.key_event("H", False)
+    assert keys.key_event("H", False)
     assert read(keys, 1) == b"\x00"
 
 
@@ -336,8 +338,10 @@ def test_every_drawn_key_can_reach_that_board(name: str) -> None:
     labels = [KEY_NAMES.get(label, label)
               for row in SKINS[name].key_rows for label, _span in row]
     if name == "tdeck":
+        # Drawn from its own sources, so its keys are the face's (ADR 0126).
+        from emu import tdeck_face
         keys = TDeckKeyboard()
-        for label in labels:
+        for *_box, label in tdeck_face.build(1).keys:
             assert keys.key_event(label, True), label
     else:
         keymap = TCA8418().keymap

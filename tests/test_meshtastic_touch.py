@@ -33,7 +33,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from tests.support import (  # noqa: E402
     FIRMWARE_MESHTASTIC, MESHTASTIC_LITTLEFS, Run, count_pixels, dark_pixels,
-    pixel, qemu_available, run_emulator, send_key, send_touch, wait_for_panel,
+    pixel, qemu_available, run_emulator, send_text, send_touch, wait_for_panel,
 )
 
 pytestmark = [
@@ -124,7 +124,7 @@ def typed(tmp_path_factory) -> tuple[Run, dict]:
         if not seen["keyboard"]:
             return
         for character in "emu1":
-            send_key(outdir, character)
+            send_text(outdir, character)
             time.sleep(2.5)
         # Bounded, not assumed: if nothing was typed this falls through with
         # the field still empty and the assertion says so.

@@ -417,6 +417,11 @@ def attach_input(server, board: Board, outdir: Path) -> InputTail:
                     # Max's, so a firmware that has stopped polling still has
                     # to be told a key is waiting.
                     board.gpio.pulse_low(KEYBOARD_INT_PIN)
+            elif kind == "text" and isinstance(keypad, TDeckKeyboard):
+                # Characters, each pressed as the chord that types it on the
+                # device (ADR 0127).
+                if keypad.type_text(str(event.get("text", ""))):
+                    board.gpio.pulse_low(KEYBOARD_INT_PIN)
             elif kind == "touch" and isinstance(touch, GT911):
                 down = bool(event.get("down", True))
                 if down:

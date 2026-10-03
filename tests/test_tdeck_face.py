@@ -16,7 +16,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from emu import tdeck_face  # noqa: E402
-from emu.devices.tdeck_i2c import KEY_CHARS, SILENT_KEYS  # noqa: E402
+from emu.devices.tdeck_i2c import MATRIX  # noqa: E402
 from emu.skin import TDECK  # noqa: E402
 
 # examples/Keyboard_ESP32C3: every key with a character, and its symbol layer.
@@ -60,10 +60,9 @@ def test_the_keys_are_the_vendors_35() -> None:
     assert len(names) == 35 and set(names) == VENDOR_KEYS
 
 
-def test_every_key_reaches_the_keyboard_model() -> None:
-    """A cap that the model refuses is a lie about the board."""
-    for name in VENDOR_KEYS:
-        assert len(name) == 1 or name in KEY_CHARS or name in SILENT_KEYS, name
+def test_every_key_is_in_the_keyboards_matrix() -> None:
+    """A cap that the model does not have is a lie about the board."""
+    assert VENDOR_KEYS == set(MATRIX)
 
 
 def test_each_cap_prints_the_sketchs_second_character() -> None:
@@ -74,6 +73,7 @@ def test_each_cap_prints_the_sketchs_second_character() -> None:
                 printed[name] = second
     printed["MIC"] = "0"
     assert printed == VENDOR_SYMBOLS
+    assert printed == {n: s for n, (_c, _r, _ch, s) in MATRIX.items() if s}
 
 
 def test_no_two_caps_overlap_and_all_sit_on_the_body() -> None:

@@ -9,7 +9,12 @@ this is the same trick pointed the other way.
 Events are JSON, one per line, appended by whoever is producing them:
 
     {"type": "key",   "key": "Q", "down": true}
+    {"type": "text",  "text": "emu1"}
     {"type": "touch", "x": 120, "y": 200, "down": true}
+
+A key event names a key and says whether it went down or up. A text event
+is characters, which a board types as the keys its own keyboard needs for
+them (ADR 0127).
 
 Anything unparseable is skipped rather than raised: a half-written line is a
 normal consequence of tailing a file someone else is appending to.
