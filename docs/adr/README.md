@@ -133,3 +133,4 @@ superseded ADR is marked superseded and points forward.
 | [0125](0125-every-single-boot-test-reboots-from-the-same-panic.md) | Every single-board boot test reboots from the same panic | Accepted (extends 0114 and 0124) |
 | [0126](0126-the-t-deck-skin-is-drawn-from-lilygos-own-sources.md) | The T-Deck skin is drawn from LilyGO's own sources | Accepted |
 | [0127](0127-the-t-deck-keyboard-behaves-as-lilygos-sketch-does.md) | The T-Deck keyboard behaves as LilyGO's sketch does | Accepted (extends 0126) |
+| [0128](0128-the-t-deck-trackball-rolls-and-clicks.md) | The T-Deck's trackball rolls and clicks | Accepted (extends 0026) |
