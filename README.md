@@ -66,6 +66,23 @@ python3 emu/run.py firmware/T-Deck_UnitTest_250620.bin --board tdeck --bus --tim
 python emu/app.py --board tdeck --scale 2
 ```
 
+The window draws the T-Deck from LilyGO's own board drawing, product
+photographs and keyboard sketch (ADR 0126), and it is used the way the device
+is:
+
+- **Typing.** Click the caps, or type on the host keyboard. Each character is
+  pressed as the chord the T-Deck needs: capitals with its shift, the printed
+  second characters with sym. The host's Ctrl is sym and its Alt is alt, so
+  Ctrl+Q types `#` and Alt+B toggles the keyboard's backlight, exactly as the
+  keyboard's own firmware does (ADR 0127).
+- **Modifiers by mouse.** Clicking alt, sym or a shift latches it for the next
+  key.
+- **The trackball.** The mouse wheel rolls it (Shift+wheel for sideways), the
+  arrow keys roll it a notch, and pressing the mouse on the ball clicks it for
+  as long as you hold it (ADR 0128).
+- **The keyboard backlight.** Light leaks round the caps while it is on
+  (ADR 0129).
+
 Meshtastic also boots on this board (`--psram-octal`): with its filesystem
 image in place (`--overlay 0xc90000=firmware/littlefs-t-deck-tft-2.7.10.94d4bdf.bin`,
 ADR 0021) a fresh first boot mounts storage, reads its preferences and, some
