@@ -204,3 +204,20 @@ def test_every_printed_character_has_a_chord() -> None:
     printed = {s for *_cr, _c, s in MATRIX.values() if s}
     letters = {c for *_cr, c, _s in MATRIX.values() if c and c.isalpha()}
     assert printed | letters | {c.upper() for c in letters} | {" ", "$"} <= set(CHORDS)
+
+
+# -- what the window is told ------------------------------------------------
+
+
+def test_the_board_state_file_is_replaced_whole(tmp_path) -> None:
+    """The window reads the keyboard's backlight from it (ADR 0129), so it is
+    renamed into place like latest.png, never written where it is read."""
+    import json
+
+    from emu.board_tdeck import write_state
+
+    path = tmp_path / "frames" / "board.json"
+    write_state(path, {"keyboard_backlight": 0.498})
+    write_state(path, {"keyboard_backlight": 0.0})
+    assert json.loads(path.read_text()) == {"keyboard_backlight": 0.0}
+    assert [p.name for p in path.parent.iterdir()] == ["board.json"]

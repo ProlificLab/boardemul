@@ -14,6 +14,7 @@ Pins are the vendor's own, from examples/UnitTest/utilities.h.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import threading
@@ -389,6 +390,15 @@ def touch_point(x: int, y: int) -> tuple[int, int]:
     return round(raw_x), round(raw_y)
 
 
+def write_state(path: Path, state: dict) -> None:
+    """Replace the board's state file whole: written beside it and renamed
+    onto it, as the panel writes `latest.png`, so a reader never sees half."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    part = path.with_name(path.name + ".part")
+    part.write_text(json.dumps(state), encoding="utf-8")
+    os.replace(part, path)
+
+
 def attach_input(server, board: Board, outdir: Path) -> InputTail:
     """Route host input to the touch controller and the keyboard.
 
@@ -408,6 +418,18 @@ def attach_input(server, board: Board, outdir: Path) -> InputTail:
     keypad = board.i2c0.devices.get(TDeckKeyboard().address)
     # Rolls and clicks, paced onto the five lines by the ticker (ADR 0128).
     trackball = Trackball(board.gpio.drive)
+    # What the window needs that is not pixels, beside the frames (ADR 0129).
+    state_path = Path(outdir) / "frames" / "board.json"
+    shown: dict = {}
+
+    def publish() -> None:
+        if not isinstance(keypad, TDeckKeyboard):
+            return
+        state = {"keyboard_backlight": round(keypad.pwm / 255, 3)}
+        if state != shown:
+            write_state(state_path, state)
+            shown.clear()
+            shown.update(state)
 
     def pump() -> None:
         for event in tail.drain():
@@ -464,6 +486,7 @@ def attach_input(server, board: Board, outdir: Path) -> InputTail:
                 # touch controller is driven from here.
                 on_air.pump()
             trackball.tick(time.monotonic())
+            publish()
             if isinstance(touch, GT911):
                 # Idempotent: the client sends nothing for an unchanged level.
                 # This is where a mode write with no finger down moves the
