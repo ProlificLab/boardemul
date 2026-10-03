@@ -41,7 +41,7 @@ POLL_MS = 250
 # arithmetic and data, and keeping them out of here lets the tests import
 # them on a machine with no display.
 from emu.skin import (  # noqa: E402
-    DEFAULT, KEY_NAMES, KEYSYMS, LETTER_KEYS, SKINS, InputWriter, Skin,
+    DEFAULT, KEY_NAMES, LETTER_KEYS, SKINS, InputWriter, Skin,
 )
 
 # Lit from the top left throughout: highlights go on top and left edges,
@@ -196,10 +196,9 @@ class DeckWindow:
             self.events.key(name, False)
             self._flash(None, False)
 
-    @staticmethod
-    def _keysym(event: "tk.Event") -> str | None:
-        if event.keysym in KEYSYMS:
-            return KEYSYMS[event.keysym]
+    def _keysym(self, event: "tk.Event") -> str | None:
+        if event.keysym in self.skin.keysyms:
+            return self.skin.keysyms[event.keysym]
         if len(event.char) == 1 and event.char.upper() in LETTER_KEYS:
             return event.char.upper()
         return None
@@ -214,6 +213,8 @@ class DeckWindow:
         if not down:
             self._held_label = None
             return held
+        if self.skin.face:
+            return self._flash_face(label)
         for x0, y0, x1, y1, name in self.key_hits:
             if name == label:
                 self.pressed = self._rr(x0, y0, x1, y1, 3,
@@ -255,7 +256,22 @@ class DeckWindow:
 
     # -- the shell -------------------------------------------------------
 
+    def _flash_face(self, label: str | None) -> str | None:
+        """On a rendered face the cap is lit by a pale wash over it, which
+        keeps its legend readable underneath."""
+        for x0, y0, x1, y1, name in self.key_hits:
+            if name == label:
+                self.pressed = self._rr(x0, y0, x1, y1, 5, fill="#ffffff",
+                                        outline="", stipple="gray25")
+                self._held_label = name
+                return name
+        self._held_label = label
+        return label
+
     def _draw_shell(self) -> None:
+        if self.skin.face == "tdeck":
+            self._draw_face()
+            return
         self._draw_shadow()
         self._draw_side_buttons()
         self._draw_body()
@@ -263,6 +279,24 @@ class DeckWindow:
         self._draw_bezel()
         self._draw_keypad()
         self._draw_foot()
+
+    def _draw_face(self) -> None:
+        """The T-Deck, rendered from LilyGO's own sources (ADR 0126): the body
+        as one anti-aliased image, the legends as text over it."""
+        from emu import tdeck_face
+        face = tdeck_face.build(self.scale)
+        self.face_photo = tk.PhotoImage(master=self.canvas, data=face.raster.tk_data())
+        self.canvas.create_image(0, 0, image=self.face_photo, anchor="nw")
+        legend = _family(self.root, "Segoe UI Semibold", "Segoe UI", "DejaVu Sans", "Helvetica")
+        small = _family(self.root, "Segoe UI", "DejaVu Sans", "Helvetica")
+        for t in face.texts:
+            size = -max(6, round(t.size))
+            font = (legend, size, "bold") if t.bold else (small, size)
+            self.canvas.create_text(t.x, t.y, text=t.text, fill=t.colour, font=font,
+                                    anchor=t.anchor)
+        self.key_hits = [(x0 / self.scale, y0 / self.scale, x1 / self.scale,
+                          y1 / self.scale, name) for x0, y0, x1, y1, name in face.keys]
+        self.face = face
 
     def _draw_shadow(self) -> None:
         # Stipple is the only translucency Tk offers; two coarse passes at

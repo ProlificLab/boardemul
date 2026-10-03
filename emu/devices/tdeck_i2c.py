@@ -198,7 +198,10 @@ KEY_CHARS = {"SPACE": " ", "ENTER": "\r", "DEL": "\b"}
 # The trackball is not on this bus at all. Its four directions are ordinary
 # GPIOs, so a direction pressed on the drawn device has nowhere to go until
 # that is modelled.
-SILENT_KEYS = {"ALT", "SYM", "UP", "DOWN", "LEFT", "RIGHT"}
+SILENT_KEYS = {"ALT", "SYM", "UP", "DOWN", "LEFT", "RIGHT",
+               # Both shifts and the microphone key, which the vendor's sketch
+               # lists among the 35 and which send nothing alone (ADR 0126).
+               "LSHIFT", "RSHIFT", "MIC"}
 
 
 class TDeckKeyboard(I2CDevice):

@@ -20,6 +20,8 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from emu import tdeck_face
+
 # The vendor's own matrix, from examples/factory/peri_keypad.cpp. Drawing an
 # invented QWERTY would look right and send keys the firmware does not have.
 # Both boards carry the same BlackBerry-style keyboard; what differs is how the
@@ -42,6 +44,14 @@ KEY_NAMES = {"ENT": "ENTER"}
 KEYSYMS = {
     "Return": "ENTER", "BackSpace": "DEL", "space": "SPACE",
     "Shift_L": "UP", "Shift_R": "UP", "Alt_L": "ALT", "Alt_R": "ALT",
+    "Control_L": "SYM", "Control_R": "SYM", "dollar": "$",
+}
+
+# The T-Deck's keyboard has both shifts and a microphone key where the Max has
+# UP (ADR 0126); the host's shifts are its shifts.
+TDECK_KEYSYMS = {
+    "Return": "ENTER", "BackSpace": "DEL", "space": "SPACE",
+    "Shift_L": "LSHIFT", "Shift_R": "RSHIFT", "Alt_L": "ALT", "Alt_R": "ALT",
     "Control_L": "SYM", "Control_R": "SYM", "dollar": "$",
 }
 
@@ -74,6 +84,14 @@ class Skin:
     ball_gap: int = 6
 
     key_rows: tuple = KEY_ROWS
+    keysyms: dict = field(default_factory=lambda: KEYSYMS)
+
+    # A board drawn from its own sources rather than from the numbers above
+    # (ADR 0126) names its face, and says where its panel sits and how big its
+    # canvas is, in panel pixels at scale 1.
+    face: str | None = None
+    origin: tuple[int, int] | None = None
+    size: tuple[int, int] | None = None
 
     @property
     def body_w(self) -> int:
@@ -85,19 +103,19 @@ class Skin:
 
     @property
     def canvas_w(self) -> int:
-        return self.body_w + 2 * self.desk
+        return self.size[0] if self.size else self.body_w + 2 * self.desk
 
     @property
     def canvas_h(self) -> int:
-        return self.body_h + 2 * self.desk
+        return self.size[1] if self.size else self.body_h + 2 * self.desk
 
     @property
     def screen_x(self) -> int:
-        return self.desk + self.side
+        return self.origin[0] if self.origin else self.desk + self.side
 
     @property
     def screen_y(self) -> int:
-        return self.desk + self.head
+        return self.origin[1] if self.origin else self.desk + self.head
 
     @property
     def body_x0(self) -> int:
@@ -136,12 +154,12 @@ class Skin:
 TDECK_MAX = Skin(name="tdeck-max", screen_w=240, screen_h=320,
                  idle="#d5d7cf", idle_rim="#b4b7ae", colour_frames=False)
 
-# Landscape, and the body is wider than it is tall above the keyboard, so it
-# needs less headroom and a slightly deeper keyboard block to stay in
-# proportion.
+# Drawn from LilyGO's drawing, photographs and keyboard sketch (ADR 0126): its
+# own face, its own panel position, and its own keys.
 TDECK = Skin(name="tdeck", screen_w=320, screen_h=240,
-             idle="#101014", idle_rim="#26262c", colour_frames=True,
-             head=22, keypad_h=104, side=18)
+             idle="#050607", idle_rim="#050607", colour_frames=True,
+             keysyms=TDECK_KEYSYMS, face="tdeck",
+             origin=tdeck_face.panel_origin(), size=tdeck_face.canvas_size())
 
 SKINS = {TDECK_MAX.name: TDECK_MAX, TDECK.name: TDECK}
 DEFAULT = TDECK_MAX
