@@ -17,10 +17,11 @@ which only ever knew about one board keeps working.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 from emu import tdeck_face
+from emu.devices.tdeck_i2c import CHORDS, MODIFIERS
 
 # The vendor's own matrix, from examples/factory/peri_keypad.cpp. Drawing an
 # invented QWERTY would look right and send keys the firmware does not have.
@@ -44,14 +45,6 @@ KEY_NAMES = {"ENT": "ENTER"}
 KEYSYMS = {
     "Return": "ENTER", "BackSpace": "DEL", "space": "SPACE",
     "Shift_L": "UP", "Shift_R": "UP", "Alt_L": "ALT", "Alt_R": "ALT",
-    "Control_L": "SYM", "Control_R": "SYM", "dollar": "$",
-}
-
-# The T-Deck's keyboard has both shifts and a microphone key where the Max has
-# UP (ADR 0126); the host's shifts are its shifts.
-TDECK_KEYSYMS = {
-    "Return": "ENTER", "BackSpace": "DEL", "space": "SPACE",
-    "Shift_L": "LSHIFT", "Shift_R": "RSHIFT", "Alt_L": "ALT", "Alt_R": "ALT",
     "Control_L": "SYM", "Control_R": "SYM", "dollar": "$",
 }
 
@@ -84,7 +77,6 @@ class Skin:
     ball_gap: int = 6
 
     key_rows: tuple = KEY_ROWS
-    keysyms: dict = field(default_factory=lambda: KEYSYMS)
 
     # A board drawn from its own sources rather than from the numbers above
     # (ADR 0126) names its face, and says where its panel sits and how big its
@@ -158,7 +150,7 @@ TDECK_MAX = Skin(name="tdeck-max", screen_w=240, screen_h=320,
 # own face, its own panel position, and its own keys.
 TDECK = Skin(name="tdeck", screen_w=320, screen_h=240,
              idle="#050607", idle_rim="#050607", colour_frames=True,
-             keysyms=TDECK_KEYSYMS, face="tdeck",
+             face="tdeck",
              origin=tdeck_face.panel_origin(), size=tdeck_face.canvas_size())
 
 SKINS = {TDECK_MAX.name: TDECK_MAX, TDECK.name: TDECK}
@@ -218,3 +210,110 @@ class InputWriter:
 
     def key(self, name: str, down: bool) -> None:
         self._emit({"type": "key", "key": name, "down": down})
+
+
+class TDeckTyping:
+    """How a mouse and the host's keyboard press the T-Deck's keys (ADR 0127).
+
+    A character typed on the host is pressed as the chord that types it on
+    the device, so the host's shift is never forwarded alone: it is already
+    in the character. The host's Ctrl is SYM and its Alt is ALT, held while
+    the host holds them. On the drawn device the modifiers latch when
+    clicked, which is how a mouse holds two keys at once.
+
+    Every key is counted, so a modifier the host holds, a chord that needs
+    it and a latch can overlap: the board hears it go down when the first of
+    them presses it and up when the last lets go.
+    """
+
+    HOST_HELD = {"Control_L": "SYM", "Control_R": "SYM",
+                 "Alt_L": "ALT", "Alt_R": "ALT"}
+    # Host keys whose character is not the one the device's key sends.
+    HOST_NAMED = {"Return": "ENTER", "KP_Enter": "ENTER", "BackSpace": "DEL"}
+
+    def __init__(self, emit):
+        self.emit = emit                    # emit(key, down)
+        self.count: dict[str, int] = {}
+        self.host: dict[int, tuple[str, ...]] = {}
+        self.latched: list[str] = []
+
+    @property
+    def down(self) -> set[str]:
+        return {key for key, n in self.count.items() if n}
+
+    def _press(self, key: str) -> None:
+        n = self.count.get(key, 0)
+        self.count[key] = n + 1
+        if n == 0:
+            self.emit(key, True)
+
+    def _release(self, key: str) -> None:
+        n = self.count.get(key, 0)
+        if n == 0:
+            return
+        self.count[key] = n - 1
+        if n == 1:
+            self.emit(key, False)
+
+    # -- the host's keyboard ------------------------------------------------
+
+    def chord_for(self, keysym: str, char: str) -> tuple[str, ...] | None:
+        if keysym in self.HOST_HELD:
+            return (self.HOST_HELD[keysym],)
+        if keysym in self.HOST_NAMED:
+            return (self.HOST_NAMED[keysym],)
+        # With the host's Ctrl or Alt down a letter's character is a control
+        # code or nothing, so the key is taken from its keysym.
+        held = any(chord[0] in ("SYM", "ALT") and len(chord) == 1
+                   for chord in self.host.values())
+        if held and len(keysym) == 1 and keysym.isalpha():
+            return (keysym.upper(),)
+        return CHORDS.get(char) if len(char) == 1 else None
+
+    def host_press(self, keysym: str, char: str, keycode: int) -> tuple[str, ...] | None:
+        if keycode in self.host:
+            return None                     # auto-repeat; the keyboard has none
+        chord = self.chord_for(keysym, char)
+        if chord is None:
+            return None
+        self.host[keycode] = chord
+        for key in chord:
+            self._press(key)
+        return chord
+
+    def host_release(self, keycode: int) -> None:
+        chord = self.host.pop(keycode, None)
+        if chord is None:
+            return
+        for key in reversed(chord):
+            self._release(key)
+        if chord[-1] not in MODIFIERS:
+            self._drop_latches()
+
+    def host_release_all(self) -> None:
+        """The window lost focus, so the host's releases will not come."""
+        for keycode in list(self.host):
+            self.host_release(keycode)
+
+    # -- the mouse on the drawn device -------------------------------------
+
+    def click_press(self, key: str) -> None:
+        if key in MODIFIERS:
+            if key in self.latched:
+                self.latched.remove(key)
+                self._release(key)
+            else:
+                self.latched.append(key)
+                self._press(key)
+            return
+        self._press(key)
+
+    def click_release(self, key: str) -> None:
+        if key in MODIFIERS:
+            return
+        self._release(key)
+        self._drop_latches()
+
+    def _drop_latches(self) -> None:
+        while self.latched:
+            self._release(self.latched.pop())

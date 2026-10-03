@@ -41,7 +41,7 @@ POLL_MS = 250
 # arithmetic and data, and keeping them out of here lets the tests import
 # them on a machine with no display.
 from emu.skin import (  # noqa: E402
-    DEFAULT, KEY_NAMES, LETTER_KEYS, SKINS, InputWriter, Skin,
+    DEFAULT, KEY_NAMES, KEYSYMS, LETTER_KEYS, SKINS, InputWriter, Skin, TDeckTyping,
 )
 
 # Lit from the top left throughout: highlights go on top and left edges,
@@ -111,6 +111,12 @@ class DeckWindow:
         self.stamp: tuple[int, int] | None = None
         self.photo: tk.PhotoImage | None = None
         self.note = "waiting"
+        # The T-Deck's keys are pressed the way the device presses them
+        # (ADR 0127); what is down is drawn lit, a latched modifier ringed.
+        self.typing = (TDeckTyping(self._typed)
+                       if skin.face == "tdeck" and events is not None else None)
+        self.clicked: str | None = None
+        self.lit: list[int] = []
 
         self.ui = _family(root, "Segoe UI", "DejaVu Sans", "Helvetica")
         self.mono = _family(root, "Consolas", "DejaVu Sans Mono", "Courier")
@@ -146,6 +152,7 @@ class DeckWindow:
         self.canvas.bind("<ButtonRelease-1>", self._on_release)
         self.root.bind("<KeyPress>", self._on_keypress)
         self.root.bind("<KeyRelease>", self._on_keyrelease)
+        self.root.bind("<FocusOut>", self._on_focus_out)
 
     def _panel_point(self, x: float, y: float) -> tuple[int, int] | None:
         return self.skin.panel_point(x, y, self.scale)
@@ -164,7 +171,10 @@ class DeckWindow:
             self.events.touch(*point)
             return
         label = self._key_at(event.x, event.y)
-        if label is not None:
+        if label is not None and self.typing is not None:
+            self.clicked = label
+            self.typing.click_press(label)
+        elif label is not None:
             self._flash(label, True)
             self.events.key(KEY_NAMES.get(label, label), True)
 
@@ -179,26 +189,58 @@ class DeckWindow:
         if self.touching:
             self.touching = False
             self.events.release()
+        if self.clicked is not None:
+            self.typing.click_release(self.clicked)
+            self.clicked = None
         if self.pressed is not None:
             label = self._flash(None, False)
             if label:
                 self.events.key(KEY_NAMES.get(label, label), False)
 
     def _on_keypress(self, event: "tk.Event") -> None:
+        if self.typing is not None:
+            self.typing.host_press(event.keysym, event.char, event.keycode)
+            return
         name = self._keysym(event)
         if name:
             self.events.key(name, True)
             self._flash(name if name != "ENTER" else "ENT", True)
 
     def _on_keyrelease(self, event: "tk.Event") -> None:
+        if self.typing is not None:
+            self.typing.host_release(event.keycode)
+            return
         name = self._keysym(event)
         if name:
             self.events.key(name, False)
             self._flash(None, False)
 
-    def _keysym(self, event: "tk.Event") -> str | None:
-        if event.keysym in self.skin.keysyms:
-            return self.skin.keysyms[event.keysym]
+    def _on_focus_out(self, _event: "tk.Event") -> None:
+        if self.typing is not None:
+            self.typing.host_release_all()
+
+    def _typed(self, key: str, down: bool) -> None:
+        self.events.key(key, down)
+        self._show_down()
+
+    def _show_down(self) -> None:
+        """Light every key that is down, with a pale wash that keeps its
+        legend readable, and ring a modifier that a click latched."""
+        for item in self.lit:
+            self.canvas.delete(item)
+        self.lit = []
+        down, latched = self.typing.down, set(self.typing.latched)
+        for x0, y0, x1, y1, name in self.key_hits:
+            if name in down:
+                self.lit.append(self._rr(
+                    x0, y0, x1, y1, 5, fill="#ffffff", stipple="gray25",
+                    outline="#ffffff" if name in latched else "",
+                    width=max(1, round(1.5 * self.scale))))
+
+    @staticmethod
+    def _keysym(event: "tk.Event") -> str | None:
+        if event.keysym in KEYSYMS:
+            return KEYSYMS[event.keysym]
         if len(event.char) == 1 and event.char.upper() in LETTER_KEYS:
             return event.char.upper()
         return None
@@ -213,8 +255,6 @@ class DeckWindow:
         if not down:
             self._held_label = None
             return held
-        if self.skin.face:
-            return self._flash_face(label)
         for x0, y0, x1, y1, name in self.key_hits:
             if name == label:
                 self.pressed = self._rr(x0, y0, x1, y1, 3,
@@ -255,18 +295,6 @@ class DeckWindow:
         return self.canvas.create_oval(*self.s(cx - r, cy - r, cx + r, cy + r), **kw)
 
     # -- the shell -------------------------------------------------------
-
-    def _flash_face(self, label: str | None) -> str | None:
-        """On a rendered face the cap is lit by a pale wash over it, which
-        keeps its legend readable underneath."""
-        for x0, y0, x1, y1, name in self.key_hits:
-            if name == label:
-                self.pressed = self._rr(x0, y0, x1, y1, 5, fill="#ffffff",
-                                        outline="", stipple="gray25")
-                self._held_label = name
-                return name
-        self._held_label = label
-        return label
 
     def _draw_shell(self) -> None:
         if self.skin.face == "tdeck":
