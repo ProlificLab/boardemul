@@ -211,6 +211,14 @@ class InputWriter:
     def key(self, name: str, down: bool) -> None:
         self._emit({"type": "key", "key": name, "down": down})
 
+    def roll(self, direction: str, steps: int) -> None:
+        """The T-Deck's trackball rolled `steps` changes of a line (ADR 0128)."""
+        self._emit({"type": "trackball", "roll": direction, "steps": steps})
+
+    def ball(self, down: bool) -> None:
+        """The T-Deck's trackball pressed or let go."""
+        self._emit({"type": "trackball", "press": down})
+
 
 class TDeckTyping:
     """How a mouse and the host's keyboard press the T-Deck's keys (ADR 0127).

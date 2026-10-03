@@ -43,6 +43,10 @@ POLL_MS = 250
 from emu.skin import (  # noqa: E402
     DEFAULT, KEY_NAMES, KEYSYMS, LETTER_KEYS, SKINS, InputWriter, Skin, TDeckTyping,
 )
+from emu.devices.tdeck_trackball import NOTCH  # noqa: E402
+
+# The host's arrow keys roll the T-Deck's trackball a notch (ADR 0128).
+ROLLS = {"Up": "up", "Down": "down", "Left": "left", "Right": "right"}
 
 # Lit from the top left throughout: highlights go on top and left edges,
 # shadows on bottom and right. Consistency is what sells the depth, since
@@ -117,6 +121,9 @@ class DeckWindow:
                        if skin.face == "tdeck" and events is not None else None)
         self.clicked: str | None = None
         self.lit: list[int] = []
+        self.ball_down = False
+        self.ball_items: list[int] = []
+        self._ball_after: str | None = None
 
         self.ui = _family(root, "Segoe UI", "DejaVu Sans", "Helvetica")
         self.mono = _family(root, "Consolas", "DejaVu Sans Mono", "Courier")
@@ -153,6 +160,12 @@ class DeckWindow:
         self.root.bind("<KeyPress>", self._on_keypress)
         self.root.bind("<KeyRelease>", self._on_keyrelease)
         self.root.bind("<FocusOut>", self._on_focus_out)
+        if self.typing is not None:
+            # The trackball (ADR 0128): the wheel rolls it up and down, and
+            # with Shift left and right; X11 reports the wheel as buttons.
+            self.canvas.bind("<MouseWheel>", self._on_wheel)
+            self.canvas.bind("<Button-4>", lambda e: self._roll("up"))
+            self.canvas.bind("<Button-5>", lambda e: self._roll("down"))
 
     def _panel_point(self, x: float, y: float) -> tuple[int, int] | None:
         return self.skin.panel_point(x, y, self.scale)
@@ -169,6 +182,11 @@ class DeckWindow:
         if point is not None:
             self.touching = True
             self.events.touch(*point)
+            return
+        if self.typing is not None and self._on_ball(event.x, event.y):
+            self.ball_down = True
+            self.events.ball(True)
+            self._show_ball()
             return
         label = self._key_at(event.x, event.y)
         if label is not None and self.typing is not None:
@@ -189,6 +207,10 @@ class DeckWindow:
         if self.touching:
             self.touching = False
             self.events.release()
+        if self.ball_down:
+            self.ball_down = False
+            self.events.ball(False)
+            self._show_ball()
         if self.clicked is not None:
             self.typing.click_release(self.clicked)
             self.clicked = None
@@ -199,6 +221,10 @@ class DeckWindow:
 
     def _on_keypress(self, event: "tk.Event") -> None:
         if self.typing is not None:
+            if event.keysym in ROLLS:
+                # Held, the host repeats it, and the ball keeps rolling.
+                self._roll(ROLLS[event.keysym])
+                return
             self.typing.host_press(event.keysym, event.char, event.keycode)
             return
         name = self._keysym(event)
@@ -214,6 +240,57 @@ class DeckWindow:
         if name:
             self.events.key(name, False)
             self._flash(None, False)
+
+    def _on_wheel(self, event: "tk.Event") -> None:
+        sideways = bool(event.state & 0x0001)        # Shift held
+        ahead = event.delta > 0
+        notches = max(1, abs(event.delta) // 120)
+        for _ in range(notches):
+            self._roll(("left" if ahead else "right") if sideways
+                       else ("up" if ahead else "down"))
+
+    def _on_ball(self, x: float, y: float) -> bool:
+        cx, cy, r = self.face.trackball
+        return (x - cx) ** 2 + (y - cy) ** 2 <= r * r
+
+    def _roll(self, direction: str) -> None:
+        self.events.roll(direction, NOTCH)
+        self._show_ball(direction)
+
+    def _show_ball(self, rolling: str | None = None) -> None:
+        """Light the ball while it is pressed; while it rolls, slide its
+        highlight the way it turns, then put it back."""
+        for item in self.ball_items:
+            self.canvas.delete(item)
+        self.ball_items = []
+        cx, cy, ring = self.face.trackball
+        r = ring * 0.63                             # the ball inside its ring
+        if self.ball_down:
+            self.ball_items.append(self._disc(
+                cx, cy, r, fill="#ffffff", stipple="gray25",
+                outline="#ffffff", width=max(1, round(1.5 * self.scale))))
+        if rolling is not None:
+            dx, dy = {"up": (0, -1), "down": (0, 1),
+                      "left": (-1, 0), "right": (1, 0)}[rolling]
+            hx, hy, hr = cx + dx * r * 0.45, cy + dy * r * 0.45, r * 0.32
+            self.ball_items.append(self._disc(hx, hy, hr, fill="#ffffff",
+                                              stipple="gray50", outline=""))
+            if self._ball_after is not None:
+                self.root.after_cancel(self._ball_after)
+            self._ball_after = self.root.after(140, self._settle_ball)
+
+    def _disc(self, cx: float, cy: float, r: float, **kw) -> int:
+        """A circle as a polygon, in canvas pixels: Tk on Windows stipples a
+        polygon but fills an oval solid, and these have to be translucent."""
+        points = []
+        for i in range(32):
+            a = 2 * math.pi * i / 32
+            points += [cx + r * math.cos(a), cy + r * math.sin(a)]
+        return self.canvas.create_polygon(points, **kw)
+
+    def _settle_ball(self) -> None:
+        self._ball_after = None
+        self._show_ball()
 
     def _on_focus_out(self, _event: "tk.Event") -> None:
         if self.typing is not None:

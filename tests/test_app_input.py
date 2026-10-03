@@ -111,6 +111,20 @@ def test_a_key_round_trips_into_the_controller(linked) -> None:
     assert keypad.pending == [0x8A]
 
 
+def test_the_trackball_round_trips_as_its_own_event(linked) -> None:
+    """A roll and a click of the T-Deck's ball are neither keys nor touches
+    (ADR 0128)."""
+    writer, tail = linked
+    writer.roll("down", 6)
+    writer.ball(True)
+    writer.ball(False)
+    assert drain(tail) == [
+        {"type": "trackball", "roll": "down", "steps": 6},
+        {"type": "trackball", "press": True},
+        {"type": "trackball", "press": False},
+    ]
+
+
 # -- the drawn keyboard -----------------------------------------------------
 
 
