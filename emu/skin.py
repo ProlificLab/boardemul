@@ -20,7 +20,7 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
-from emu import tdeck_face
+from emu import max_face, tdeck_face
 from emu.devices.tdeck_i2c import CHORDS, MODIFIERS
 
 # The vendor's own matrix, from examples/factory/peri_keypad.cpp. Drawing an
@@ -79,8 +79,8 @@ class Skin:
     key_rows: tuple = KEY_ROWS
 
     # A board drawn from its own sources rather than from the numbers above
-    # (ADR 0126) names its face, and says where its panel sits and how big its
-    # canvas is, in panel pixels at scale 1.
+    # (ADRs 0126, 0130) names its face, and says where its panel sits and how
+    # big its canvas is, in panel pixels at scale 1.
     face: str | None = None
     origin: tuple[int, int] | None = None
     size: tuple[int, int] | None = None
@@ -142,9 +142,12 @@ class Skin:
         return None
 
 
-# e-paper white is a grey; a pure white would read as an LCD.
+# e-paper white is a grey; a pure white would read as an LCD. Drawn from the
+# Max's own case, panel and photographs (ADR 0130).
 TDECK_MAX = Skin(name="tdeck-max", screen_w=240, screen_h=320,
-                 idle="#d5d7cf", idle_rim="#b4b7ae", colour_frames=False)
+                 idle="#d5d7cf", idle_rim="#b4b7ae", colour_frames=False,
+                 face="max",
+                 origin=max_face.panel_origin(), size=max_face.canvas_size())
 
 # Drawn from LilyGO's drawing, photographs and keyboard sketch (ADR 0126): its
 # own face, its own panel position, and its own keys.

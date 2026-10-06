@@ -6,10 +6,11 @@ refresh command, so a viewer that watches that one file needs no coupling to the
 emulator at all -- no import, no socket, no shared process. Start it before,
 during or after a run and it catches up on the next poll.
 
-Everything on screen is drawn with Canvas primitives. Bundling a device
-photograph would put a binary asset in a repo whose only dependency is the
-Python standard library (README, "Dependencies"), and would fix the skin at one
-resolution besides.
+Each board's body is one anti-aliased image rendered from its own sources
+(ADRs 0126, 0130), with the legends drawn as Canvas text over it. Bundling a
+device photograph would put a binary asset in a repo whose only dependency is
+the Python standard library (README, "Dependencies"), and would fix the skin
+at one resolution besides.
 """
 
 from __future__ import annotations
@@ -61,23 +62,9 @@ ROLLS = {"Up": "up", "Down": "down", "Left": "left", "Right": "right"}
 # shadows on bottom and right. Consistency is what sells the depth, since
 # tkinter has neither gradients nor alpha to sell it with.
 C_DESK = "#0f1113"
-C_EDGE = "#05070a"
-C_SHELL = "#22272b"
-C_SHELL_LIT = "#3b4249"
-C_SHELL_DIM = "#171b1e"
-C_WELL = "#0d1012"
-C_PLATE = "#1c2125"
-C_KEY = "#31373d"
 C_KEY_LIT = "#4a525a"
-C_KEY_DIM = "#0e1113"
-C_LEGEND = "#ccd2d8"
-C_LEGEND_DIM = "#8c959d"
-C_BRAND = "#aab2ba"
-C_PAPER = "#d5d7cf"        # e-paper white is a grey; a pure white looks like LCD
-C_PAPER_RIM = "#b4b7ae"
 C_GHOST = "#c6c9c0"
 C_IDLE_INK = "#8b9088"
-C_LED = "#5fbf6a"
 
 # Ten columns across, spans in column units. Labels are the T-Deck's BlackBerry
 # keyboard; they are decoration, as nothing here feeds input back to the guest.
@@ -387,22 +374,16 @@ class DeckWindow:
     # -- the shell -------------------------------------------------------
 
     def _draw_shell(self) -> None:
-        if self.skin.face == "tdeck":
+        if self.skin.face:
             self._draw_face()
             return
-        self._draw_shadow()
-        self._draw_side_buttons()
-        self._draw_body()
-        self._draw_head()
-        self._draw_bezel()
-        self._draw_keypad()
-        self._draw_foot()
 
     def _draw_face(self) -> None:
-        """The T-Deck, rendered from LilyGO's own sources (ADR 0126): the body
-        as one anti-aliased image, the legends as text over it."""
-        from emu import tdeck_face
-        face = tdeck_face.build(self.scale)
+        """A board with a face of its own (ADRs 0126, 0130): the body as one
+        anti-aliased image, the legends as text over it."""
+        from emu import max_face, tdeck_face
+        faces = {"tdeck": tdeck_face, "max": max_face}
+        face = faces[self.skin.face].build(self.scale)
         self.face_photo = tk.PhotoImage(master=self.canvas, data=face.raster.tk_data())
         self.canvas.create_image(0, 0, image=self.face_photo, anchor="nw")
         legend = _family(self.root, "Segoe UI Semibold", "Segoe UI", "DejaVu Sans", "Helvetica")
@@ -417,121 +398,6 @@ class DeckWindow:
         self.key_hits = [(x0 / self.scale, y0 / self.scale, x1 / self.scale,
                           y1 / self.scale, name) for x0, y0, x1, y1, name in face.keys]
         self.face = face
-
-    def _draw_shadow(self) -> None:
-        # Stipple is the only translucency Tk offers; two coarse passes at
-        # increasing offset read as a soft contact shadow.
-        for offset, pattern in ((3, "gray50"), (7, "gray25")):
-            self._rr(self.skin.body_x0 + offset, self.skin.body_y0 + offset, self.skin.body_x1 + offset,
-                     self.skin.body_y1 + offset, self.skin.radius, fill="#000000", outline="",
-                     stipple=pattern)
-
-    def _draw_side_buttons(self) -> None:
-        # Drawn before the shell so the body overlaps their inner half and they
-        # look moulded in rather than stuck on.
-        for y0, y1 in ((self.skin.head + 70, self.skin.head + 96), (self.skin.head + 110, self.skin.head + 156)):
-            self._rr(self.skin.body_x1 - 4, self.skin.desk + y0, self.skin.body_x1 + 5, self.skin.desk + y1, 4,
-                     fill="#1a1e21", outline=C_EDGE)
-            self._rr(self.skin.body_x1 - 4, self.skin.desk + y0, self.skin.body_x1 + 5, self.skin.desk + y0 + 3, 2,
-                     fill="#2f363c", outline="")
-        self._rr(self.skin.body_x0 - 5, self.skin.desk + self.skin.head + 84, self.skin.body_x0 + 4, self.skin.desk + self.skin.head + 110, 4,
-                 fill="#1a1e21", outline=C_EDGE)
-
-        # SMA stub for the LoRa radio, top right: the one feature that makes the
-        # silhouette read as this board and not a generic slab.
-        self._rr(self.skin.body_x1 - 52, self.skin.body_y0 - 5, self.skin.body_x1 - 36, self.skin.body_y0 + 6, 3,
-                 fill="#20262b", outline=C_EDGE)
-        self._oval(self.skin.body_x1 - 44, self.skin.body_y0 - 7, 4.5, fill="#3a4248", outline=C_EDGE)
-        self._oval(self.skin.body_x1 - 44, self.skin.body_y0 - 7, 1.6, fill="#c8b273", outline="")
-
-    def _draw_body(self) -> None:
-        self._rr(self.skin.body_x0, self.skin.body_y0, self.skin.body_x1, self.skin.body_y1, self.skin.radius, fill=C_EDGE, outline="")
-        self._rr(self.skin.body_x0 + 1.5, self.skin.body_y0 + 1.5, self.skin.body_x1 - 1.5, self.skin.body_y1 - 1.5,
-                 self.skin.radius - 1, fill=C_SHELL_LIT, outline="")
-        self._rr(self.skin.body_x0 + 3, self.skin.body_y0 + 3.5, self.skin.body_x1 - 3, self.skin.body_y1 - 2.5,
-                 self.skin.radius - 2, fill=C_SHELL_DIM, outline="")
-        self._rr(self.skin.body_x0 + 3, self.skin.body_y0 + 3, self.skin.body_x1 - 3, self.skin.body_y1 - 4,
-                 self.skin.radius - 3, fill=C_SHELL, outline="")
-
-        # A seam where the two shell halves meet, just inside the edge.
-        self._rr(self.skin.body_x0 + 6, self.skin.body_y0 + 6, self.skin.body_x1 - 6, self.skin.body_y1 - 7, self.skin.radius - 6,
-                 fill="", outline="#2b3136")
-
-    def _draw_head(self) -> None:
-        band = self.skin.desk + 8
-        self._oval(self.skin.body_x0 + 22, band, 2.6, fill="#141719", outline="")
-        self._oval(self.skin.body_x0 + 22, band, 1.6, fill=C_LED, outline="")
-
-        # Grille holes rather than slots: at 2x a slot is three pixels tall and
-        # turns into a smear.
-        for col in range(10):
-            for row in (-3.0, 3.0):
-                self._oval(self.skin.body_x0 + 34 + col * 6, band + row, 1.4,
-                           fill="#0e1113", outline="")
-
-        self._text(self.skin.body_cx, band, "LILYGO", 9, C_BRAND, bold=True)
-        self._text(self.skin.body_x1 - 18, band, "T-DECK MAX", 6, C_LEGEND_DIM, anchor="e")
-
-    def _draw_bezel(self) -> None:
-        x0, y0 = self.skin.screen_x, self.skin.screen_y
-        x1, y1 = self.skin.screen_x + self.skin.screen_w, self.skin.screen_y + self.skin.screen_h
-
-        self._rr(x0 - self.skin.bezel - 4, y0 - self.skin.bezel - 4, x1 + self.skin.bezel + 4, y1 + self.skin.bezel + 4, 10,
-                 fill=C_PLATE, outline="#2c3238")
-        # The well: dark all round, with the lit edge at the bottom right, which
-        # is what tells the eye this is a hole and not a raised block.
-        self._rr(x0 - self.skin.bezel, y0 - self.skin.bezel, x1 + self.skin.bezel, y1 + self.skin.bezel, 6,
-                 fill=C_WELL, outline=C_EDGE)
-        self.canvas.create_line(*self.s(x0 - self.skin.bezel + 2, y1 + self.skin.bezel - 1,
-                                        x1 + self.skin.bezel - 2, y1 + self.skin.bezel - 1),
-                                fill="#31383e")
-        # White FPC margin around the active area, as on the bare module.
-        self.canvas.create_rectangle(*self.s(x0 - 3, y0 - 3, x1 + 3, y1 + 3),
-                                     fill=self.skin.idle_rim, outline="#8f9289")
-
-    def _draw_keypad(self) -> None:
-        kx0, ky0 = self.skin.body_x0 + self.skin.kb_inset, self.skin.desk + self.skin.head + self.skin.screen_h + self.skin.gap
-        kx1 = self.skin.body_x1 - self.skin.kb_inset
-        ball_cx = kx1 - self.skin.ball_col / 2
-        col = ((kx1 - kx0) - self.skin.ball_col - self.skin.ball_gap) / 10
-        pitch = self.skin.keypad_h / 4
-
-        for r, row in enumerate(self.skin.key_rows):
-            y = ky0 + r * pitch + 1.5
-            x = kx0
-            for label, span in row:
-                w = col * span
-                self._key(x + 1.5, y, x + w - 1.5, y + pitch - 4.5, label)
-                x += w
-
-        cy = ky0 + self.skin.keypad_h / 2
-        self._trackball(ball_cx, cy)
-        for dy in (-34, 34):
-            self._oval(ball_cx, cy + dy, 6.5, fill="#272c31", outline=C_KEY_DIM)
-            self._oval(ball_cx, cy + dy - 0.8, 5, fill="#333940", outline="")
-
-    def _key(self, x0: float, y0: float, x1: float, y1: float, label: str) -> None:
-        self.key_hits.append((x0, y0, x1, y1, label))
-        self._rr(x0, y0 + 1.2, x1, y1 + 1.2, 3, fill=C_KEY_DIM, outline="")
-        self._rr(x0, y0, x1, y1, 3, fill=C_KEY, outline="#1b1f22")
-        self.canvas.create_line(*self.s(x0 + 2.5, y0 + 1.2, x1 - 2.5, y0 + 1.2),
-                                fill=C_KEY_LIT)
-        letter = label in LETTER_KEYS
-        self._text((x0 + x1) / 2, (y0 + y1) / 2, label,
-                   9 if letter else 5.5,
-                   C_LEGEND if letter else C_LEGEND_DIM, bold=letter)
-
-    def _trackball(self, cx: float, cy: float) -> None:
-        self._oval(cx, cy, 15, fill=C_WELL, outline=C_EDGE)
-        self._oval(cx, cy - 0.5, 12.5, fill="#3d454c", outline="#20252a")
-        self._oval(cx - 3.5, cy - 4, 5, fill="#69737c", outline="", stipple="gray50")
-
-    def _draw_foot(self) -> None:
-        y = self.skin.body_y1 - 9
-        self._rr(self.skin.body_cx - 15, y, self.skin.body_cx + 15, y + 7, 3.5,
-                 fill="#0b0e10", outline="#2c3237")
-        self._text(self.skin.body_x0 + 16, y + 3, "ESP32-S3  SX1262  240x320",
-                   5.5, "#474e54", anchor="w")
 
     # -- the screen ------------------------------------------------------
 

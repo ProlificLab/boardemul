@@ -17,8 +17,8 @@ LilyGO publishes the Max's case as STL models, and the panel has a datasheet:
   from 1 mm below the top edge, an 8 mm rounded cut through the top-right
   corner, and 35 key openings: ten columns at a 6.24 mm pitch, three rows of
   6.3 mm-tall caps, and a bottom row of five — two keys, a 17.4 mm space bar
-  spanning the middle, then two keys, the whole row staggered half a pitch
-  and set closer to the logo band. `middle-bezel.stl` and `key.stl` sit
+  spanning the middle, then two keys, the row set to its own spacing, off
+  the columns, and closer to the logo band. `middle-bezel.stl` and `key.stl` sit
   behind the front and only the front is drawn.
 - **The panel.** The GDEQ031T10 datasheet: a 3.1-inch e-paper whose active
   area is 47.04 × 62.72 mm at a 0.196 mm square pixel — 240 × 320 exactly.
