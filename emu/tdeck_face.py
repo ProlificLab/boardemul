@@ -19,8 +19,10 @@ window draws as text, and where each key, the trackball and the panel are.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
 
+from emu.face import (  # noqa: F401 -- re-exported for the window and tests
+    Face, Text, backspace, cap, legend, ring, shrink, speaker,
+)
 from emu.raster import Colour, Raster, hex_colour, mix
 
 # 320 px across 57.6 mm [spec]: the panel is exactly 320 x 240 at scale 1.
@@ -82,30 +84,6 @@ C_KEY_BOTTOM = hex_colour("#26272a")
 C_KEY_EDGE = hex_colour("#151617")
 C_INK = hex_colour("#f3f4f5")
 C_PRINT = hex_colour("#a4a8ac")
-
-
-@dataclass
-class Text:
-    x: float
-    y: float
-    text: str
-    size: float                     # pixels
-    colour: str
-    bold: bool = False
-    anchor: str = "center"
-    glows: bool = False             # a cap's legend, lit by the keyboard backlight
-
-
-@dataclass
-class Face:
-    scale: int
-    width: int
-    height: int
-    raster: Raster
-    screen: tuple[int, int]         # the panel's top-left, in canvas pixels
-    keys: list[tuple[float, float, float, float, str]] = field(default_factory=list)
-    texts: list[Text] = field(default_factory=list)
-    trackball: tuple[float, float, float] = (0.0, 0.0, 0.0)
 
 
 def _de_boor(t: float) -> tuple[float, float]:
@@ -189,7 +167,7 @@ def build(scale: int, desk_mm: float = DESK_MM) -> Face:
     for d, a in ((3.0, 0.10), (2.0, 0.14), (1.2, 0.18)):
         img.polygon([(x + d * scale * 0.8, y + d * scale) for x, y in body], (0, 0, 0), a)
     img.polygon(body, C_RIM)
-    img.polygon(_shrink(body, 0.35 * k), C_BOARD)
+    img.polygon(shrink(body, 0.35 * k), C_BOARD)
 
     # The panel's black glass, with a faint sheen falling off downwards.
     gx0, gy0, gx1, gy1 = X(GLASS[0]), Y(GLASS[1]), X(GLASS[2]), Y(GLASS[3])
@@ -222,14 +200,14 @@ def build(scale: int, desk_mm: float = DESK_MM) -> Face:
               lambda y: mix(C_PLATE, C_PLATE_DARK, 0.6 + (y - Y(PLATE[3])) / (8 * k)))
     face = Face(scale, width, height, img, (sx, sy), trackball=(tx, ty, RING_R * k))
     for x0, y0, x1, y1, name, second in _key_boxes():
-        _cap(img, X(x0), Y(y0), X(x1), Y(y1), k)
+        cap(img, X(x0), Y(y0), X(x1), Y(y1), k)
         face.keys.append((X(x0), Y(y0), X(x1), Y(y1), name))
-        _legend(face, img, name, second, X(x0), Y(y0), X(x1), Y(y1), k)
+        legend(face, img, name, second, X(x0), Y(y0), X(x1), Y(y1), k)
 
     # Printed marks in the black corners of the bottom row, and the logo.
     for col in (0, 9):
         cx = X(KEYS_X0 + col * PITCH_X + KEY_W / 2)
-        _ring(img, cx, Y(ROW_Y[3]), 1.25 * k, 0.22 * k, C_PRINT)
+        ring(img, cx, Y(ROW_Y[3]), 1.25 * k, 0.22 * k, C_PRINT, C_BOARD)
         img.segment(cx - 0.8 * k, Y(ROW_Y[3]) + 0.8 * k, cx + 0.8 * k, Y(ROW_Y[3]) - 0.8 * k,
                     0.22 * k, C_PRINT)
     ly = Y(LOGO_Y)
@@ -241,20 +219,8 @@ def build(scale: int, desk_mm: float = DESK_MM) -> Face:
         tip = near + side * 0.6
         img.polygon([(X(near - side * 0.4), ly - 0.55 * k), (X(tip), ly),
                      (X(near - side * 0.4), ly + 0.55 * k)], C_TRIM)
-        _ring(img, X(far - side * 0.5), ly, 0.5 * k, 0.15 * k, C_TRIM)
+        ring(img, X(far - side * 0.5), ly, 0.5 * k, 0.15 * k, C_TRIM, C_BOARD)
     return face
-
-
-def _shrink(points, d):
-    """Pull a convex outline in by about `d`, towards its centroid."""
-    cx = sum(p[0] for p in points) / len(points)
-    cy = sum(p[1] for p in points) / len(points)
-    out = []
-    for x, y in points:
-        dx, dy = x - cx, y - cy
-        n = math.hypot(dx, dy) or 1.0
-        out.append((x - dx / n * d, y - dy / n * d))
-    return out
 
 
 def _chevrons(img: Raster, X, Y, k, span, cy, direction) -> None:
@@ -293,78 +259,9 @@ def _trackball(img: Raster, cx: float, cy: float, ring: float, ball: float) -> N
     img.circle(cx, cy, ball, sphere, shader=True)
 
 
-def _cap(img: Raster, x0, y0, x1, y1, k) -> None:
+def cap(img: Raster, x0, y0, x1, y1, k) -> None:
     r = 0.95 * k
     img.rrect(x0, y0 + 0.18 * k, x1, y1 + 0.18 * k, r, C_KEY_EDGE)
     img.rrect(x0, y0, x1, y1, r, lambda y: mix(C_KEY_TOP, C_KEY_BOTTOM, (y - y0) / (y1 - y0)))
     img.rrect(x0 + 0.35 * k, y0 + 0.12 * k, x1 - 0.35 * k, y0 + 0.30 * k, 0.1 * k,
               hex_colour("#4c4e51"), alpha=0.8)
-
-
-def _ring(img: Raster, cx, cy, r, w, colour) -> None:
-    img.circle(cx, cy, r, colour)
-    img.circle(cx, cy, r - w, C_BOARD)
-
-
-def _legend(face: Face, img: Raster, name: str, second: str, x0, y0, x1, y1, k) -> None:
-    cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
-    w = 0.16 * k
-    if len(name) == 1:
-        face.texts.append(Text(cx, cy + 0.75 * k, name, 3.0 * k, "#f3f4f5", bold=True,
-                               glows=True))
-        if second:
-            face.texts.append(Text(cx - 0.55 * k, cy - 1.55 * k, second, 1.75 * k, "#e4e6e8",
-                                   glows=True))
-        if name == "$":                             # [photo] a speaker above the $
-            _speaker(img, cx + 0.2 * k, cy - 1.5 * k, k)
-    elif name in ("ALT", "SYM"):
-        face.texts.append(Text(cx, cy + 0.2 * k, name.lower(), 2.1 * k, "#f3f4f5",
-                               glows=True))
-    elif name == "DEL":
-        _backspace(img, cx, cy, k, w)
-    elif name == "ENTER":
-        img.segment(cx + 1.1 * k, cy - 1.2 * k, cx + 1.1 * k, cy + 0.6 * k, w * 1.6, C_INK)
-        img.segment(cx + 1.1 * k, cy + 0.6 * k, cx - 0.6 * k, cy + 0.6 * k, w * 1.6, C_INK)
-        img.polygon([(cx - 1.4 * k, cy + 0.6 * k), (cx - 0.5 * k, cy + 0.05 * k),
-                     (cx - 0.5 * k, cy + 1.15 * k)], C_INK)
-    elif name in ("LSHIFT", "RSHIFT"):
-        img.polygon([(cx, cy - 1.15 * k), (cx + 1.05 * k, cy + 0.05 * k),
-                     (cx - 1.05 * k, cy + 0.05 * k)], C_INK)
-        img.rrect(cx - 0.5 * k, cy, cx + 0.5 * k, cy + 0.95 * k, 0.05 * k, C_INK)
-    elif name == "MIC":
-        img.rrect(cx - 0.45 * k, cy - 0.95 * k, cx + 0.45 * k, cy + 0.55 * k, 0.45 * k, C_INK)
-        for a0, a1 in ((200, 250), (250, 290), (290, 340)):
-            r = 0.85 * k
-            p0 = (cx + r * math.cos(math.radians(a0)), cy - 0.05 * k - r * math.sin(math.radians(a0)))
-            p1 = (cx + r * math.cos(math.radians(a1)), cy - 0.05 * k - r * math.sin(math.radians(a1)))
-            img.segment(*p0, *p1, w * 1.3, C_INK)
-        img.segment(cx, cy + 0.8 * k, cx, cy + 1.25 * k, w * 1.3, C_INK)
-        face.texts.append(Text(cx - 1.3 * k, cy - 1.45 * k, "0", 1.7 * k, "#e4e6e8",
-                               glows=True))
-    elif name == "SPACE":
-        img.segment(cx - 2.6 * k, cy + 0.5 * k, cx + 2.6 * k, cy + 0.5 * k, w * 1.8, C_INK)
-        for side in (-1, 1):
-            img.segment(cx + side * 2.6 * k, cy + 0.6 * k, cx + side * 2.6 * k, cy - 0.15 * k,
-                        w * 1.8, C_INK)
-
-
-def _backspace(img: Raster, cx, cy, k, w) -> None:
-    left, right, top, bottom = cx - 1.5 * k, cx + 1.3 * k, cy - 0.95 * k, cy + 0.95 * k
-    neck = cx - 0.6 * k
-    for a, b in (((left, cy), (neck, top)), ((neck, top), (right, top)),
-                 ((right, top), (right, bottom)), ((right, bottom), (neck, bottom)),
-                 ((neck, bottom), (left, cy))):
-        img.segment(*a, *b, w * 1.3, C_INK)
-    c = cx + 0.3 * k
-    img.segment(c - 0.5 * k, cy - 0.5 * k, c + 0.5 * k, cy + 0.5 * k, w * 1.3, C_INK)
-    img.segment(c - 0.5 * k, cy + 0.5 * k, c + 0.5 * k, cy - 0.5 * k, w * 1.3, C_INK)
-
-
-def _speaker(img: Raster, cx, cy, k) -> None:
-    s = 0.42 * k
-    img.rrect(cx - 1.0 * s, cy - 0.45 * s, cx - 0.45 * s, cy + 0.45 * s, 0.05 * s, hex_colour("#e4e6e8"))
-    img.polygon([(cx - 0.5 * s, cy - 0.45 * s), (cx + 0.15 * s, cy - 1.0 * s),
-                 (cx + 0.15 * s, cy + 1.0 * s), (cx - 0.5 * s, cy + 0.45 * s)], hex_colour("#e4e6e8"))
-    for r in (0.65, 1.15):
-        img.segment(cx + (0.15 + r) * s, cy - r * 0.8 * s, cx + (0.15 + r) * s, cy + r * 0.8 * s,
-                    0.14 * k, hex_colour("#e4e6e8"))
