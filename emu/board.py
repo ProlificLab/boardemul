@@ -328,6 +328,11 @@ def attach_input(server: BusServer, board: Board, outdir: Path) -> InputTail:
                 touch.touch = ((int(event.get("x", 0)), int(event.get("y", 0)))
                                if down else None)
                 board.gpio.pulse_low(TOUCH_INT_PIN)
+            elif kind == "touchkey" and isinstance(touch, CST328):
+                # A glass touch key reports through the same controller and
+                # the same INT line as a finger (ADR 0131).
+                touch.key = (int(event.get("key", 0)), bool(event.get("down", True)))
+                board.gpio.pulse_low(TOUCH_INT_PIN)
             else:
                 log.warning("unknown input event %r", event)
 
@@ -338,7 +343,9 @@ def attach_input(server: BusServer, board: Board, outdir: Path) -> InputTail:
         period = 1.0 / TOUCH_REPORT_HZ
         while not tail._stop.is_set():
             pump()
-            if isinstance(touch, CST328) and touch.touch is not None:
+            if isinstance(touch, CST328) and (
+                    touch.touch is not None
+                    or (touch.key is not None and touch.key[1])):
                 board.gpio.pulse_low(TOUCH_INT_PIN)
             time.sleep(period)
 

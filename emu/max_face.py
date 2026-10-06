@@ -193,10 +193,14 @@ def build(scale: int, desk_mm: float = DESK_MM) -> Face:
 
     face = Face(scale, width, height, img, (sx, sy))
 
-    # The three touch keys, printed on the glass [photo]. They are drawn,
-    # not modelled: a click here is neither a touch nor a key (ADR 0130).
-    for kind, ix in ICONS:
+    # The three touch keys, printed on the glass [photo]. Clicking one presses
+    # it: a key event through the touch controller, not a touch (ADR 0131).
+    # Numbered left to right; the firmware treats all three alike.
+    for index, (kind, ix) in enumerate(ICONS):
         cx, cy = X(ix), Y(ICON_Y)
+        hit = 2.7                                # a finger's box, not the glyph's
+        face.soft_keys.append((X(ix) - hit * k, cy - hit * k,
+                               X(ix) + hit * k, cy + hit * k, index))
         if kind == "heart":
             img.circle(cx - 0.9 * k, cy - 0.5 * k, 1.0 * k, C_ICON)
             img.circle(cx + 0.9 * k, cy - 0.5 * k, 1.0 * k, C_ICON)

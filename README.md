@@ -85,9 +85,12 @@ is:
 
 The Max's window is drawn the same way, from LilyGO's own case models
 (ADR 0130): the rounded outline with its corner cut, the grey touch glass
-with three touch keys printed under the screen (drawn but not yet modelled),
-and the keyboard the TCA8418 matrix knows -- five keys in the bottom row,
-both outer ones up keys, and no trackball, which the Max does not have.
+with three touch keys printed under the screen, and the keyboard the TCA8418
+matrix knows -- five keys in the bottom row, both outer ones up keys, and no
+trackball, which the Max does not have. The three touch keys are modelled too
+(ADR 0131): they report through the CST328 as key events, exactly as the
+vendor's hyn_cst3xx driver parses them, and the vendor firmware answers them
+by taking its interface back a screen.
 
 Meshtastic also boots on this board (`--psram-octal`): with its filesystem
 image in place (`--overlay 0xc90000=firmware/littlefs-t-deck-tft-2.7.10.94d4bdf.bin`,

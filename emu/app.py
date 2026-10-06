@@ -119,6 +119,11 @@ class DeckWindow:
         self.lit: list[int] = []
         self.ball_down = False
         self.ball_items: list[int] = []
+        # The Max's glass touch keys, as drawn boxes with their number
+        # (ADR 0131); one is held by the mouse at a time.
+        self.soft_hits: list[tuple[float, float, float, float, int]] = []
+        self.soft_clicked: int | None = None
+        self.soft_lit: int | None = None
         # The keyboard's backlight, as the board reports it (ADR 0129).
         self.board_stamp: tuple[int, int] | None = None
         self.glow = 0.0
@@ -177,6 +182,27 @@ class DeckWindow:
                 return label
         return None
 
+    def _soft_key_at(self, x: float, y: float) -> int | None:
+        """One of the Max's glass touch keys under its screen (ADR 0131)."""
+        ux, uy = x / self.scale, y / self.scale
+        for x0, y0, x1, y1, index in self.soft_hits:
+            if x0 <= ux <= x1 and y0 <= uy <= y1:
+                return index
+        return None
+
+    def _flash_soft(self, index: int, down: bool) -> None:
+        if self.soft_lit is not None:
+            self.canvas.delete(self.soft_lit)
+            self.soft_lit = None
+        if not down:
+            return
+        for x0, y0, x1, y1, i in self.soft_hits:
+            if i == index:
+                self.soft_lit = self._rr(x0, y0, x1, y1, 4,
+                                         fill="#ffffff", stipple="gray25",
+                                         outline="#ffffff",
+                                         width=max(1, round(1.5 * self.scale)))
+
     def _on_press(self, event: "tk.Event") -> None:
         point = self._panel_point(event.x, event.y)
         if point is not None:
@@ -187,6 +213,12 @@ class DeckWindow:
             self.ball_down = True
             self.events.ball(True)
             self._show_ball()
+            return
+        soft = self._soft_key_at(event.x, event.y)
+        if soft is not None:
+            self.soft_clicked = soft
+            self.events.soft_key(soft, True)
+            self._flash_soft(soft, True)
             return
         label = self._key_at(event.x, event.y)
         if label is not None and self.typing is not None:
@@ -211,6 +243,10 @@ class DeckWindow:
             self.ball_down = False
             self.events.ball(False)
             self._show_ball()
+        if self.soft_clicked is not None:
+            self.events.soft_key(self.soft_clicked, False)
+            self._flash_soft(self.soft_clicked, False)
+            self.soft_clicked = None
         if self.clicked is not None:
             self.typing.click_release(self.clicked)
             self.clicked = None
@@ -397,6 +433,9 @@ class DeckWindow:
                                     anchor=t.anchor, tags=tags)
         self.key_hits = [(x0 / self.scale, y0 / self.scale, x1 / self.scale,
                           y1 / self.scale, name) for x0, y0, x1, y1, name in face.keys]
+        self.soft_hits = [(x0 / self.scale, y0 / self.scale, x1 / self.scale,
+                           y1 / self.scale, index)
+                          for x0, y0, x1, y1, index in face.soft_keys]
         self.face = face
 
     # -- the screen ------------------------------------------------------

@@ -41,7 +41,7 @@ wired as up keys. The old drawing had `SYM, 0, SPACE, UP` and only four.
 The three touch keys under the screen are touch keys, reported by the touch
 controller as discrete key events rather than touch points. They have no
 model yet (ADR 0129 left them out too); this decision draws them, and their
-modelling stays open.
+modelling stays open. *(Closed by ADR 0131, which models them.)*
 
 ## Decision
 

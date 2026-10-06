@@ -169,7 +169,7 @@ class TCA8418(RegisterFile):
 
 
 class CST328(I2CDevice):
-    """Capacitive touch panel, 240x320.
+    """Capacitive touch panel, 240x320, with three touch keys under it.
 
     Unlike the other devices here this one is addressed with a 16-bit register
     number and validates its own reports, so it cannot reuse RegisterFile.
@@ -178,12 +178,19 @@ class CST328(I2CDevice):
     driver discards it, and the driver probes for a cst66xx at the same address
     first -- that probe is rejected by returning anything other than 0xCA at
     bytes 2 and 3, which is what lets it fall through to the CST328 path.
+
+    The three keys print on the glass below the panel and report as key events
+    in the same seven bytes a finger does (ADR 0131): buf[5] & 0x80 set is a
+    key, buf[1]'s high nibble is the key's one-based number, and buf[0] == 0x83
+    exactly is a press.
     """
 
     REG_REPORT = 0xD000
     REG_CHIP_INFO = 0xD1F4
     REPORT_MAGIC = 0xAB
     CONTACT = 0x06
+    KEY_DOWN, KEY_UP = 0x83, 0x81
+    KEYS = 3
 
     def __init__(self, address: int = 0x1A):
         self.address = address
@@ -193,6 +200,7 @@ class CST328(I2CDevice):
         self._out = b""
         self._out_pos = 0
         self.touch: tuple[int, int] | None = None
+        self.key: tuple[int, bool] | None = None
         self.reports = 0
         self.acks = 0
 
@@ -239,7 +247,12 @@ class CST328(I2CDevice):
 
     def _report_bytes(self) -> bytes:
         buf = bytearray(16)
-        if self.touch is not None:
+        if self.key is not None:
+            key_id, down = self.key
+            buf[0] = self.KEY_DOWN if down else self.KEY_UP
+            buf[1] = (key_id + 1) << 4          # the driver reads (buf[1] >> 4) - 1
+            buf[5] = 0x80                       # a key event, no fingers
+        elif self.touch is not None:
             x, y = self.touch
             buf[0] = self.CONTACT            # finger 0, contact event
             buf[1] = (x >> 4) & 0xFF
@@ -253,6 +266,7 @@ class CST328(I2CDevice):
 
     def _chip_info_bytes(self) -> bytes:
         info = bytearray(32)
+        info[3] = self.KEYS                  # fw_key_num: the touch keys
         info[4:6] = (240).to_bytes(2, "little")   # reported x resolution
         info[6:8] = (320).to_bytes(2, "little")   # reported y resolution
         info[18:20] = (0x0328).to_bytes(2, "little")

@@ -40,6 +40,8 @@ class Face:
     keys: list[tuple[float, float, float, float, str]] = field(default_factory=list)
     texts: list[Text] = field(default_factory=list)
     trackball: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    # The Max's glass touch keys, in canvas pixels with their number (ADR 0131).
+    soft_keys: list[tuple[float, float, float, float, int]] = field(default_factory=list)
 
 
 def shrink(points, d):

@@ -222,6 +222,10 @@ class InputWriter:
         """The T-Deck's trackball pressed or let go."""
         self._emit({"type": "trackball", "press": down})
 
+    def soft_key(self, index: int, down: bool) -> None:
+        """One of the Max's three glass touch keys (ADR 0131)."""
+        self._emit({"type": "touchkey", "key": index, "down": down})
+
 
 class TDeckTyping:
     """How a mouse and the host's keyboard press the T-Deck's keys (ADR 0127).

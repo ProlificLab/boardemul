@@ -82,21 +82,20 @@ def test_the_bottom_rows_five_keys_stand_on_their_own_spacing() -> None:
 
 def test_the_three_touch_keys_are_printed_below_the_active_area() -> None:
     """A heart, a speech bubble and a paper plane on the glass under the
-    panel (ADR 0130) -- drawn, not modelled: they are no key the window
-    would send, and they lie outside the panel a touch maps to."""
+    panel (ADR 0130): outside the panel a touch maps to and clear of every
+    keyboard cap, but pressable as the touch keys they are (ADR 0131)."""
     assert len(max_face.ICONS) == 3
     for _kind, x in max_face.ICONS:
         assert max_face.WINDOW[0] < x < max_face.WINDOW[2]
         assert max_face.PANEL[3] < max_face.ICON_Y - max_face.ICON_S
         assert max_face.ICON_Y + max_face.ICON_S < max_face.WINDOW[3]
-    k = max_face.PX_PER_MM
     face = max_face.build(1)
-    top = face.screen[1] - max_face.PANEL[1] * k
-    for _kind, x in max_face.ICONS:
-        box = ((x - max_face.ICON_S) * k, (max_face.ICON_Y - max_face.ICON_S) * k + top,
-               (x + max_face.ICON_S) * k, (max_face.ICON_Y + max_face.ICON_S) * k + top)
-        for x0, y0, x1, y1, name in face.keys:
-            apart = box[2] <= x0 or x1 <= box[0] or box[3] <= y0 or y1 <= box[1]
+    assert [i for *_box, i in face.soft_keys] == [0, 1, 2]
+    k = max_face.PX_PER_MM
+    for x0, y0, x1, y1, _i in face.soft_keys:
+        assert y0 / k > max_face.PANEL[3]          # not on the panel
+        for kx0, ky0, kx1, ky1, name in face.keys:
+            apart = x1 <= kx0 or kx1 <= x0 or y1 <= ky0 or ky1 <= y0
             assert apart, name
 
 
