@@ -109,10 +109,10 @@ nothing on the drawn device needs two keys.
 
 ## Not decided here
 
-The board pulses GPIO 46 low on every key press, for a firmware that waits
-on a keyboard interrupt. The sketch drives no interrupt line: none of its
-pins is an output except the backlight. The pulse is left as it is and
-should be looked at against the schematic separately.
+The board pulsed GPIO 46 low on every key press, for a firmware that waits
+on a keyboard interrupt, though the sketch drives no interrupt line. This
+was resolved by ADR 0132: no firmware the emulator runs waits on the line,
+and the pulse is gone.
 
 ## Consequences
 

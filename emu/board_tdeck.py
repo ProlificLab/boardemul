@@ -73,7 +73,6 @@ TOUCH_INT_PIN = 16
 # Bluetooth and rebooted into its programming mode (ADR 0026). The pull-up
 # lives in IO_MUX, which the fork leaves unimplemented, so the board says it,
 # for each of TRACKBALL_PINS, which the trackball's model keeps (ADR 0128).
-KEYBOARD_INT_PIN = 46
 
 # The touch controller reports on an interrupt rather than being polled.
 TOUCH_REPORT_HZ = 500
@@ -445,19 +444,16 @@ def attach_input(server, board: Board, outdir: Path) -> InputTail:
                                         int(event.get("steps", NOTCH))):
                     log.warning("no such roll %r", event)
             elif kind == "key" and isinstance(keypad, TDeckKeyboard):
+                # The firmware reads the keyboard by polling (ADR 0132):
+                # UnitTest's keypad_read and Meshtastic's kbI2cBase loop both
+                # ask 0x55 on their own clocks, and no interrupt is awaited.
                 if not keypad.key_event(str(event.get("key", "")),
                                         bool(event.get("down", True))):
                     log.debug("no character for key %r", event.get("key"))
-                elif bool(event.get("down", True)):
-                    # This keyboard has its own interrupt line, unlike the
-                    # Max's, so a firmware that has stopped polling still has
-                    # to be told a key is waiting.
-                    board.gpio.pulse_low(KEYBOARD_INT_PIN)
             elif kind == "text" and isinstance(keypad, TDeckKeyboard):
                 # Characters, each pressed as the chord that types it on the
                 # device (ADR 0127).
-                if keypad.type_text(str(event.get("text", ""))):
-                    board.gpio.pulse_low(KEYBOARD_INT_PIN)
+                keypad.type_text(str(event.get("text", "")))
             elif kind == "touch" and isinstance(touch, GT911):
                 down = bool(event.get("down", True))
                 if down:
