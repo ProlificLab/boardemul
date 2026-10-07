@@ -159,6 +159,16 @@ def send_text(outdir: Path, text: str) -> None:
         fh.write(json.dumps({"type": "text", "text": text}) + chr(10))
 
 
+def send_touchkey(outdir: Path, key: int, hold: float = 1.5) -> None:
+    """One of the Max's glass touch keys, pressed and let go (ADR 0131)."""
+    events = outdir / "input.jsonl"
+    with events.open("a") as fh:
+        fh.write(json.dumps({"type": "touchkey", "key": key, "down": True}) + chr(10))
+    time.sleep(hold)
+    with events.open("a") as fh:
+        fh.write(json.dumps({"type": "touchkey", "key": key, "down": False}) + chr(10))
+
+
 def pixel(path: Path, x: int, y: int) -> tuple[int, int, int]:
     width, _, pixels = read_png(path)
     at = 3 * (y * width + x)
