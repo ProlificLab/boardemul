@@ -24,8 +24,8 @@ from __future__ import annotations
 
 import math
 
-from emu.face import Face, Text, cap, legend, ring
-from emu.raster import Raster, hex_colour, mix, rrect
+from emu.face import Face, Text, cap, legend
+from emu.raster import Colour, Raster, hex_colour, mix, rrect
 
 # 240 px across 47.04 mm [spec]: the panel is exactly 240 x 320 at scale 1.
 PX_PER_MM = 250 / 49
@@ -61,19 +61,22 @@ BOTTOM = (("UP", 8.5, 14.1), ("0", 16.6, 22.2), ("SPACE", 24.2, 41.6),
 BOTTOM_H = 5.6
 PLATE = (1.6, 81.3, 64.2, 111.1)     # [photo] the plate the caps sit in
 LOGO_Y = 115.6                       # [photo] the bottom band's print
+BAND_Y0 = 111.4                      # [photo] where the band's darker print starts
 
 C_DESK = hex_colour("#0f1113")
-C_EDGE = hex_colour("#0a0b0c")
-C_RIM = hex_colour("#34373b")
-C_BODY = hex_colour("#1d1f22")
-C_BODY_LOW = hex_colour("#1a1c1f")
-C_GLASS = hex_colour("#7c7f81")      # [photo] the light grey touch glass
-C_GLASS_LOW = hex_colour("#6e7173")
-C_GLASS_WALL = hex_colour("#4a4d4f")
-C_ICON = hex_colour("#43464a")
-C_PLATE = hex_colour("#4e5154")      # [photo] the smoky plate
-C_PLATE_DARK = hex_colour("#43464a")
-C_PRINT = hex_colour("#b9bdc0")
+C_EDGE = hex_colour("#85878a")       # the outline's boundary against the desk
+C_CASE_LIT = hex_colour("#c6c5c1")   # [photo] the case, lit from the left
+C_CASE_SHADE = hex_colour("#7b7d80") # [photo] the case, away from the light
+C_CASE_LOW = hex_colour("#6f7174")
+C_GLASS = hex_colour("#767679")      # [photo] the touch glass
+C_GLASS_LOW = hex_colour("#69696c")
+C_GLASS_WALL = hex_colour("#55575a")
+C_AA_FRAME = hex_colour("#5f6163")
+C_ICON = hex_colour("#46484c")
+C_PLATE = hex_colour("#606365")      # [photo] the smoky plate
+C_PLATE_DARK = hex_colour("#53565a")
+C_BAND = hex_colour("#46484c")       # [photo] the darker bottom band
+C_PRINT = hex_colour("#d3d6d9")
 
 
 def _rrect2(x0, y0, x1, y1, rt, rb):
@@ -162,19 +165,24 @@ def build(scale: int, desk_mm: float = DESK_MM) -> Face:
     rt, rb = CORNER_TOP * k, CORNER_BOTTOM * k
     cut = (X(NOTCH[0]), Y(NOTCH[1]), X(NOTCH[2]), Y(NOTCH[3]), NOTCH[4] * k)
 
-    # A soft contact shadow, then the body with a lit rim. Both follow the
-    # outline's span, so the corner cut is missing from the shadow too.
+    # A soft contact shadow, then the light smoky case. Both follow the
+    # outline's span, so the corner cut is missing from the shadow too. The
+    # case is lit from the left, as the photographs are.
     for d, a in ((3.0, 0.10), (2.0, 0.14), (1.2, 0.18)):
         span = body_span(bx0 + d * k * 0.8, by0 + d * k, bx1 + d * k * 0.8,
                          by1 + d * k, rt, rb, cut)
         img.fill(span, by0 + d * k, by1 + d * k, (0, 0, 0), alpha=a)
     outline = body_span(bx0, by0, bx1, by1, rt, rb, cut)
-    img.fill(outline, by0, by1, C_RIM)
+    img.fill(outline, by0, by1, C_EDGE)
     inner = body_span(bx0, by0, bx1, by1, rt, rb, cut, inset=0.35 * k)
-    img.fill(inner, by0 + 0.35 * k, by1 - 0.35 * k,
-             lambda y: mix(C_BODY, C_BODY_LOW, (y - by0) / (by1 - by0)))
 
-    # The touch glass fills the recess: a wall, then the light grey pane.
+    def case_colour(x: float, y: float) -> Colour:
+        across = (x - bx0) / (bx1 - bx0)
+        return mix(mix(C_CASE_LIT, C_CASE_SHADE, across), C_CASE_LOW,
+                   (y - by0) / (by1 - by0) * 0.4)
+    img.fill(inner, by0 + 0.35 * k, by1 - 0.35 * k, case_colour, shader=True)
+
+    # The touch glass fills the recess: a wall, then the grey pane.
     img.rrect(X(WINDOW[0]), Y(WINDOW[1]), X(WINDOW[2]), Y(WINDOW[3]),
               WINDOW_R * k, C_GLASS_WALL)
     img.rrect(X(WINDOW[0] + 0.35), Y(WINDOW[1] + 0.35), X(WINDOW[2] - 0.35),
@@ -183,13 +191,12 @@ def build(scale: int, desk_mm: float = DESK_MM) -> Face:
                             (y - Y(WINDOW[1])) / ((WINDOW[3] - WINDOW[1]) * k)))
     # The e-paper sits behind the glass; its edge reads as a frame.
     img.rrect(X(PANEL[0] - 0.3), Y(PANEL[1] - 0.3), X(PANEL[2] + 0.3),
-              Y(PANEL[3] + 0.3), 0.2 * k, C_GLASS_WALL)
+              Y(PANEL[3] + 0.3), 0.2 * k, C_AA_FRAME)
     img.rrect(X(PANEL[0]), Y(PANEL[1]), X(PANEL[2]), Y(PANEL[3]), 0.1 * k,
               C_GLASS_LOW)
-    # The glass cannot cross the cut; the hole is repainted over its corner.
-    img.rrect(X(NOTCH[0] + 0.6), Y(0.2), bx1, Y(NOTCH[3] - 0.2), 3.0 * k, C_EDGE)
-    ring(img, X(63.2), Y(3.6), 1.5 * k, 0.3 * k, hex_colour("#3a3e42"), C_EDGE)
-    img.circle(X(63.2), Y(3.6), 0.6 * k, hex_colour("#7d8489"))
+    # The corner cut is painted by nothing: a hole through the front, and the
+    # photographs confirm it -- the studio's white shows through (ADR 0130,
+    # amended).
 
     face = Face(scale, width, height, img, (sx, sy))
 
@@ -224,15 +231,20 @@ def build(scale: int, desk_mm: float = DESK_MM) -> Face:
               lambda y: mix(C_PLATE, C_PLATE_DARK,
                             (y - Y(PLATE[1])) / ((PLATE[3] - PLATE[1]) * k)))
     for x0, y0, x1, y1, name, printed in _key_boxes():
-        cap(img, X(x0), Y(y0), X(x1), Y(y1), k)
+        # [photo] the Max's caps are smoky: lighter than the T-Deck's.
+        cap(img, X(x0), Y(y0), X(x1), Y(y1), k,
+            top=hex_colour("#55575b"), bottom=hex_colour("#3d3f43"))
         face.keys.append((X(x0), Y(y0), X(x1), Y(y1), name))
         legend(face, img, printed, _second_char(printed),
                X(x0), Y(y0), X(x1), Y(y1), k)
 
-    # The bottom band: the logo between arrowed lines, with a trace either
-    # side and hatching towards the ends, as the photographs print it.
+    # The bottom band prints darker than the case around it [photo], and
+    # carries the logo between arrowed lines, a trace either side and
+    # hatching towards the ends.
+    band = body_span(bx0, by0, bx1, by1, rt, rb, cut, inset=0.7 * k)
+    img.fill(band, Y(BAND_Y0), by1 - 0.7 * k, C_BAND)
     ly = Y(LOGO_Y)
-    face.texts.append(Text(X(WIDTH / 2), ly, "LILYGO®", 2.6 * k, "#c9cdd0", bold=True))
+    face.texts.append(Text(X(WIDTH / 2), ly, "LILYGO®", 2.6 * k, "#d3d6d9", bold=True))
     for side in (+1, -1):
         near = WIDTH / 2 - side * 11.5
         far = WIDTH / 2 - side * 23.0

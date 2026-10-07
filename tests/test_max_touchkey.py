@@ -112,21 +112,7 @@ def test_a_touch_key_round_trips(linked) -> None:
 
 # -- the drawn icons, on a machine that has a display ------------------------
 
-
-def _display() -> bool:
-    try:
-        import tkinter as tk
-    except ImportError:
-        return False
-    try:
-        root = tk.Tk()
-    except Exception:
-        return False
-    root.destroy()
-    return True
-
-
-needs_display = pytest.mark.skipif(not _display(), reason="no display or no tkinter")
+from tests.test_app_input import needs_display, tk_root  # noqa: E402
 
 
 @pytest.mark.parametrize("index", [0, 1, 2])
@@ -137,7 +123,7 @@ def test_clicking_a_drawn_touch_key_sends_it(tmp_path: Path, index: int) -> None
     from emu.app import DeckWindow
 
     events = tmp_path / "input.jsonl"
-    root = tk.Tk()
+    root = tk_root()
     root.withdraw()
     try:
         window = DeckWindow(tk.Toplevel(root), tmp_path / "latest.png", 2,

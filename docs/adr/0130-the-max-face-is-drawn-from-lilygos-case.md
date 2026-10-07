@@ -89,7 +89,11 @@ modelling stays open. *(Closed by ADR 0131, which models them.)*
 - The key legends are read as "the same as the T-Deck's" from photographs
   that do not resolve every cap. Each cap's second character cites the
   T-Deck's sketch by way of that reading, not the Max's own printing.
-- What sits inside the corner cut is drawn as a recess with a metal ring
-  from the photographs' hint; the STL says the cut, not its contents.
+- The corner cut was first drawn as a dark recess with a metal ring, from a
+  mis-scaled reading of the photographs. Measured against them at the case's
+  true outline, the cut reads as a through-opening — the background shows
+  through — and the face leaves it open, as the STL has it. (Amended
+  2026-10-06.) The case, the plate and the caps are likewise the photographs'
+  light smoky greys, not the dark tones first taken from the T-Deck.
 - The touch keys' heart, speech bubble and paper plane are drawn as shapes
   from the photographs' silhouettes, not traced from them.

@@ -62,13 +62,16 @@ def ring(img: Raster, cx: float, cy: float, r: float, w: float, colour: Colour,
     img.circle(cx, cy, r - w, middle)
 
 
-def cap(img: Raster, x0, y0, x1, y1, k) -> None:
-    top, bottom = hex_colour("#3b3c3f"), hex_colour("#26272a")
+def cap(img: Raster, x0, y0, x1, y1, k, top: Colour = None,
+        bottom: Colour = None) -> None:
+    """A keycap; a board's caps differ in how smoky their plastic is."""
+    top = top or hex_colour("#3b3c3f")
+    bottom = bottom or hex_colour("#26272a")
     r = 0.95 * k
     img.rrect(x0, y0 + 0.18 * k, x1, y1 + 0.18 * k, r, hex_colour("#151617"))
     img.rrect(x0, y0, x1, y1, r, lambda y: mix(top, bottom, (y - y0) / (y1 - y0)))
     img.rrect(x0 + 0.35 * k, y0 + 0.12 * k, x1 - 0.35 * k, y0 + 0.30 * k, 0.1 * k,
-              hex_colour("#4c4e51"), alpha=0.8)
+              hex_colour("#5c5e62"), alpha=0.8)
 
 
 def legend(face: Face, img: Raster, name: str, second: str, x0, y0, x1, y1, k) -> None:
