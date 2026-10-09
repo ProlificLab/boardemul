@@ -11,6 +11,7 @@ QEMU or the firmware, like every boot test.
 from __future__ import annotations
 
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -47,18 +48,28 @@ def pressed(tmp_path_factory) -> tuple[Run, dict[str, str]]:
 
     def interaction(outdir: Path) -> None:
         latest = outdir / "frames" / "latest.png"
-        if not wait_for_panel(outdir, lambda _p: True, 90):
-            return                      # no picture at all; assertions say so
+        # The launcher is the third picture: clear, splash, menu (test_boot).
+        # Waiting for any frame grabs the splash, and a tap into the splash
+        # is swallowed before the menu ever draws.
+        def launcher_drawn(_p) -> bool:
+            return len(list(outdir.glob("frames/frame-*.png"))) >= 3
+        if not wait_for_panel(outdir, launcher_drawn, 300):
+            return                      # no launcher; the assertions say so
+        time.sleep(5)                   # let the menu's refresh finish
         seen["launcher"] = region_digest(latest)
         send_touch(outdir, *SETTING_ICON)
-        if wait_for_panel(outdir, lambda p: region_digest(p) != seen["launcher"], 60):
+        if wait_for_panel(outdir, lambda p: region_digest(p) != seen["launcher"], 90):
+            # The first differing frame is the icon's pressed state; the
+            # sub-screen itself follows a full e-paper refresh later. Settle
+            # before judging what is open, or the key pops the wrong moment.
+            time.sleep(25)
             seen["sub"] = region_digest(latest)
         send_touchkey(outdir, BUBBLE)
-        if wait_for_panel(outdir, lambda p: region_digest(p) == seen["launcher"], 60):
+        if wait_for_panel(outdir, lambda p: region_digest(p) == seen["launcher"], 90):
             seen["back"] = region_digest(latest)
 
     run = run_emulator(tmp_path_factory.mktemp("touchkey"), script=interaction,
-                      timeout=200)
+                      timeout=480)
     return run, seen
 
 
