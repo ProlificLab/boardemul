@@ -20,6 +20,7 @@ from dataclasses import dataclass, field, asdict
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from emu import device as device_folder  # noqa: E402
 from tools import mkflash  # noqa: E402
 from emu import board  # noqa: E402
 from emu import board_tdeck  # noqa: E402
@@ -67,6 +68,8 @@ class RunResult:
     # (ADR 0100). A firmware whose Serial is that port says nothing on the UART.
     usb_bytes: int = 0
     usb_path: str = ""
+    # The device folder a run started from, when it started from one (ADR 0133).
+    device: str | None = None
     rtc_base: str = RTC_BASE
     strap_mode: int = STRAP_MODE
     notes: list[str] = field(default_factory=list)
@@ -234,25 +237,31 @@ def _take_the_guest_with_us(signum, frame):
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("firmware", type=Path)
+    ap.add_argument("firmware", type=Path, nargs="?", default=None)
+    ap.add_argument("--device", type=Path, default=None, metavar="PATH",
+                    help="start a device folder instead of a bare firmware: "
+                         "its storage is reused and kept (ADR 0133)")
     ap.add_argument("--outdir", type=Path, default=REPO_ROOT / "logs")
     ap.add_argument("--builddir", type=Path, default=REPO_ROOT / "build")
     ap.add_argument("--trace", action="store_true",
                     help="record every MMIO access (roughly 100x slower)")
     ap.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT_SECONDS)
     ap.add_argument("--stall", type=float, default=DEFAULT_STALL_SECONDS)
-    ap.add_argument("--psram", type=int, default=8, help="PSRAM size in MB")
+    ap.add_argument("--psram", type=int, default=None, help="PSRAM size in MB")
     # The board really has octal PSRAM, but the fork's SPI1 model does not
     # clock octal DDR the way IDF 4.4.6 drives it, so detection reads back all
     # zeros. Presented as quad, the same firmware enables PSRAM and runs.
     ap.add_argument("--psram-octal", action="store_true",
                     help="present PSRAM in octal line mode (matches the real "
                          "board, but detection fails under this QEMU fork)")
-    ap.add_argument("--mac", default=mkflash.DEFAULT_MAC)
+    ap.add_argument("--mac", default=None)
     ap.add_argument("--overlay", action="append", default=[], metavar="OFFSET=FILE",
-                    help="splice a vendor filesystem image into the flash (ADR 0021)")
-    ap.add_argument("--board", default="tdeck-max", choices=("tdeck-max", "tdeck"),
-                    help="which board to wire up (default: tdeck-max)")
+                    help="splice a vendor filesystem image into the flash (ADR "
+                         "0021). With --device the storage is already built "
+                         "and this is refused")
+    ap.add_argument("--board", default=None, choices=("tdeck-max", "tdeck"),
+                    help="which board to wire up (default: tdeck-max, or the "
+                         "device's)")
     ap.add_argument("--qemu", default=None)
     ap.add_argument("-v", "--verbose", action="store_true",
                     help="log every bus transaction at DEBUG")
@@ -317,24 +326,54 @@ def main(argv: list[str] | None = None) -> int:
                     help="name for this run's logs (default: firmware stem)")
     args = ap.parse_args(argv)
 
-    tag = args.tag or args.firmware.stem
+    # --device or a bare firmware, never both, never neither. The device is
+    # identity: its storage, board and radio personality are the folder's,
+    # and a flag only overrides where it also says something for this run.
+    if (args.device is None) == (args.firmware is None):
+        raise SystemExit("give either a firmware image or --device PATH")
+    if args.device is not None:
+        try:
+            device = device_folder.load(args.device)
+        except device_folder.DeviceError as exc:
+            raise SystemExit(str(exc))
+        if args.overlay:
+            raise SystemExit("--device keeps its own storage; --overlay would "
+                             "rebuild it (use tools/device.py flash)")
+        firmware = Path(device.firmware) if Path(device.firmware).is_file() else None
+        board_name = args.board or device.board
+        mac = args.mac or device.mac
+        psram_mb = args.psram if args.psram is not None else device.psram_mb
+        psram_octal = args.psram_octal or device.psram_octal
+        tag = args.tag or device.name
+        flash, efuse = device.flash, device.efuse
+    else:
+        device = None
+        firmware = args.firmware
+        board_name = args.board or "tdeck-max"
+        mac = args.mac or mkflash.DEFAULT_MAC
+        psram_mb = args.psram if args.psram is not None else 8
+        psram_octal = args.psram_octal
+        tag = args.tag or args.firmware.stem
     if args.trace:
         tag += "-traced"
     args.outdir.mkdir(parents=True, exist_ok=True)
 
     qemu = find_qemu(args.qemu)
-    flash, efuse = build_images(args.firmware, args.builddir / args.firmware.stem, args.mac, args.overlay)
+    if device is None:
+        flash, efuse = build_images(args.firmware,
+                                    args.builddir / args.firmware.stem,
+                                    mac, args.overlay)
 
     uart = args.outdir / f"{tag}.uart.log"
     usb = args.outdir / f"{tag}.usb.log"
     qlog = args.outdir / f"{tag}.qemu.log"
     elog = args.outdir / f"{tag}.stderr.log"
-    seed = rng_seed(args.mac)
-    cmd = build_argv(qemu, flash, efuse, uart, qlog, args.trace, args.psram,
-                     psram_octal=args.psram_octal, seed=seed,
+    seed = rng_seed(mac)
+    cmd = build_argv(qemu, flash, efuse, uart, qlog, args.trace, psram_mb,
+                     psram_octal=psram_octal, seed=seed,
                      reboot=args.reboot, usb=usb)
 
-    hw_module = {"tdeck-max": board, "tdeck": board_tdeck}[args.board]
+    hw_module = {"tdeck-max": board, "tdeck": board_tdeck}[board_name]
     # SoC-level, so it applies with or without --bus: these describe the chip
     # the board is built around, not the peripherals we model in Python.
     for spec in hw_module.SOC_DEVICES:
@@ -447,6 +486,15 @@ def main(argv: list[str] | None = None) -> int:
                              gps=fix, wifi_ap=access_point,
                              air_boards=args.air_boards,
                              air_quantum_ns=args.air_quantum_us * 1000)
+        if device is not None and device.has_sdcard:
+            # The device's card, in place of the fresh empty one the board
+            # built. Its contents go back to the folder when the run ends
+            # (ADR 0133).
+            from emu.devices.sdcard import SdCard
+            sd = next((d for d in hw.spi.devices.values()
+                       if isinstance(d, SdCard)), None)
+            if sd is not None:
+                sd.image[:] = device_folder.load_sdcard(device, len(sd.image))
         hw.start()
         server = BusServer(args.outdir / f"{tag}.bus.sock", hw.regions)
         irq = IrqChannel(args.outdir / f"{tag}.irq.sock")
@@ -488,6 +536,14 @@ def main(argv: list[str] | None = None) -> int:
         if irq:
             irq.stop()
         if hw:
+            if device is not None and device.has_sdcard:
+                # The card goes back to the folder whatever the run was:
+                # stopped, timed out or crashed (ADR 0133).
+                from emu.devices.sdcard import SdCard
+                sd = next((d for d in hw.spi.devices.values()
+                           if isinstance(d, SdCard)), None)
+                if sd is not None:
+                    device_folder.save_sdcard(device, sd.image)
             hw.stop()
 
     radio_stats: dict = {}
@@ -531,9 +587,10 @@ def main(argv: list[str] | None = None) -> int:
         argv=cmd,
         seed=seed,
         inputs={p.name: hashlib.sha256(p.read_bytes()).hexdigest()
-                for p in (args.firmware, flash, efuse)},
+                for p in (flash, efuse)},
         exit_reason=reason,
         wall_seconds=round(wall, 2),
+        device=str(device.root) if device is not None else None,
         uart_bytes=uart.stat().st_size if uart.exists() else 0,
         uart_path=str(uart),
         usb_bytes=usb.stat().st_size if usb.exists() else 0,
