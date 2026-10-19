@@ -29,5 +29,7 @@ def test_the_port_is_there_without_a_file() -> None:
 def test_what_the_host_hears_goes_to_the_named_file() -> None:
     argv = _argv(usb=Path("out/t.usb.log"))
     chardev = argv[argv.index("-chardev") + 1]
-    assert chardev == "file,id=usbjtag,path=out/t.usb.log"
+    # The path reaches QEMU verbatim, so the test compares the Path, not a
+    # spelling of it: a host's separator choice is not the thing under test.
+    assert chardev == f"file,id=usbjtag,path={Path('out/t.usb.log')}"
     assert "esp-usb-serial-jtag,chardev=usbjtag" in argv
