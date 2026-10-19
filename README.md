@@ -133,6 +133,14 @@ dialog gives it: `tools/make_configured_fs.py` does that by driving the dialog
 and keeps the filesystem it produces in `build/`, so the two-node mesh in
 `tests/test_mesh.py` rebuilds from the vendor image and nothing else.
 
+A device, though, is now a thing that stays. `tools/device.py create NAME
+--firmware F.bin` makes a folder in `devices/` holding the board's identity
+and its storage -- flash, eFuses and card -- assembled once (ADR 0133).
+`device.py start NAME -- --bus` boots it; what the guest saves is written
+into the folder's own flash, so stopping and starting again finds it as it
+was. Configure Meshtastic's dialog once and every later boot is a node that
+already knows itself.
+
 Bluetooth advertises on an air of its own with `--ble-air DIR`, built the same
 way (ADR 0045). `tools/make_configured_fs.py --bluetooth` captures a filesystem
 with it switched on, and what goes out is what the controller staged: the
@@ -159,10 +167,12 @@ ADR 0012.
     docs/BOOT.md      the ESP32-S3 boot chain, and what QEMU provides for each stage
     docs/adr/         numbered architecture decision records
     qemu-patch/       the C we own, installed into the QEMU tree at build time
-    tools/            QEMU fetch and build, flash image assembly, frame viewer
+    tools/            QEMU fetch and build, flash image assembly, frame viewer,
+                      device folders
     tests/            fast device tests, plus golden-frame tests behind -m slow
     emu/              the emulator: launcher, bus bridge host side, device models
     firmware/         vendor binaries (not committed; see MANIFEST.toml)
+    devices/          device folders, made by tools/device.py (ADR 0133)
 
 ## How it fits together
 
