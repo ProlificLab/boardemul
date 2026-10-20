@@ -652,9 +652,9 @@ class DeviceChooser:
         self.top.bind("<Escape>", lambda _e: self._quit())
 
         pad = {"padx": 6 * scale, "pady": 3 * scale}
+        title_font = tkfont.Font(family="Segoe UI", size=-12 * scale, weight="bold")
         head = tk.Label(self.top, text="Start a device", background=C_DESK,
-                        foreground="#c9cdd0",
-                        font=(tkfont.Font(family="Segoe UI", size=-12 * scale), "bold"))
+                        foreground="#c9cdd0", font=title_font)
         head.pack(anchor="w", **pad)
         self.list = tk.Listbox(self.top, width=44, height=min(8, 4),
                                background="#16191c", foreground="#c9cdd0",
