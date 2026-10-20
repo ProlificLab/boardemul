@@ -82,7 +82,7 @@ from tests.test_app_input import needs_display, tk_root  # noqa: E402
 def test_the_chooser_lists_the_devices(tmp_path, firmware, fake_build):
     import tkinter as tk
 
-    from emu.app import DeviceChooser
+    from emu.chooser import Chooser
     devices = tmp_path / "devices"
     device_folder.create(devices, "pocket", firmware)
     device_folder.create(devices, "desk", firmware, board="tdeck")
@@ -90,8 +90,8 @@ def test_the_chooser_lists_the_devices(tmp_path, firmware, fake_build):
     root = tk_root()
     root.withdraw()
     try:
-        chooser = DeviceChooser(root, devices)
-        rows = chooser.list.get(0, "end")
+        chooser = Chooser(root, devices)
+        rows = chooser.rows()
     finally:
         chooser.top.destroy()
         root.destroy()
@@ -103,19 +103,18 @@ def test_the_chooser_lists_the_devices(tmp_path, firmware, fake_build):
 def test_starting_needs_a_selection(tmp_path, firmware, fake_build):
     import tkinter as tk
 
-    from emu.app import DeviceChooser
+    from emu.chooser import Chooser
     devices = tmp_path / "devices"
     device_folder.create(devices, "pocket", firmware)
 
     root = tk_root()
     root.withdraw()
     try:
-        chooser = DeviceChooser(root, devices)
-        chooser.list.selection_clear(0, "end")
+        chooser = Chooser(root, devices)
+        chooser.selected = None
         chooser._start()
         assert chooser.pick is None
-        assert "pick" in chooser.note.cget("text")
-        chooser.list.selection_set(0)
+        chooser.select(0)
         chooser._start()
         assert chooser.pick is not None and chooser.pick[0] == "device"
         assert chooser.pick[1].name == "pocket"
@@ -128,7 +127,7 @@ def test_starting_needs_a_selection(tmp_path, firmware, fake_build):
 def test_the_form_creates_through_the_injected_creator(tmp_path, firmware, fake_build):
     import tkinter as tk
 
-    from emu.app import DeviceChooser
+    from emu.chooser import Chooser
     devices = tmp_path / "devices"
     made = []
 
@@ -139,11 +138,35 @@ def test_the_form_creates_through_the_injected_creator(tmp_path, firmware, fake_
     root = tk_root()
     root.withdraw()
     try:
-        chooser = DeviceChooser(root, devices, creator=creator)
+        chooser = Chooser(root, devices, creator=creator)
         assert chooser.creator is creator
         device = chooser.creator(devices, "pocket", firmware)
         assert made == [("pocket", firmware)]
         assert device.name == "pocket"
+    finally:
+        chooser.top.destroy()
+        root.destroy()
+
+
+@needs_display
+def test_the_form_refuses_an_unnamed_device(tmp_path, firmware, fake_build):
+    import tkinter as tk
+
+    from emu.chooser import Chooser
+    devices = tmp_path / "devices"
+    made = []
+
+    def creator(devices, name, firmware_path):
+        made.append(name)
+        return device_folder.create(devices, name, firmware_path)
+
+    root = tk_root()
+    root.withdraw()
+    try:
+        chooser = Chooser(root, devices, creator=creator)
+        chooser.state = "form"
+        chooser._create()
+        assert made == [] and "name" in chooser.note_text
     finally:
         chooser.top.destroy()
         root.destroy()

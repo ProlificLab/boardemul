@@ -43,6 +43,7 @@ from emu.skin import (  # noqa: E402
     DEFAULT, KEY_NAMES, KEYSYMS, LETTER_KEYS, SKINS, InputWriter, Skin, TDeckTyping,
 )
 from emu import device as _device_folder  # noqa: E402
+from emu.chooser import Chooser  # noqa: E402
 from emu.devices.tdeck_trackball import NOTCH  # noqa: E402
 
 # The keyboard backlight's halo: from the plate's grey towards a white LED.
@@ -634,148 +635,6 @@ class DeviceRun:
             self.proc.wait(timeout=15)
 
 
-class DeviceChooser:
-    """The first window, when none was told what to watch: the devices that
-    exist, a form for one that does not yet, and today's behaviour behind
-    "watch a folder" (ADR 0134)."""
-
-    def __init__(self, root: tk.Tk, devices: Path, scale: int = 2,
-                 creator=None):
-        import tkinter.font as tkfont
-        self.pick: tuple[str, object] | None = None
-        self.devices = devices
-        self.creator = creator or self._create
-        self.top = tk.Toplevel(root)
-        self.top.title("BoardEmul — devices")
-        self.top.configure(background=C_DESK)
-        self.top.protocol("WM_DELETE_WINDOW", self._quit)
-        self.top.bind("<Escape>", lambda _e: self._quit())
-
-        pad = {"padx": 6 * scale, "pady": 3 * scale}
-        title_font = tkfont.Font(family="Segoe UI", size=-12 * scale, weight="bold")
-        head = tk.Label(self.top, text="Start a device", background=C_DESK,
-                        foreground="#c9cdd0", font=title_font)
-        head.pack(anchor="w", **pad)
-        self.list = tk.Listbox(self.top, width=44, height=min(8, 4),
-                               background="#16191c", foreground="#c9cdd0",
-                               selectbackground="#2c3e50", highlightthickness=0)
-        self.list.pack(fill="both", expand=True, **pad)
-        row = tk.Frame(self.top, background=C_DESK)
-        row.pack(fill="x", **pad)
-        for text, command in (("Start", self._start),
-                              ("New device…", self._form),
-                              ("Watch a folder…", self._watch),
-                              ("Quit", self._quit)):
-            tk.Button(row, text=text, command=command,
-                      highlightbackground=C_DESK).pack(side="left", padx=3)
-        self.note = tk.Label(self.top, text="", background=C_DESK,
-                             foreground="#8f979e", wraplength=420, justify="left")
-        self.note.pack(fill="x", **pad)
-        self._refresh()
-        # centre it
-        self.top.update_idletasks()
-        x = max(0, (self.top.winfo_screenwidth() - self.top.winfo_reqwidth()) // 2)
-        y = max(0, (self.top.winfo_screenheight() - self.top.winfo_reqheight()) // 3)
-        self.top.geometry(f"+{x}+{y}")
-
-    def _refresh(self) -> None:
-        self.list.delete(0, "end")
-        found = _device_folder.all_devices(self.devices)
-        for device in found:
-            card = "card" if device.has_sdcard else "no card"
-            self.list.insert("end", f"{device.name}  —  {device.board}, {card}")
-        if not found:
-            self.list.insert("end", "(no devices yet — make one)")
-        self.found = found
-
-    def _selected(self):
-        selection = self.list.curselection()
-        if not selection or not self.found:
-            return None
-        index = selection[0]
-        return self.found[index] if index < len(self.found) else None
-
-    def _start(self) -> None:
-        device = self._selected()
-        if device is None:
-            self.note.config(text="pick a device first")
-            return
-        self.pick = ("device", device)
-        self.top.destroy()
-
-    def _watch(self) -> None:
-        from tkinter import filedialog
-        chosen = filedialog.askdirectory(title="Watch which run's frames?")
-        if chosen:
-            self.pick = ("watch", Path(chosen))
-            self.top.destroy()
-
-    def _quit(self) -> None:
-        self.pick = None
-        self.top.destroy()
-
-    # -- the new-device form ------------------------------------------------
-
-    def _form(self) -> None:
-        form = tk.Toplevel(self.top)
-        form.title("New device")
-        form.configure(background=C_DESK)
-        form.transient(self.top)
-        fields = tk.Frame(form, background=C_DESK)
-        fields.pack(fill="x", padx=8, pady=8)
-        name = tk.StringVar(value="")
-        board = tk.StringVar(value="tdeck-max")
-        firmware = tk.StringVar(value="")
-
-        def entry(label, variable, browse=False):
-            tk.Label(fields, text=label, background=C_DESK,
-                     foreground="#c9cdd0").grid(sticky="w")
-            widget = (tk.Button(fields, textvariable=variable,
-                                command=self._browse(firmware),
-                                highlightbackground=C_DESK, anchor="w")
-                      if browse else
-                      tk.Entry(fields, textvariable=variable, width=34))
-            widget.grid(sticky="ew", row=fields.grid_size()[1] - 1, column=1)
-            return variable
-
-        fields.columnconfigure(1, weight=1)
-        entry("name", name)
-        tk.Label(fields, text="board", background=C_DESK,
-                 foreground="#c9cdd0").grid(sticky="w")
-        tk.OptionMenu(fields, board, *sorted(SKINS)).grid(
-            sticky="ew", row=fields.grid_size()[1] - 1, column=1)
-        entry("firmware", firmware, browse=True)
-        message = tk.Label(form, text="", background=C_DESK, foreground="#e0b0b0",
-                           wraplength=420, justify="left")
-        message.pack(fill="x", padx=8)
-
-        def make() -> None:
-            try:
-                device = self.creator(self.devices, name.get().strip(),
-                                      Path(firmware.get()))
-            except Exception as exc:
-                message.config(text=str(exc))
-                return
-            form.destroy()
-            self.pick = ("device", device)
-            self.top.destroy()
-
-        tk.Button(form, text="Create and start", command=make,
-                  highlightbackground=C_DESK).pack(side="right", padx=8, pady=6)
-
-    @staticmethod
-    def _browse(variable):
-        from tkinter import filedialog
-        return lambda: variable.set(
-            filedialog.askopenfilename(
-                title="Which firmware image?",
-                filetypes=[("firmware images", "*.bin"), ("all files", "*")]))
-
-    @staticmethod
-    def _create(devices: Path, name: str, firmware: Path):
-        return _device_folder.create(devices, name, firmware)
-
-
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -823,7 +682,7 @@ def main(argv: list[str] | None = None) -> int:
         frames, skin = args.frames, SKINS[args.board]
     else:
         root.withdraw()
-        chooser = DeviceChooser(root, args.dir, scale=args.scale)
+        chooser = Chooser(root, args.dir, scale=args.scale)
         root.wait_window(chooser.top)
         pick = chooser.pick
         if pick is None:
