@@ -20,8 +20,10 @@ always holds the current screen.
 python3 emu/run.py firmware/T-Deck-MAX_V3.1_20260313.bin --bus --timeout 200
 python3 tools/make_viewer.py            # single-file HTML of the captured frames
 
-# on the host, to watch it live inside a drawn device -- and click it
+# on the host: open the window, pick a device, start it -- and click it
 python emu/app.py --scale 2
+# or watch a run's frames directly, as scripts do
+python emu/app.py --frames logs/frames --scale 2
 ```
 
 **Working:** the boot chain; flash and eFuse assembly; the MMIO bridge with

@@ -30,8 +30,6 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-DEFAULT_FRAMES = REPO_ROOT / "logs" / "frames"
-
 TITLES = {"tdeck-max": "T-Deck Max", "tdeck": "T-Deck"}
 
 # Faster than the panel can refresh (real e-paper needs hundreds of ms) and slow
@@ -44,6 +42,7 @@ POLL_MS = 250
 from emu.skin import (  # noqa: E402
     DEFAULT, KEY_NAMES, KEYSYMS, LETTER_KEYS, SKINS, InputWriter, Skin, TDeckTyping,
 )
+from emu import device as _device_folder  # noqa: E402
 from emu.devices.tdeck_trackball import NOTCH  # noqa: E402
 
 # The keyboard backlight's halo: from the plate's grey towards a white LED.
@@ -583,12 +582,207 @@ class DeckWindow:
             text=head + self._elide(str(self.path), budget, self.metrics))
 
 
+class DeviceRun:
+    """One device started as a child `emu/run.py --device` process.
+
+    The window owns it: the frames it watches and the input it sends are the
+    child run's, and stopping it is the child's own interrupt, so the run's
+    shutdown path — the card back to the folder, the manifest — is what
+    happens (ADRs 0133, 0134).
+    """
+
+    def __init__(self, device, logs: Path | None = None):
+        self.device = device                    # an emu.device.Device
+        runs = (logs or REPO_ROOT / "logs") / "devices" / device.name
+        runs.mkdir(parents=True, exist_ok=True)
+        index = 1
+        while (runs / str(index)).exists():
+            index += 1
+        # Reserved here rather than at start, so two handles never aim one
+        # run's output directory at the same number.
+        self.outdir = runs / str(index)
+        self.outdir.mkdir(parents=True)
+        self.proc: "subprocess.Popen | None" = None
+
+    def start(self) -> None:
+        import subprocess
+        self.outdir.mkdir(parents=True, exist_ok=True)
+        cmd = _device_folder.launch_command(self.device.root, self.outdir)
+        flags = subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == "win32" else 0
+        self.proc = subprocess.Popen(cmd, cwd=REPO_ROOT,
+                                     stdout=subprocess.DEVNULL,
+                                     stderr=subprocess.STDOUT,
+                                     creationflags=flags)
+
+    @property
+    def alive(self) -> bool:
+        return self.proc is not None and self.proc.poll() is None
+
+    def stop(self) -> None:
+        import signal
+        import subprocess
+        if self.proc is None or self.proc.poll() is not None:
+            return
+        if sys.platform == "win32":
+            self.proc.send_signal(signal.CTRL_BREAK_EVENT)
+        else:
+            self.proc.send_signal(signal.SIGINT)
+        try:
+            self.proc.wait(timeout=30)
+        except subprocess.TimeoutExpired:
+            self.proc.kill()
+            self.proc.wait(timeout=15)
+
+
+class DeviceChooser:
+    """The first window, when none was told what to watch: the devices that
+    exist, a form for one that does not yet, and today's behaviour behind
+    "watch a folder" (ADR 0134)."""
+
+    def __init__(self, root: tk.Tk, devices: Path, scale: int = 2,
+                 creator=None):
+        import tkinter.font as tkfont
+        self.pick: tuple[str, object] | None = None
+        self.devices = devices
+        self.creator = creator or self._create
+        self.top = tk.Toplevel(root)
+        self.top.title("BoardEmul — devices")
+        self.top.configure(background=C_DESK)
+        self.top.protocol("WM_DELETE_WINDOW", self._quit)
+        self.top.bind("<Escape>", lambda _e: self._quit())
+
+        pad = {"padx": 6 * scale, "pady": 3 * scale}
+        head = tk.Label(self.top, text="Start a device", background=C_DESK,
+                        foreground="#c9cdd0",
+                        font=(tkfont.Font(family="Segoe UI", size=-12 * scale), "bold"))
+        head.pack(anchor="w", **pad)
+        self.list = tk.Listbox(self.top, width=44, height=min(8, 4),
+                               background="#16191c", foreground="#c9cdd0",
+                               selectbackground="#2c3e50", highlightthickness=0)
+        self.list.pack(fill="both", expand=True, **pad)
+        row = tk.Frame(self.top, background=C_DESK)
+        row.pack(fill="x", **pad)
+        for text, command in (("Start", self._start),
+                              ("New device…", self._form),
+                              ("Watch a folder…", self._watch),
+                              ("Quit", self._quit)):
+            tk.Button(row, text=text, command=command,
+                      highlightbackground=C_DESK).pack(side="left", padx=3)
+        self.note = tk.Label(self.top, text="", background=C_DESK,
+                             foreground="#8f979e", wraplength=420, justify="left")
+        self.note.pack(fill="x", **pad)
+        self._refresh()
+        # centre it
+        self.top.update_idletasks()
+        x = max(0, (self.top.winfo_screenwidth() - self.top.winfo_reqwidth()) // 2)
+        y = max(0, (self.top.winfo_screenheight() - self.top.winfo_reqheight()) // 3)
+        self.top.geometry(f"+{x}+{y}")
+
+    def _refresh(self) -> None:
+        self.list.delete(0, "end")
+        found = _device_folder.all_devices(self.devices)
+        for device in found:
+            card = "card" if device.has_sdcard else "no card"
+            self.list.insert("end", f"{device.name}  —  {device.board}, {card}")
+        if not found:
+            self.list.insert("end", "(no devices yet — make one)")
+        self.found = found
+
+    def _selected(self):
+        selection = self.list.curselection()
+        if not selection or not self.found:
+            return None
+        index = selection[0]
+        return self.found[index] if index < len(self.found) else None
+
+    def _start(self) -> None:
+        device = self._selected()
+        if device is None:
+            self.note.config(text="pick a device first")
+            return
+        self.pick = ("device", device)
+        self.top.destroy()
+
+    def _watch(self) -> None:
+        from tkinter import filedialog
+        chosen = filedialog.askdirectory(title="Watch which run's frames?")
+        if chosen:
+            self.pick = ("watch", Path(chosen))
+            self.top.destroy()
+
+    def _quit(self) -> None:
+        self.pick = None
+        self.top.destroy()
+
+    # -- the new-device form ------------------------------------------------
+
+    def _form(self) -> None:
+        form = tk.Toplevel(self.top)
+        form.title("New device")
+        form.configure(background=C_DESK)
+        form.transient(self.top)
+        fields = tk.Frame(form, background=C_DESK)
+        fields.pack(fill="x", padx=8, pady=8)
+        name = tk.StringVar(value="")
+        board = tk.StringVar(value="tdeck-max")
+        firmware = tk.StringVar(value="")
+
+        def entry(label, variable, browse=False):
+            tk.Label(fields, text=label, background=C_DESK,
+                     foreground="#c9cdd0").grid(sticky="w")
+            widget = (tk.Button(fields, textvariable=variable,
+                                command=self._browse(firmware),
+                                highlightbackground=C_DESK, anchor="w")
+                      if browse else
+                      tk.Entry(fields, textvariable=variable, width=34))
+            widget.grid(sticky="ew", row=fields.grid_size()[1] - 1, column=1)
+            return variable
+
+        fields.columnconfigure(1, weight=1)
+        entry("name", name)
+        tk.Label(fields, text="board", background=C_DESK,
+                 foreground="#c9cdd0").grid(sticky="w")
+        tk.OptionMenu(fields, board, *sorted(SKINS)).grid(
+            sticky="ew", row=fields.grid_size()[1] - 1, column=1)
+        entry("firmware", firmware, browse=True)
+        message = tk.Label(form, text="", background=C_DESK, foreground="#e0b0b0",
+                           wraplength=420, justify="left")
+        message.pack(fill="x", padx=8)
+
+        def make() -> None:
+            try:
+                device = self.creator(self.devices, name.get().strip(),
+                                      Path(firmware.get()))
+            except Exception as exc:
+                message.config(text=str(exc))
+                return
+            form.destroy()
+            self.pick = ("device", device)
+            self.top.destroy()
+
+        tk.Button(form, text="Create and start", command=make,
+                  highlightbackground=C_DESK).pack(side="right", padx=8, pady=6)
+
+    @staticmethod
+    def _browse(variable):
+        from tkinter import filedialog
+        return lambda: variable.set(
+            filedialog.askopenfilename(
+                title="Which firmware image?",
+                filetypes=[("firmware images", "*.bin"), ("all files", "*")]))
+
+    @staticmethod
+    def _create(devices: Path, name: str, firmware: Path):
+        return _device_folder.create(devices, name, firmware)
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--frames", type=Path, default=DEFAULT_FRAMES,
-                    help="frame directory, or a single PNG, to watch "
-                         "(default: logs/frames)")
+    ap.add_argument("--frames", type=Path, default=None,
+                    help="frame directory, or a single PNG, to watch. Without "
+                         "it the window offers the devices it can start "
+                         "(ADR 0134)")
     ap.add_argument("--input", type=Path, default=None,
                     help="event file the emulator tails "
                          "(default: input.jsonl beside the frame directory)")
@@ -598,15 +792,11 @@ def main(argv: list[str] | None = None) -> int:
                     help="integer pixel zoom; a 1-bit panel must not be "
                          "interpolated (default: 2)")
     ap.add_argument("--board", default=DEFAULT.name, choices=sorted(SKINS),
-                    help=f"which device to draw (default: {DEFAULT.name})")
+                    help=f"which device to draw (default: {DEFAULT.name}, or "
+                         f"the started device's)")
+    ap.add_argument("--dir", type=Path, default=REPO_ROOT / "devices",
+                    help="where device folders live, for the chooser")
     args = ap.parse_args(argv)
-
-    skin = SKINS[args.board]
-    frames = args.frames
-    path = frames / "latest.png" if (frames.is_dir() or not frames.suffix) else frames
-    events = None
-    if not args.read_only:
-        events = InputWriter(args.input or (path.parent.parent / "input.jsonl"))
 
     # On a display scaled above 100%, Windows bitmap-stretches a DPI-unaware
     # window: the integer zoom below would then be resampled back to fractional
@@ -625,12 +815,58 @@ def main(argv: list[str] | None = None) -> int:
         print(f"no display: {exc}", file=sys.stderr)
         return 2
 
+    # A run this window started, if any. Stopping the window stops it, and
+    # its own shutdown path is what puts the card back in the folder.
+    run: "DeviceRun | None" = None
+
+    if args.frames is not None:
+        frames, skin = args.frames, SKINS[args.board]
+    else:
+        root.withdraw()
+        chooser = DeviceChooser(root, args.dir, scale=args.scale)
+        root.wait_window(chooser.top)
+        pick = chooser.pick
+        if pick is None:
+            root.destroy()
+            return 0
+        kind, value = pick
+        if kind == "watch":
+            frames, skin = value, SKINS[args.board]
+        else:
+            run = DeviceRun(value)
+            run.start()
+            frames = run.outdir / "frames"
+            skin = SKINS[value.board]
+        root.deiconify()
+
+    path = frames / "latest.png" if (frames.is_dir() or not frames.suffix) else frames
+    events = None
+    if not args.read_only:
+        events = InputWriter(args.input or (path.parent.parent / "input.jsonl"))
+
     root.title(f"BoardEmul - LilyGO {TITLES[skin.name]}")
     root.configure(background=C_DESK)
     root.resizable(False, False)
-    root.bind("<Escape>", lambda _e: root.destroy())
 
     app = DeckWindow(root, path, args.scale, events, skin=skin)
+
+    def close() -> None:
+        if run is not None:
+            run.stop()
+        root.destroy()
+
+    root.bind("<Escape>", lambda _e: close())
+    root.protocol("WM_DELETE_WINDOW", close)
+    if run is not None:
+        stop_row = tk.Frame(root, background=C_DESK)
+        stop_row.pack(fill="x")
+        tk.Button(stop_row, text=f"Stop {value.name}", command=close,
+                  highlightbackground=C_DESK).pack(side="right",
+                                                   padx=4 * args.scale,
+                                                   pady=3 * args.scale)
+        tk.Label(stop_row, text=f"running {value.name} — stop to keep its "
+                                f"storage", background=C_DESK,
+                 foreground="#8f979e", font=app.metrics).pack(side="right")
 
     root.update_idletasks()
     w, h = root.winfo_reqwidth(), root.winfo_reqheight()

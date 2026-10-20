@@ -19,6 +19,7 @@ from __future__ import annotations
 import datetime
 import hashlib
 import json
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -216,3 +217,18 @@ def load_sdcard(device: Device, expected_bytes: int) -> bytearray:
 
 def save_sdcard(device: Device, image: bytearray) -> None:
     device.sdcard.write_bytes(bytes(image))
+
+
+# A window-started run stops when its user stops it, not when a ceiling does
+# (ADR 0134); a day is "never" with a safety net under it.
+WINDOW_RUN_TIMEOUT = 24 * 60 * 60
+
+
+def launch_command(root: Path, outdir: Path, extra: tuple[str, ...] = (),
+                   python: str = sys.executable) -> list[str]:
+    """The command that starts a device as a run, for a caller that owns the
+    child: the emulator's own flags, nothing clever (ADR 0134)."""
+    return [python, str((Path(__file__).resolve().parent.parent) / "emu" / "run.py"),
+            "--device", str(root), "--bus", "--outdir", str(outdir),
+            "--tag", root.name, "--timeout", str(WINDOW_RUN_TIMEOUT),
+            "--stall", str(WINDOW_RUN_TIMEOUT)] + list(extra)
