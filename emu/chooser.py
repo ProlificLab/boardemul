@@ -1,73 +1,63 @@
 #!/usr/bin/env python3
 """The window's first screen: pick a device, start it (ADR 0134).
 
-Drawn the way the device faces are drawn (ADR 0126), and with the same
-tricks: a panel lit from the top, cards with a lit top edge the way keycaps
-have one, wells that read as holes because their bottom edge catches light,
-and buttons with depth that press on release, not on touch. The whole screen
-is one anti-aliased image, repainted on every state change; the system's
-font carries everything readable over it.
+The language is Material 3, dark: flat tonal surfaces — background, surface,
+surface-variant — where elevation is a step in tone rather than a bevel, a
+single accent family, state layers (a wash of white or primary over a
+control for hover, press and selection), pill-shaped buttons in three weights
+(filled, tonal, text), a search field that filters as you type, and a detail
+card that shows the selected device's own face with its specification
+underneath. Pressing a control ripples.
 
-The selected device's own face is rendered in a well beside the list, named
-under it, so what you are about to open looks like what it is.
+The screen is one anti-aliased image, repainted on every state change; the
+system's font carries everything readable over it. The face is rendered the
+way the faces are rendered, by the face modules themselves.
 
-Keyboard: up and down choose, Enter starts, Escape leaves. Double-click
-starts. The list scrolls with the wheel when devices outnumber it. A run
-started here is the window's to stop; this module only decides.
+Keyboard: up and down choose, Enter starts, Escape leaves, "/" focuses the
+filter. The list scrolls with the wheel. A run started here is the window's
+to stop; this module only decides.
 """
 
 from __future__ import annotations
 
 import tkinter as tk
 import tkinter.font as tkfont
+from datetime import datetime
 from pathlib import Path
 
 from emu.raster import Raster, hex_colour, mix
 
-# The palette is the faces': the desk, the panel on it, and what light does.
-C_DESK = hex_colour("#0f1113")
-C_PANEL_TOP = hex_colour("#15171a")
-C_PANEL_BOTTOM = hex_colour("#101215")
-C_RIM = hex_colour("#2c2e31")
-C_WELL = hex_colour("#0c0e10")
-C_WELL_LIP = hex_colour("#343940")
-
-C_ROW_TOP = hex_colour("#232830")
-C_ROW_BOTTOM = hex_colour("#191c21")
-C_ROW_TOP_HOVER = hex_colour("#2a3038")
-C_ROW_BOTTOM_HOVER = hex_colour("#1e232a")
-C_ROW_TOP_SELECTED = hex_colour("#313a46")
-C_ROW_BOTTOM_SELECTED = hex_colour("#242b34")
-C_ACCENT_TOP = hex_colour("#6ba3e8")
-C_ACCENT_BOTTOM = hex_colour("#3f6ea8")
-
-C_BUTTON_TOP = hex_colour("#2b3037")
-C_BUTTON_BOTTOM = hex_colour("#21252b")
-C_BUTTON_TOP_PRESS = hex_colour("#1e2126")
-C_BUTTON_BOTTOM_PRESS = hex_colour("#191c21")
-C_PRIMARY_TOP = hex_colour("#3f6ea8")
-C_PRIMARY_BOTTOM = hex_colour("#2a4a78")
-C_PRIMARY_TOP_PRESS = hex_colour("#335a8a")
-C_PRIMARY_BOTTOM_PRESS = hex_colour("#223d63")
-C_BUTTON_EDGE = hex_colour("#3a4048")
+# -- Material 3 dark, as tone steps ------------------------------------------
+C_BACKGROUND = hex_colour("#0f1113")       # the desk
+C_SURFACE = hex_colour("#191c20")          # cards, fields
+C_SURFACE_HIGH = hex_colour("#22262c")     # hovered / tonal buttons
+C_SURFACE_VARIANT = hex_colour("#2a2f36")
+C_OUTLINE = hex_colour("#343a41")
+C_PRIMARY = hex_colour("#a8c7fa")          # filled buttons; dark ink on it
+C_ON_PRIMARY = "#0b2a4d"
+C_PRIMARY_DIM = hex_colour("#5a7fb0")
+C_SECONDARY_CONTAINER = hex_colour("#2e3f56")
+C_ON_SECONDARY = "#cfe0f5"
+C_ERROR = hex_colour("#f2b8b5")
+C_INK = "#e8eaec"
+C_INK_DIM = "#9aa0a6"
+C_INK_FAINT = "#5f656d"
+C_INK_DIM_RGB = hex_colour("#9aa0a6")
 C_WHITE = hex_colour("#ffffff")
 
-C_INK = "#e8eaec"
-C_INK_DIM = "#8f979e"
-C_INK_FAINT = "#5c646d"
+FONT = "Segoe UI"
 
-# Layout, in scale units: a header, a scrolling list of cards on the left,
-# the selected device's face in a well on the right, and a footer of buttons.
-W, H = 672, 556
-HEADER_Y = 44
-SUBTITLE_Y = 74
-RULE_Y = 96
-LIST_X0, LIST_X1 = 26, 424
-LIST_Y0, LIST_Y1 = 110, 460
-PREVIEW_X0 = 442
-PREVIEW_PAD = 26
-ROW_H, ROW_GAP, ROW_R = 60, 10, 9
-FOOT_Y0, FOOT_Y1 = 478, 524
+# Layout, in scale units.
+W, H = 744, 640
+BAR_Y = 30                                  # the app bar's first line
+SEARCH_Y0, SEARCH_Y1 = 96, 136
+LIST_X0, LIST_X1 = 26, 452
+LIST_Y0, LIST_Y1 = 152, 500
+CARD_X0, CARD_X1 = 468, W - 26
+CARD_Y0, CARD_Y1 = 152, 500
+FOOT_Y0, FOOT_Y1 = 520, 576
+ROW_H, ROW_GAP, ROW_R = 68, 10, 15
+FIELD_R = 12
 
 
 class Chooser:
@@ -80,16 +70,20 @@ class Chooser:
         self.creator = creator
         self.askdirectory = askdirectory or self._ask_directory
         self.pick: tuple[str, object] | None = None
-        self.devices_list: list = []
-        self.selected: int | None = None
+        self.devices_list: list = []        # every device
+        self.shown: list = []               # the ones the filter lets through
+        self.selected: int | None = None    # index into shown
+        self.filter_text = ""
         self.scroll = 0
         self.hover: str | None = None
         self.pressed: str | None = None
+        self.ripple: tuple[str, float, float, float] | None = None
         self.state = "list"                 # or "form"
         self.form_board_index = 0
         self.form_firmware: Path | None = None
         self.boards = ("tdeck-max", "tdeck")
         self.note_text = ""
+        self.note_until = 0.0
 
         self.top = tk.Toplevel(root)
         self.top.title("BoardEmul — devices")
@@ -103,19 +97,23 @@ class Chooser:
         self.top.bind("<MouseWheel>", self._wheel)
         self.top.bind("<Button-4>", lambda _e: self._wheel_step(-1))
         self.top.bind("<Button-5>", lambda _e: self._wheel_step(1))
+        self.top.bind("/", self._slash)
+        self.filter_entry: tk.Entry | None = None
 
-        self.ui = tkfont.Font(family="Segoe UI", size=-10 * scale)
-        self.ui_small = tkfont.Font(family="Segoe UI", size=-9 * scale)
-        self.ui_bold = tkfont.Font(family="Segoe UI", size=-13 * scale,
-                                   weight="bold")
-        self.ui_title = tkfont.Font(family="Segoe UI", size=-24 * scale,
-                                    weight="bold")
+        self.ui_label = tkfont.Font(family=FONT, size=-9 * scale)
+        self.ui = tkfont.Font(family=FONT, size=-10 * scale)
+        self.ui_small = tkfont.Font(family=FONT, size=-9 * scale)
+        self.ui_medium = tkfont.Font(family=FONT, size=-11 * scale)
+        self.ui_bold = tkfont.Font(family=FONT, size=-13 * scale, weight="bold")
+        self.ui_headline = tkfont.Font(family=FONT, size=-22 * scale, weight="bold")
+        self.ui_title = tkfont.Font(family=FONT, size=-11 * scale, weight="bold")
 
         self.canvas = tk.Canvas(self.top, highlightthickness=0,
                                 background="#0f1113")
         self.canvas.pack()
         self.widgets: list[tk.Widget] = []
         self.faces: dict[str, Raster] = {}
+        self.cards: dict[str, Raster] = {}
 
         self.canvas.bind("<Button-1>", self._press)
         self.canvas.bind("<ButtonRelease-1>", self._release)
@@ -125,6 +123,7 @@ class Chooser:
 
         self._reload()
         self._render()
+        self._make_search_entry()
 
         self.top.update_idletasks()
         x = max(0, (self.top.winfo_screenwidth() - self.top.winfo_reqwidth()) // 2)
@@ -151,9 +150,8 @@ class Chooser:
     def _list_rect(self) -> tuple[float, float, float, float]:
         return self._X(LIST_X0), self._X(LIST_Y0), self._X(LIST_X1), self._X(LIST_Y1)
 
-    def _preview_rect(self) -> tuple[float, float, float, float]:
-        return (self._X(PREVIEW_X0), self._X(LIST_Y0),
-                self._X(W - PREVIEW_PAD), self._X(LIST_Y1))
+    def _card_rect(self) -> tuple[float, float, float, float]:
+        return self._X(CARD_X0), self._X(CARD_Y0), self._X(CARD_X1), self._X(CARD_Y1)
 
     def _visible_rows(self) -> int:
         _lx0, ly0, _lx1, ly1 = self._list_rect()
@@ -162,41 +160,47 @@ class Chooser:
     def _buttons(self) -> dict[str, tuple[float, float, float, float]]:
         s = self.s
         buttons = {
-            "start": (self._X(26), self._X(FOOT_Y0), self._X(190), self._X(FOOT_Y1)),
-            "new": (self._X(202), self._X(FOOT_Y0), self._X(370), self._X(FOOT_Y1)),
-            "watch": (self._X(382), self._X(FOOT_Y0), self._X(550), self._X(FOOT_Y1)),
-            "quit": (self._X(W - 136), self._X(FOOT_Y0),
-                     self._X(W - 26), self._X(FOOT_Y1)),
-            "board": (self._X(150), self._X(206), self._X(400), self._X(240)),
-            "firmware": (self._X(150), self._X(248), self._X(400), self._X(282)),
-            "create": (self._X(26), self._X(FOOT_Y0), self._X(230), self._X(FOOT_Y1)),
-            "cancel": (self._X(242), self._X(FOOT_Y0), self._X(370), self._X(FOOT_Y1)),
+            "start": (self._X(26), self._X(FOOT_Y0), self._X(220), self._X(FOOT_Y1)),
+            "new": (self._X(234), self._X(FOOT_Y0), self._X(420), self._X(FOOT_Y1)),
+            "watch": (self._X(434), self._X(FOOT_Y0), self._X(586), self._X(FOOT_Y1)),
+            "close": (self._X(W - 78), self._X(BAR_Y - 8),
+                      self._X(W - 30), self._X(BAR_Y + 40)),
+            "board": (self._X(150), self._X(356), self._X(400), self._X(392)),
+            "firmware": (self._X(150), self._X(436), self._X(400), self._X(470)),
+            "create": (self._X(26), self._X(FOOT_Y0), self._X(250), self._X(FOOT_Y1)),
+            "cancel": (self._X(264), self._X(FOOT_Y0), self._X(400), self._X(FOOT_Y1)),
         }
         if self.state == "list":
             for gone in ("board", "firmware", "create", "cancel"):
                 buttons.pop(gone)
         else:
-            for gone in ("start", "new", "watch", "quit"):
+            for gone in ("start", "new", "watch", "close"):
                 buttons.pop(gone)
         return buttons
+
+    def _search_rect(self) -> tuple[float, float, float, float]:
+        return self._X(26), self._X(SEARCH_Y0), self._X(W - 26), self._X(SEARCH_Y1)
 
     # -- data ---------------------------------------------------------------
 
     def _reload(self) -> None:
         from emu import device as device_folder
         self.devices_list = device_folder.all_devices(self.devices)
-        if self.selected is None or self.selected >= len(self.devices_list):
-            self.selected = 0 if self.devices_list else None
+        needle = self.filter_text.strip().lower()
+        self.shown = [d for d in self.devices_list
+                      if needle in d.name.lower()] if needle else list(self.devices_list)
+        if self.selected is None or self.selected >= len(self.shown):
+            self.selected = 0 if self.shown else None
         self.scroll = max(0, min(self.scroll,
-                                 max(0, len(self.devices_list) - self._visible_rows())))
+                                 max(0, len(self.shown) - self._visible_rows())))
 
     def rows(self) -> list[str]:
         """What each row says, for tests and for the blind."""
         return [f"{d.name} — {d.board}, {'card' if d.has_sdcard else 'no card'}"
-                for d in self.devices_list]
+                for d in self.shown]
 
     def select(self, index: int) -> None:
-        if self.devices_list and 0 <= index < len(self.devices_list):
+        if self.shown and 0 <= index < len(self.shown):
             self.selected = index
             self._keep_visible()
             self._render()
@@ -212,10 +216,10 @@ class Chooser:
         self.scroll = max(0, self.scroll)
 
     def _move(self, step: int) -> None:
-        if not self.devices_list:
+        if not self.shown:
             return
         at = (self.selected or 0) + step
-        self.select(max(0, min(len(self.devices_list) - 1, at)))
+        self.select(max(0, min(len(self.shown) - 1, at)))
 
     def _wheel(self, event) -> None:
         self._wheel_step(-1 if event.delta > 0 else 1)
@@ -223,7 +227,7 @@ class Chooser:
     def _wheel_step(self, rows: int) -> None:
         if self.state != "list":
             return
-        ceiling = max(0, len(self.devices_list) - self._visible_rows())
+        ceiling = max(0, len(self.shown) - self._visible_rows())
         if self.scroll != max(0, min(ceiling, self.scroll + rows)):
             self.scroll = max(0, min(ceiling, self.scroll + rows))
             self._render()
@@ -233,7 +237,7 @@ class Chooser:
     def _start(self) -> None:
         if self.state != "list" or self.selected is None:
             return
-        self.pick = ("device", self.devices_list[self.selected])
+        self.pick = ("device", self.shown[self.selected])
         self.top.destroy()
 
     def _quit(self) -> None:
@@ -250,6 +254,9 @@ class Chooser:
         for name, (x0, y0, x1, y1) in self._buttons().items():
             if x0 <= x <= x1 and y0 <= y <= y1:
                 return name
+        sx0, sy0, sx1, sy1 = self._search_rect()
+        if sx0 <= x <= sx1 and sy0 <= y <= sy1:
+            return "search"
         return None
 
     def _row_at(self, y: float) -> int | None:
@@ -257,27 +264,57 @@ class Chooser:
         if not ly0 <= y <= ly1:
             return None
         at = self.scroll + int((y - ly0) // ((ROW_H + ROW_GAP) * self.s))
-        if 0 <= at < len(self.devices_list):
+        if 0 <= at < len(self.shown):
             return at
         return None
 
     def _press(self, event) -> None:
         hit = self._region_at(event.x, event.y)
+        if hit == "search":
+            for widget in self.widgets:
+                if isinstance(widget, tk.Entry):
+                    widget.focus_set()
+            return
         if hit:
             self.pressed = hit
+            cx, cy = event.x, event.y
+            self.ripple = (hit, cx, cy, 6 * self.s)
             self._render()
+            self._ripple_out(hit, cx, cy)
             return
         at = self._row_at(event.y)
         if at is not None:
             self.select(at)
+
+    def _ripple_out(self, hit: str, cx: float, cy: float) -> None:
+        x0, y0, x1, y1 = self._buttons()[hit]
+        reach = max(x1 - x0, y1 - y0) * 0.9
+        step = max(4 * self.s, reach / 4)
+
+        def grow() -> None:
+            if self.ripple is None or self.ripple[0] != hit:
+                return
+            _hit, rx, ry, r = self.ripple
+            r += step
+            if r >= reach:
+                self.ripple = None
+                self._render()
+                return
+            self.ripple = (hit, rx, ry, r)
+            self._render()
+            self.top.after(40, grow)
+
+        self.top.after(40, grow)
 
     def _release(self, event) -> None:
         pressed, self.pressed = self.pressed, None
         action = {"start": self._start, "new": self._form, "watch": self._watch,
                   "quit": self._quit, "create": self._create,
                   "cancel": self._cancel, "board": self._cycle_board,
-                  "firmware": self._choose_firmware}.get(pressed)
+                  "firmware": self._choose_firmware,
+                  "close": self._quit}.get(pressed)
         if action is not None and self._region_at(event.x, event.y) == pressed:
+            self.ripple = None
             action()
             return
         self._render()
@@ -288,13 +325,55 @@ class Chooser:
             at = self._row_at(event.y)
             if at is not None:
                 hover = f"row{at}"
-        self.canvas.configure(cursor="hand2" if hover else "")
+        self.canvas.configure(cursor="hand2" if hover and hover != "search"
+                              else "xterm" if hover == "search" else "")
         self._set_hover(hover)
 
     def _set_hover(self, hover: str | None) -> None:
         if hover != self.hover:
             self.hover = hover
             self._render()
+
+    # -- the filter field ---------------------------------------------------
+
+    def _filter_changed(self, *_ignored) -> None:
+        text = self.filter_var.get().strip()
+        if text == self.filter_text:
+            return
+        keep = (self.shown[self.selected].name
+                if self.selected is not None and self.shown else None)
+        self.filter_text = text
+        self._reload()
+        if keep:
+            for index, device in enumerate(self.shown):
+                if device.name == keep:
+                    self.selected = index
+                    break
+        self._keep_visible()
+        self._render()
+
+    def _focus_search(self) -> None:
+        self._make_search_entry()
+        if self.filter_entry is not None:
+            self.filter_entry.focus_set()
+
+    def _slash(self, _event) -> None:
+        self._focus_search()
+        return "break"
+
+    def _make_search_entry(self) -> None:
+        if self.filter_entry is not None:
+            return
+        self.filter_var = tk.StringVar(value=self.filter_text)
+        self.filter_entry = tk.Entry(
+            self.top, textvariable=self.filter_var, width=30,
+            background="#191c20", foreground="#e8eaec",
+            insertbackground="#a8c7fa", relief="flat")
+        self.filter_entry.place(x=int(72 * self.s),
+                                y=int((SEARCH_Y0 + SEARCH_Y1) / 2 * self.s
+                                      - 12 * self.s))
+        self.filter_entry.bind("<KeyRelease>", self._filter_changed)
+        self.widgets.append(self.filter_entry)
 
     # -- the new-device form ------------------------------------------------
 
@@ -303,12 +382,13 @@ class Chooser:
         self.form_firmware = None
         self.form_board_index = 0
         self.note_text = ""
+        self.filter_entry = None
         self._render()
         self.form_name_var = tk.StringVar()
-        entry = tk.Entry(self.top, textvariable=self.form_name_var, width=28,
-                         background="#0c0e10", foreground="#e8eaec",
-                         insertbackground="#e8eaec", relief="flat")
-        entry.place(x=int(150 * self.s), y=int(172 * self.s))
+        entry = tk.Entry(self.top, textvariable=self.form_name_var, width=30,
+                         background="#191c20", foreground="#e8eaec",
+                         insertbackground="#a8c7fa", relief="flat")
+        entry.place(x=int(158 * self.s), y=int(286 * self.s))
         self.widgets.append(entry)
         entry.focus_set()
 
@@ -318,6 +398,7 @@ class Chooser:
         self.note_text = ""
         self._reload()
         self._render()
+        self._make_search_entry()
 
     def _cycle_board(self) -> None:
         self.form_board_index = (self.form_board_index + 1) % len(self.boards)
@@ -354,12 +435,14 @@ class Chooser:
 
     def _note(self, text: str) -> None:
         self.note_text = text
+        self.note_until = time_monotonic() + 6.0
         self._render()
 
     def _clear_widgets(self) -> None:
         for widget in self.widgets:
             widget.destroy()
         self.widgets = []
+        self.filter_entry = None
 
     @staticmethod
     def _ask_directory():
@@ -370,36 +453,37 @@ class Chooser:
 
     def _render(self) -> None:
         s = self.s
-        img = Raster(self.width, self.height, C_DESK)
-        # The panel is lit from the top, the way every face here is.
-        img.rrect(0, 0, self.width, self.height, 12 * s,
-                  lambda y: mix(C_PANEL_BOTTOM, C_PANEL_TOP,
-                                1.0 - min(1.0, y / (H * s * 0.5))))
-        img.rrect(0, 0, 2 * s, self.height, 1 * s, C_RIM)
+        img = Raster(self.width, self.height, C_BACKGROUND)
 
         if self.state == "list":
+            self._paint_search(img)
             self._paint_list(img)
-            self._paint_preview(img)
+            self._paint_card(img)
         else:
             self._paint_form(img)
 
         for name, (x0, y0, x1, y1) in self._buttons().items():
+            if name in ("board", "firmware"):
+                continue
             pressed = self.pressed == name
             primary = name in ("start", "create")
-            if pressed:
-                top = C_PRIMARY_TOP_PRESS if primary else C_BUTTON_TOP_PRESS
-                bottom = C_PRIMARY_BOTTOM_PRESS if primary else C_BUTTON_BOTTOM_PRESS
-            elif primary:
-                top, bottom = C_PRIMARY_TOP, C_PRIMARY_BOTTOM
+            if primary:
+                fill = C_PRIMARY
+                if pressed:
+                    fill = mix(C_PRIMARY, C_BACKGROUND, 0.25)
+                _rr(img, x0, y0, x1, y1, (y1 - y0) / 2, fill)
+            elif name in ("watch", "cancel"):
+                pass                        # a text button has no surface
             else:
-                top, bottom = C_BUTTON_TOP, C_BUTTON_BOTTOM
-            _rr(img, x0, y0, x1, y1, 9 * s, C_RIM)
-            _rr(img, x0 + 1, y0 + 1, x1 - 1, y1 - 1, 8 * s,
-                lambda y, t=top, b=bottom, y0=y0, y1=y1:
-                    mix(t, b, (y - y0) / (y1 - y0)))
-            # The lit top edge that makes it a raised thing.
-            img.rrect(x0 + 8, y0 + 1.5, x1 - 8, y0 + 2.5, 0.5,
-                      mix(top, C_WHITE, 0.22))
+                fill = C_SURFACE_HIGH
+                if pressed:
+                    fill = mix(C_SURFACE_HIGH, C_BACKGROUND, 0.3)
+                elif self.hover == name:
+                    fill = mix(C_SURFACE_HIGH, C_WHITE, 0.08)
+                _rr(img, x0, y0, x1, y1, (y1 - y0) / 2, fill)
+            if self.ripple and self.ripple[0] == name:
+                _hit, rx, ry, r = self.ripple
+                self._paint_ripple(img, x0, y0, x1, y1, rx, ry, r)
 
         self.canvas.delete("all")
         self.photo = tk.PhotoImage(data=img.tk_data())
@@ -408,51 +492,68 @@ class Chooser:
         self.canvas.image = self.photo
         self._paint_text()
 
+    def _paint_ripple(self, img: Raster, x0, y0, x1, y1, cx, cy, r) -> None:
+        """A circle of white at rest on the control, clipped to it — the
+        Material response to a press."""
+        wash = mix(C_SURFACE, C_WHITE, 0.14)
+        for y in range(max(int(y0), int(cy - r)), min(int(y1), int(cy + r))):
+            for x in range(max(int(x0), int(cx - r)), min(int(x1), int(cx + r))):
+                if (x - cx) ** 2 + (y - cy) ** 2 <= r * r:
+                    i = (y * img.w + x) * 3
+                    img.px[i] = min(255, img.px[i] + (wash[0] - img.px[i]) // 3)
+                    img.px[i + 1] = min(255, img.px[i + 1] + (wash[1] - img.px[i + 1]) // 3)
+                    img.px[i + 2] = min(255, img.px[i + 2] + (wash[2] - img.px[i + 2]) // 3)
+
+    def _paint_search(self, img: Raster) -> None:
+        x0, y0, x1, y1 = self._search_rect()
+        _rr(img, x0, y0, x1, y1, (y1 - y0) / 2, C_SURFACE)
+        # The magnifier, drawn: a ring and a handle.
+        s = self.s
+        cx, cy = x0 + 22 * s, (y0 + y1) / 2
+        r = 6.5 * s
+        for y in range(int(cy - r) - 1, int(cy + r) + 2):
+            for x in range(int(cx - r) - 1, int(cx + r) + 2):
+                d = ((x - cx) ** 2 + (y - cy) ** 2) ** 0.5
+                if r * 0.72 <= d <= r:
+                    i = (y * img.w + x) * 3
+                    img.px[i:i + 3] = C_INK_DIM_RGB
+        dx, dy = 5.2 * s, 5.2 * s
+        img.segment(cx + dx * 0.7, cy + dy * 0.7, cx + dx * 1.9, cy + dy * 1.9,
+                    2.2 * s, C_INK_DIM_RGB)
+
     def _paint_list(self, img: Raster) -> None:
-        """The row cards, painted into their own image and clipped to the
-        list, so scrolling crops them."""
+        """The rows as cards, painted into their own image and clipped."""
         s = self.s
         lx0, ly0, lx1, ly1 = self._list_rect()
         w, h = int(lx1 - lx0), int(ly1 - ly0)
-        strip = Raster(w, h, C_PANEL_BOTTOM)
+        strip = Raster(w, h, C_BACKGROUND)
         visible = self._visible_rows() + 1
-        for at in range(self.scroll, min(len(self.devices_list), self.scroll + visible)):
+        for at in range(self.scroll, min(len(self.shown), self.scroll + visible)):
             index = at - self.scroll
             y0 = index * (ROW_H + ROW_GAP) * s
             y1 = y0 + ROW_H * s
             selected = at == self.selected
             hovered = f"row{at}" == self.hover
             if selected:
-                top, bottom = C_ROW_TOP_SELECTED, C_ROW_BOTTOM_SELECTED
+                fill = mix(C_SURFACE, C_PRIMARY_DIM, 0.30)
             elif hovered:
-                top, bottom = C_ROW_TOP_HOVER, C_ROW_BOTTOM_HOVER
+                fill = mix(C_SURFACE, C_WHITE, 0.07)
             else:
-                top, bottom = C_ROW_TOP, C_ROW_BOTTOM
-            _rr(strip, 2, y0, 2 + w - 4, y1, ROW_R * s, C_RIM)
-            _rr(strip, 3, y0 + 1, w - 2, y1 - 1, (ROW_R - 1) * s,
-                lambda y, t=top, b=bottom, y0=y0, y1=y1: mix(t, b, (y - y0) / (y1 - y0)))
-            strip.rrect(12, y0 + 1.5, w - 12, y0 + 2.5, 0.5,
-                        mix(top, C_WHITE, 0.16))
+                fill = C_SURFACE
+            _rr(strip, 0, y0, w, y1, ROW_R * s, fill)
             if selected:
-                _rr(strip, 3, y0 + 10 * s, 8, y1 - 10 * s, 2.5 * s,
-                    lambda y, y0=y0, y1=y1: mix(C_ACCENT_TOP, C_ACCENT_BOTTOM,
-                                                (y - y0) / (y1 - y0)))
+                _rr(strip, 0, y0 + (y1 - y0) / 2 - 12 * s, 5 * s,
+                    y0 + (y1 - y0) / 2 + 12 * s, 2.5 * s, C_PRIMARY)
         _blit(img, strip, int(lx0), int(ly0))
-        if self.scroll + self._visible_rows() < len(self.devices_list):
-            img.rrect(lx1 - 16 * s, ly1 - 5 * s, lx1 - 6 * s, ly1 - 3 * s, 1,
-                      C_BUTTON_EDGE)
 
-    def _paint_preview(self, img: Raster) -> None:
-        """A well with the selected device's own face in it."""
+    def _paint_card(self, img: Raster) -> None:
+        """The detail card: surface, then the device's own face, composited
+        without its desk so it sits on the card."""
         s = self.s
-        px0, py0, px1, py1 = self._preview_rect()
-        _rr(img, px0, py0, px1, py1, 10 * s, C_RIM)
-        _rr(img, px0 + 1, py0 + 1, px1 - 1, py1 - 1, 9 * s, C_WELL)
-        # A hole reads as a hole because its bottom edge catches light.
-        img.rrect(px0 + 10, py1 - 3.5, px1 - 10, py1 - 2.5, 0.5, C_WELL_LIP)
-
-        device = (self.devices_list[self.selected]
-                  if self.selected is not None and self.devices_list else None)
+        x0, y0, x1, y1 = self._card_rect()
+        _rr(img, x0, y0, x1, y1, 16 * s, C_SURFACE)
+        device = (self.shown[self.selected]
+                  if self.selected is not None and self.shown else None)
         if device is None:
             return
         face = self.faces.get(device.board)
@@ -460,8 +561,8 @@ class Chooser:
             face = self._render_face(device.board)
             self.faces[device.board] = face
         if face is not None:
-            _blit_keyed(img, face, int((px0 + px1) / 2 - face.w / 2),
-                        int(py0 + 16 * s), C_DESK)
+            _blit_keyed(img, face, int((x0 + x1) / 2 - face.w / 2),
+                        int(y0 + 20 * s), C_BACKGROUND)
 
     def _render_face(self, board: str) -> Raster | None:
         from emu.skin import SKINS
@@ -471,109 +572,175 @@ class Chooser:
         from emu import max_face, tdeck_face
         module = {"max": max_face, "tdeck": tdeck_face}[skin.face]
         face = module.build(1)
-        _px0, _py0, px1, py1 = self._preview_rect()
-        want_w = int((px1 - _px0) - 40 * self.s)
-        want_h = int((py1 - _py0) - 84 * self.s)
+        _x0, _y0, x1, _y1 = self._card_rect()
+        want_w = int((x1 - _x0) - 48 * self.s)
+        want_h = int(180 * self.s)
         return _shrink(face.raster, want_w, want_h)
 
     def _paint_form(self, img: Raster) -> None:
         s = self.s
-        # The well behind the name's entry widget.
-        _rr(img, self._X(146), self._X(166), self._X(400), self._X(196),
-            6 * s, C_WELL)
+        # The name's filled field, with the real entry over it.
+        _rr(img, self._X(146), self._X(280), self._X(400), self._X(314),
+            10 * s, C_SURFACE)
+        # The board selector: a container with the chosen segment filled.
+        bx0, by0, bx1, by1 = self._buttons()["board"]
+        _rr(img, bx0, by0, bx1, by1, (by1 - by0) / 2, C_SURFACE)
+        segment_w = (bx1 - bx0) / 2
+        if self.form_board_index == 0:
+            _rr(img, bx0 + 3, by0 + 3, bx0 + segment_w - 3, by1 - 3,
+                (by1 - by0 - 6) / 2, C_SECONDARY_CONTAINER)
+        else:
+            _rr(img, bx0 + segment_w + 3, by0 + 3, bx1 - 3, by1 - 3,
+                (by1 - by0 - 6) / 2, C_SECONDARY_CONTAINER)
+        # The firmware chooser's field.
+        fx0, fy0, fx1, fy1 = self._buttons()["firmware"]
+        _rr(img, fx0, fy0, fx1, fy1, 10 * s, C_SURFACE)
+        _rr(img, fx0, fy0, fx0 + 2 * s, fy1, 1 * s, C_PRIMARY_DIM)
 
     def _paint_text(self) -> None:
         s = self.s
         put = self.canvas.create_text
-        put(28 * s, self._X(HEADER_Y), text="BoardEmul", fill=C_INK,
-            font=self.ui_title, anchor="w")
-        put(self.width - 28 * s, self._X(HEADER_Y),
-            text=f"{len(self.devices_list)} device"
-                 f"{'s' if len(self.devices_list) != 1 else ''}",
-            fill=C_INK_FAINT, font=self.ui, anchor="e")
-        put(28 * s, self._X(SUBTITLE_Y),
-            text="pick a device, then start it — storage is kept between runs",
-            fill=C_INK_DIM, font=self.ui_small, anchor="w")
-        self.canvas.create_line(self._X(26), self._X(RULE_Y),
-                                self.width - self._X(26), self._X(RULE_Y),
-                                fill="#23262b")
-        self.canvas.create_line(self._X(26), self._X(RULE_Y),
-                                self._X(84), self._X(RULE_Y), fill="#4a6a94",
-                                width=max(1, round(1.4 * self.s)))
+        # -- the app bar -----------------------------------------------------
+        put(28 * s, self._X(BAR_Y - 4), text="BOARDEMUL", fill=C_INK_FAINT,
+            font=self.ui_label, anchor="w")
+        put(28 * s, self._X(BAR_Y + 14), text="Devices", fill=C_INK,
+            font=self.ui_headline, anchor="w")
+        if self.state == "list":
+            count = len(self.shown)
+            total = len(self.devices_list)
+            meta = f"{count} of {total}" if count != total else f"{total}"
+            put(self._X(W - 92), self._X(BAR_Y + 16), text=meta,
+                fill=C_INK_FAINT, font=self.ui_small, anchor="e")
+            self._icon_button_text("close", "×")
 
         if self.state == "list":
+            # -- the search field ---------------------------------------------
+            sx0, sy0, sx1, sy1 = self._search_rect()
+            placeholder = "Filter by name    ( / to focus )"
+            shown = self.filter_text or placeholder
+            put(sx0 + self._X(44), (sy0 + sy1) / 2, text=shown,
+                fill=C_INK if self.filter_text else C_INK_FAINT,
+                font=self.ui, anchor="w")
+            # -- the rows ------------------------------------------------------
             lx0, ly0, lx1, _ly1 = self._list_rect()
             for at in range(self.scroll,
-                            min(len(self.devices_list),
+                            min(len(self.shown),
                                 self.scroll + self._visible_rows())):
-                device = self.devices_list[at]
+                device = self.shown[at]
                 y0 = ly0 + (at - self.scroll) * (ROW_H + ROW_GAP) * s
                 selected = at == self.selected
-                put(lx0 + self._X(24), y0 + self._X(19), text=device.name,
+                put(lx0 + self._X(20), y0 + self._X(17), text=device.name,
                     fill=C_INK, font=self.ui_bold, anchor="w")
-                put(lx0 + self._X(24), y0 + self._X(40),
+                put(lx0 + self._X(20), y0 + self._X(42),
                     text=f"{device.board} · "
-                         f"{'card' if device.has_sdcard else 'no card'}"
-                         f" · {Path(device.firmware).name}",
+                         f"{_storage(device)}",
                     fill=C_INK_DIM, font=self.ui_small, anchor="w")
+                put(lx1 - self._X(20), y0 + self._X(ROW_H / 2), text="›",
+                    fill=C_INK_FAINT, font=self.ui_medium, anchor="e")
                 if selected:
-                    put(lx1 - self._X(22), y0 + self._X(ROW_H / 2), text="start ↵",
+                    put(lx1 - self._X(46), y0 + self._X(ROW_H / 2), text="start ↵",
                         fill="#9ec1ee", font=self.ui_small, anchor="e")
-            if not self.devices_list:
+            if not self.shown:
                 cx = (lx0 + lx1) / 2
-                put(cx, ly0 + self._X(120), text="no devices yet",
+                put(cx, ly0 + self._X(110),
+                    text="nothing matches" if self.filter_text else "no devices yet",
                     fill=C_INK_DIM, font=self.ui_bold, anchor="center")
-                put(cx, ly0 + self._X(148),
-                    text="make one — it keeps its storage between runs",
+                put(cx, ly0 + self._X(140),
+                    text=("clear the filter to see the rest" if self.filter_text
+                          else "make one — it keeps its storage between runs"),
                     fill=C_INK_FAINT, font=self.ui_small, anchor="center")
 
-            # The well's caption, under the face.
-            device = (self.devices_list[self.selected]
-                      if self.selected is not None and self.devices_list else None)
+            # -- the detail card ------------------------------------------------
+            device = (self.shown[self.selected]
+                      if self.selected is not None and self.shown else None)
             if device is not None:
-                px0, _py0, px1, py1 = self._preview_rect()
-                put((px0 + px1) / 2, py1 - self._X(52), text=device.name,
+                cx0, _cy0, cx1, cy1 = self._card_rect()
+                put((cx0 + cx1) / 2, cy1 - self._X(150), text=device.name,
                     fill=C_INK, font=self.ui_bold, anchor="center")
-                put((px0 + px1) / 2, py1 - self._X(32),
-                    text=f"{device.board} · {Path(device.firmware).name}",
-                    fill=C_INK_DIM, font=self.ui_small, anchor="center")
+                specs = [
+                    ("board", device.board),
+                    ("mac", device.mac),
+                    ("storage", _storage(device)),
+                    ("created", (device.created or "").split("T")[0]),
+                ]
+                sy = cy1 - self._X(118)
+                for label, value in specs:
+                    put(cx0 + self._X(24), sy, text=label, fill=C_INK_FAINT,
+                        font=self.ui_small, anchor="w")
+                    put(cx1 - self._X(24), sy, text=value, fill=C_INK,
+                        font=self.ui_small, anchor="e")
+                    sy += self._X(24)
         else:
-            put(self._X(40), self._X(140), text="new device", fill=C_INK,
-                font=self.ui_bold, anchor="w")
-            put(self._X(40), self._X(186), text="name", fill=C_INK_DIM,
+            put(self._X(40), self._X(216), text="New device", fill=C_INK,
+                font=self.ui_headline, anchor="w")
+            put(self._X(40), self._X(258), text="name", fill=C_INK_DIM,
                 font=self.ui_small, anchor="w")
-            put(self._X(40), self._X(222), text="board", fill=C_INK_DIM,
+            put(self._X(40), self._X(366), text="board", fill=C_INK_DIM,
                 font=self.ui_small, anchor="w")
-            put(self._X(40), self._X(264), text="firmware", fill=C_INK_DIM,
+            put(self._X(40), self._X(446), text="firmware", fill=C_INK_DIM,
                 font=self.ui_small, anchor="w")
-            put(self._X(158), self._X(223), text=self.boards[self.form_board_index],
-                fill=C_INK, font=self.ui, anchor="w")
+            segment = self._buttons()["board"]
+            other = 1 - self.form_board_index
+            put(segment[0] + (segment[2] - segment[0]) * (0.25 if other else 0.75),
+                (segment[1] + segment[3]) / 2,
+                text=self.boards[other], fill=C_INK_FAINT, font=self.ui,
+                anchor="center")
+            put((segment[0] + segment[2]) / 2 if not other else 0, 0, text="",
+                font=self.ui)
+            chosen_x = segment[0] + (segment[2] - segment[0]) * (0.75 if not other else 0.25)
+            put(chosen_x, (segment[1] + segment[3]) / 2,
+                text=self.boards[self.form_board_index], fill=C_ON_SECONDARY,
+                font=self.ui, anchor="center")
             fw = (self.form_firmware.name if self.form_firmware
                   else "choose an image…")
-            shown = fw if len(fw) < 44 else "…" + fw[-43:]
-            put(self._X(158), self._X(265), text=shown,
+            shown = fw if len(fw) < 46 else "…" + fw[-45:]
+            put(self._X(166), self._X(453), text=shown,
                 fill=C_INK if self.form_firmware else C_INK_DIM,
                 font=self.ui, anchor="w")
 
-        empty = not self.devices_list and self.state == "list"
-        labels = {"start": "Start", "new": ("Create your first device" if empty
-                                            else "New device…"),
-                  "watch": ("Watch a folder…" if not empty else ""),
-                  "quit": "Quit", "create": "Create and start", "cancel": "Cancel"}
+        labels = {"start": "Start", "new": "New device", "watch": "Watch folder…",
+                  "quit": "Quit", "create": "Create device", "cancel": "Cancel"}
         for name, (x0, y0, x1, y1) in self._buttons().items():
             text = labels.get(name)
             if not text:
                 continue
             pressed = self.pressed == name
+            fill = C_ON_PRIMARY if name in ("start", "create") else C_INK
+            if name in ("start", "new") and self.state == "list" \
+                    and not self.devices_list and name == "start":
+                fill = C_INK_FAINT
             put((x0 + x1) / 2, (y0 + y1) / 2 + (1 if pressed else 0),
-                text=text,
-                fill="#0d0f11" if name in ("start", "create") else (
-                    C_INK_FAINT if name == "start" and empty else "#e8eaec"),
-                font=self.ui_bold if name in ("start", "create", "new")
-                else self.ui, anchor="center")
-        if self.note_text:
-            put(self._X(28), self.height - self._X(18), text=self.note_text,
-                fill="#e0b0b0", font=self.ui_small, anchor="w")
+                text=text, fill=fill,
+                font=self.ui_medium, anchor="center")
+        if self.note_text and time_monotonic() < self.note_until:
+            put(self._X(W / 2), self.height - self._X(24), text=self.note_text,
+                fill=C_INK, font=self.ui_small, anchor="center")
+
+    def _icon_button_text(self, name: str, glyph: str) -> None:
+        x0, y0, x1, y1 = self._buttons()[name]
+        put = self.canvas.create_text
+        put((x0 + x1) / 2, (y0 + y1) / 2, text=glyph, fill=C_INK_DIM,
+            font=self.ui_headline, anchor="center")
+
+
+def time_monotonic() -> float:
+    import time
+    return time.monotonic()
+
+
+def _storage(device) -> str:
+    parts = []
+    try:
+        mb = device.flash.stat().st_size / (1024 * 1024)
+        parts.append(f"{mb:.0f} MB flash")
+    except OSError:
+        pass
+    if device.has_sdcard:
+        try:
+            parts.append(f"{device.sdcard.stat().st_size / (1024 * 1024):.0f} MB card")
+        except OSError:
+            parts.append("card")
+    return " · ".join(parts) or "no storage yet"
 
 
 def _rr(img: Raster, x0, y0, x1, y1, r, paint) -> None:
@@ -581,7 +748,6 @@ def _rr(img: Raster, x0, y0, x1, y1, r, paint) -> None:
 
 
 def _blit(dst: Raster, src: Raster, x: int, y: int) -> None:
-    """Copy src over dst, scanline by scanline, clipped to both."""
     for sy in range(src.h):
         dy = y + sy
         if not 0 <= dy < dst.h:
@@ -595,8 +761,6 @@ def _blit(dst: Raster, src: Raster, x: int, y: int) -> None:
 
 
 def _blit_keyed(dst: Raster, src: Raster, x: int, y: int, key: tuple) -> None:
-    """Copy src over dst; pixels equal to key — the face's own desk — stay
-    dst's, so the face sits on the well rather than in a rectangle of it."""
     for sy in range(src.h):
         dy = y + sy
         if not 0 <= dy < dst.h:
@@ -613,7 +777,6 @@ def _blit_keyed(dst: Raster, src: Raster, x: int, y: int, key: tuple) -> None:
 
 
 def _shrink(src: Raster, want_w: int, want_h: int) -> Raster:
-    """Box-average an image into a smaller one, keeping its aspect."""
     ratio = min(want_w / src.w, want_h / src.h)
     w = max(1, int(src.w * ratio))
     h = max(1, int(src.h * ratio))
