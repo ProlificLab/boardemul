@@ -550,20 +550,20 @@ def main(argv: list[str] | None = None) -> int:
     backlight_stats: dict = {}
     unmodelled_stats: dict = {}
     if hw is not None:
-        for device in getattr(hw.spi, "devices", {}).values():
-            if hasattr(device, "sent") and hasattr(device, "heard"):
+        for spi_device in getattr(hw.spi, "devices", {}).values():
+            if hasattr(spi_device, "sent") and hasattr(spi_device, "heard"):
                 radio_stats = {
-                    "commands": getattr(device, "commands", 0),
-                    "sent": device.sent,
-                    "heard": device.heard,
-                    "collisions": getattr(device, "collisions", 0),
-                    "out_of_range": getattr(device, "out_of_range", 0),
-                    "wrong_frequency": getattr(device, "wrong_frequency", 0),
-                    "deaf": getattr(device, "deaf", 0),
-                    "not_listening": getattr(device, "not_listening", 0),
-                    "cut_off": getattr(device, "cut_off", 0),
-                    "cad_sweeps": getattr(device, "cad_sweeps", 0),
-                    "cad_detected": getattr(device, "cad_detected", 0),
+                    "commands": getattr(spi_device, "commands", 0),
+                    "sent": spi_device.sent,
+                    "heard": spi_device.heard,
+                    "collisions": getattr(spi_device, "collisions", 0),
+                    "out_of_range": getattr(spi_device, "out_of_range", 0),
+                    "wrong_frequency": getattr(spi_device, "wrong_frequency", 0),
+                    "deaf": getattr(spi_device, "deaf", 0),
+                    "not_listening": getattr(spi_device, "not_listening", 0),
+                    "cut_off": getattr(spi_device, "cut_off", 0),
+                    "cad_sweeps": getattr(spi_device, "cad_sweeps", 0),
+                    "cad_detected": getattr(spi_device, "cad_detected", 0),
                 }
         # Every claimed window and what the firmware did with it. The run
         # already prints the busiest few; keeping the whole list in the record
