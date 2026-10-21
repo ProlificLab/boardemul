@@ -1,0 +1,690 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BoardEmul — devices</title>
+<style>
+  :root {
+    --bg: #0f1113;
+    --surface: #191c20;
+    --surface-high: #22262c;
+    --outline: #343a41;
+    --primary: #a8c7fa;
+    --on-primary: #0b2a4d;
+    --primary-container: #2e3f56;
+    --on-primary-container: #cfe0f5;
+    --ink: #e8eaec;
+    --ink-dim: #9aa0a6;
+    --ink-faint: #5f656d;
+    --error: #f2b8b5;
+    --radius-l: 24px;
+    --radius-m: 16px;
+    --radius-s: 10px;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font-family: "Segoe UI Variable", "Segoe UI", Roboto, system-ui, sans-serif;
+    font-size: 14px; line-height: 1.45; -webkit-font-smoothing: antialiased;
+  }
+  .app { max-width: 1180px; margin: 0 auto; padding: 20px 28px 48px; }
+
+  .bar { display: flex; align-items: center; gap: 14px; padding: 14px 4px 6px; }
+  .bar .wordmark { font-size: 11px; letter-spacing: .22em; color: var(--ink-faint); }
+  .bar h1 { font-size: 26px; font-weight: 700; margin: 0; letter-spacing: -.01em; }
+  .bar .count { color: var(--ink-dim); font-size: 13px; margin-left: 2px; }
+  .bar .spacer { flex: 1; }
+
+  .iconbtn {
+    width: 42px; height: 42px; border-radius: 50%; border: none; cursor: pointer;
+    background: var(--surface-high); color: var(--ink);
+    display: inline-flex; align-items: center; justify-content: center;
+    position: relative; overflow: hidden; transition: background .15s;
+  }
+  .iconbtn:hover { background: #2a2f36; }
+  .iconbtn svg { width: 20px; height: 20px; fill: var(--ink-dim); }
+
+  .layout { display: grid; grid-template-columns: 1.5fr 1fr; gap: 22px; margin-top: 18px; }
+  .card {
+    background: var(--surface); border-radius: var(--radius-m); padding: 18px;
+    position: relative; overflow: hidden;
+  }
+  .card h3 { margin: 0 0 2px; font-size: 16px; font-weight: 600; }
+  .card .meta { color: var(--ink-dim); font-size: 12.5px; }
+
+  .devgrid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  .dev { display: flex; flex-direction: column; gap: 10px; min-height: 148px;
+         animation: fadeUp .3s ease-out backwards; }
+  .dev .top { display: flex; align-items: flex-start; gap: 10px; }
+  .dev .dot { width: 9px; height: 9px; border-radius: 50%; margin-top: 6px;
+              background: var(--ink-faint); }
+  .dev.running .dot { background: #7bd88a; box-shadow: 0 0 8px #7bd88a66;
+                      animation: pulse 2.2s ease-in-out infinite; }
+  .dev .name { font-weight: 600; font-size: 15px; }
+  .dev .actions { margin-top: auto; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+
+  @keyframes fadeUp { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+  @keyframes pulse { 0%,100% { box-shadow: 0 0 4px #7bd88a55; } 50% { box-shadow: 0 0 12px #7bd88abb; } }
+  #view-devices, #view-run { animation: fadeUp .25s ease-out; }
+
+  .btn {
+    border: none; cursor: pointer; position: relative; overflow: hidden;
+    border-radius: 999px; padding: 9px 18px; font-size: 13.5px; font-weight: 600;
+    font-family: inherit; transition: filter .15s;
+  }
+  .btn:hover { filter: brightness(1.12); }
+  .btn:active { filter: brightness(.92); }
+  .btn.filled { background: var(--primary); color: var(--on-primary); }
+  .btn.tonal { background: var(--primary-container); color: var(--on-primary-container); }
+  .btn.text { background: transparent; color: var(--primary); }
+  .btn.stop { background: #3a2726; color: var(--error); }
+  .btn[disabled] { opacity: .45; cursor: default; }
+
+  .tag { font-size: 11.5px; border-radius: 8px; padding: 2px 8px;
+         background: #212529; color: var(--ink-dim); }
+
+  .search { display: flex; align-items: center; gap: 10px; background: var(--surface);
+            border-radius: 999px; padding: 10px 18px; margin: 14px 0 16px; }
+  .search input { flex: 1; background: none; border: none; outline: none;
+                  color: var(--ink); font-size: 14px; font-family: inherit; }
+  .search .kbd { font-size: 11px; color: var(--ink-faint);
+                 border: 1px solid var(--outline); border-radius: 6px; padding: 1px 7px; }
+
+  .detail .facewell { background: #0c0e10; border-radius: var(--radius-s);
+                      padding: 18px 0 8px; display: flex; justify-content: center; }
+  .detail img { max-width: 60%; image-rendering: pixelated; }
+  .spec { width: 100%; border-collapse: collapse; margin-top: 14px; }
+  .spec td { padding: 5px 2px; font-size: 13px; }
+  .spec td:first-child { color: var(--ink-faint); }
+  .spec td:last-child { text-align: right; font-variant-numeric: tabular-nums; }
+  .spec tr { border-bottom: 1px solid #212529; }
+  .spec tr:last-child { border-bottom: none; }
+
+  .fabwrap { position: fixed; right: 34px; bottom: 34px; }
+  .fab {
+    height: 56px; padding: 0 22px; border-radius: 18px; border: none; cursor: pointer;
+    background: var(--primary); color: var(--on-primary); font-weight: 700;
+    font-size: 14.5px; font-family: inherit; display: inline-flex; gap: 10px;
+    align-items: center; position: relative; overflow: hidden;
+    box-shadow: 0 6px 18px #00000066; transition: transform .12s, box-shadow .12s;
+  }
+  .fab:hover { transform: translateY(-1px); box-shadow: 0 10px 24px #00000077; }
+
+  .runlayout { display: grid; grid-template-columns: auto 1fr; gap: 26px;
+               margin-top: 18px; align-items: start; }
+  .stage { background: var(--surface); border-radius: var(--radius-l); padding: 22px;
+           display: flex; flex-direction: column; gap: 14px; align-items: center; }
+  .paperwrap { position: relative; background: #0c0e10; border-radius: 6px; padding: 6px; }
+  .paper { display: block; width: 360px; image-rendering: pixelated;
+           background: #d6d8d0; }
+  .runbar { display: flex; gap: 10px; width: 100%; align-items: center; flex-wrap: wrap; }
+  .uart {
+    font-family: Consolas, monospace; font-size: 11.5px; color: var(--ink-dim);
+    background: #0c0e10; border-radius: 8px; padding: 8px 12px; width: 100%;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer;
+  }
+  .uart.open { white-space: normal; max-height: 160px; overflow-y: auto; }
+  .slider { width: 100%; accent-color: var(--primary); }
+  .histlabel { font-size: 11.5px; color: var(--ink-faint); }
+  .chips { display: flex; gap: 8px; flex-wrap: wrap; width: 100%; }
+  .chip { font-size: 11.5px; border-radius: 8px; padding: 4px 10px;
+          background: #212529; color: var(--ink-dim); }
+  .chip.ok { color: #7bd88a; }
+  .segsmall { display: flex; background: #101214; border-radius: 999px; padding: 3px; }
+  .segsmall button { border: none; background: transparent; color: var(--ink-dim);
+                     cursor: pointer; padding: 4px 12px; border-radius: 999px;
+                     font-family: inherit; font-size: 12px; }
+  .segsmall button.on { background: var(--primary-container);
+                        color: var(--on-primary-container); }
+
+  .deck { background: var(--surface); border-radius: var(--radius-l); padding: 20px; }
+  .deck h2 { margin: 0 0 10px; font-size: 15px; }
+  .deck h2::after { content: var(--backlight-note); color: var(--primary); font-size: 12px; }
+  .krow { display: flex; gap: 5px; justify-content: center; margin-bottom: 5px; }
+  .key {
+    width: 34px; height: 38px; border-radius: 7px; background: #26282c;
+    border: 1px solid #101214; cursor: pointer; position: relative; overflow: hidden;
+    color: var(--ink); font-family: inherit; font-size: 13px; font-weight: 600;
+    display: flex; align-items: flex-end; justify-content: center; padding-bottom: 4px;
+    transition: background .1s, box-shadow .2s;
+  }
+  .key:hover { background: #2e3136; }
+  .key.small { font-size: 10px; color: var(--ink-dim); }
+  .key .sec { position: absolute; top: 3px; right: 4px; font-size: 9px;
+              color: var(--ink-dim); font-weight: 400; }
+  .key.wide { width: 118px; }
+  .key.mod { background: #1e2126; color: var(--ink-dim); }
+  .key.active { background: #3a4356 !important; color: var(--primary); }
+  .deck.glow .key { background: #363b42; color: #fff;
+    box-shadow: inset 0 0 6px #ffffff1f, 0 0 14px #ffffff14; }
+  .deck.glow .key .sec { color: #cfe0f5; }
+  .deck .hint { color: var(--ink-faint); font-size: 12px; margin-top: 8px; }
+
+  .sheet, .dialog {
+    position: fixed; inset: 0; background: #00000099; display: none;
+    align-items: center; justify-content: center; z-index: 30;
+  }
+  .sheet.open, .dialog.open { display: flex; }
+  .sheet .card { width: 440px; border-radius: var(--radius-l); padding: 24px; }
+  .dialog .card { width: 390px; border-radius: var(--radius-l); padding: 24px; }
+  .sheet h2, .dialog h2 { margin: 0 0 16px; font-size: 19px; }
+  .field { margin-bottom: 16px; }
+  .field label { display: block; font-size: 12px; color: var(--ink-dim); margin-bottom: 6px; }
+  .field input[type=text] {
+    width: 100%; background: #0c0e10; border: 1px solid var(--outline);
+    border-radius: 10px; color: var(--ink); padding: 11px 13px;
+    font-family: inherit; font-size: 14px; outline: none;
+  }
+  .field input[type=text]:focus { border-color: var(--primary); }
+  .seg { display: flex; background: #101214; border-radius: 999px; padding: 4px; }
+  .seg button { flex: 1; border: none; background: transparent; color: var(--ink-dim);
+                padding: 8px 0; border-radius: 999px; cursor: pointer;
+                font-family: inherit; font-size: 13px; }
+  .seg button.on { background: var(--primary-container);
+                   color: var(--on-primary-container); font-weight: 600; }
+  .drop { border: 1.5px dashed var(--outline); border-radius: var(--radius-s);
+          padding: 18px; text-align: center; color: var(--ink-dim); font-size: 13px;
+          cursor: pointer; transition: border-color .15s, background .15s; }
+  .drop:hover, .drop.over { border-color: var(--primary); background: #1b2431; }
+  .drop b { color: var(--ink); }
+  .sheet .row, .dialog .row { display: flex; gap: 10px; justify-content: flex-end; margin-top: 18px; }
+
+  .snack { position: fixed; left: 50%; bottom: 26px;
+           transform: translateX(-50%) translateY(80px);
+           background: #e8eaec; color: #101214; border-radius: 8px;
+           padding: 11px 18px; font-size: 13.5px; opacity: 0;
+           transition: all .25s; z-index: 50; }
+  .snack.show { transform: translateX(-50%); opacity: 1; }
+  .snack button { border: none; background: none; color: #0b2a4d; font-weight: 700;
+                  cursor: pointer; font-family: inherit; margin-left: 14px; font-size: 13px; }
+
+  .rippleHost, .btn, .key, .iconbtn, .fab { position: relative; overflow: hidden; }
+  .rip { position: absolute; border-radius: 50%; pointer-events: none;
+         background: radial-gradient(circle, #ffffff4d 0%, #ffffff26 55%, transparent 70%);
+         transform: scale(0); animation: rip .45s ease-out forwards; }
+  @keyframes rip { to { transform: scale(1); opacity: 0; } }
+  button:focus-visible, input:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="bar">
+    <span class="wordmark">BOARDEMUL</span>
+    <span id="viewtitle" style="display:flex; align-items:baseline; gap:12px;">
+      <h1>Devices</h1><span class="count" id="count"></span>
+    </span>
+    <span class="spacer"></span>
+    <button class="iconbtn rippleHost" title="Refresh" onclick="refresh()">
+      <svg viewBox="0 0 24 24"><path d="M17.65 6.35A8 8 0 1 0 19.73 14h-2.08a6 6 0 1 1-1.41-6.23L13 11h7V4l-2.35 2.35z"/></svg>
+    </button>
+  </div>
+
+  <div id="view-devices">
+    <div class="search">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="#9aa0a6"><path d="M15.5 14h-.79l-.28-.27a6.5 6.5 0 1 0-.7.7l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0A4.5 4.5 0 1 1 14 9.5 4.5 4.5 0 0 1 9.5 14z"/></svg>
+      <input id="filter" placeholder="Filter by name" oninput="render()">
+      <span class="kbd">/</span>
+    </div>
+
+    <div class="layout">
+      <div><div class="devgrid" id="devgrid"></div></div>
+      <div class="card detail" id="detail" style="display:none">
+        <div class="facewell"><img id="d-face" alt=""></div>
+        <h3 id="d-name" style="margin-top:12px">—</h3>
+        <table class="spec" id="d-spec"></table>
+      </div>
+    </div>
+
+    <div class="fabwrap">
+      <button class="fab rippleHost" onclick="openSheet()">
+        <svg viewBox="0 0 24 24" fill="#0b2a4d"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6z"/></svg>
+        New device
+      </button>
+    </div>
+  </div>
+
+  <div id="view-run" style="display:none">
+    <div class="runlayout">
+      <div class="stage">
+        <div class="paperwrap"><img id="paper" class="paper" alt="the device's panel"></div>
+        <div class="runbar">
+          <button class="btn tonal rippleHost" onclick="back()">← Devices</button>
+          <button class="btn stop rippleHost" onclick="stopRun()">■ Stop</button>
+          <span class="tag" id="uptime">running 0s</span>
+          <span style="flex:1"></span>
+          <div class="segsmall" id="scaleseg">
+            <button onclick="setScale(1, this)">1×</button>
+            <button class="on" onclick="setScale(1.5, this)">1.5×</button>
+            <button onclick="setScale(2, this)">2×</button>
+          </div>
+          <button class="iconbtn rippleHost" title="Save frame as PNG" onclick="screenshot()">
+            <svg viewBox="0 0 24 24" fill="#9aa0a6"><path d="M9 3 7.17 5H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-3.17L15 3H9zm3 15a5 5 0 1 1 5-5 5 5 0 0 1-5 5zm0-8a3 3 0 1 0 3 3 3 3 0 0 0-3-3z"/></svg>
+          </button>
+        </div>
+        <div class="chips" id="census"></div>
+        <input class="slider" id="hist" type="range" min="0" max="0" value="0"
+               oninput="showHist(this.value)">
+        <div class="runbar">
+          <button class="btn tonal rippleHost" id="playbtn" onclick="replay()">▶ Replay</button>
+          <span class="histlabel" id="histlabel">live</span>
+        </div>
+        <div class="uart" id="uart" onclick="this.classList.toggle('open')"
+             title="click to expand">[    0] waiting for guest output…</div>
+      </div>
+
+      <div class="deck" id="deck">
+        <h2>Keyboard — the device's own matrix</h2>
+        <div id="kbd"></div>
+        <div class="hint">Click caps to type; type on your real keyboard and the same chords fire. Shift capitals, the printed second characters need sym, Alt+B is the backlight.</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="sheet" id="sheet">
+  <div class="card">
+    <h2>New device</h2>
+    <div class="field"><label>Name</label>
+      <input type="text" id="f-name" placeholder="pocket" oninput="sheetOk()"></div>
+    <div class="field"><label>Board</label>
+      <div class="seg" id="f-board">
+        <button class="on" onclick="seg(this,'tdeck-max')">T-Deck Max</button>
+        <button onclick="seg(this,'tdeck')">T-Deck</button>
+      </div></div>
+    <div class="field"><label>Firmware</label>
+      <div class="drop" id="f-drop"><b id="f-drop-label">Drop a .bin here</b> or click to browse
+        <div style="font-size:11.5px">assembled once into the device's own flash</div></div>
+      <input type="file" id="f-file" accept=".bin" style="display:none"></div>
+    <div class="row">
+      <button class="btn text rippleHost" onclick="closeSheet()">Cancel</button>
+      <button class="btn filled rippleHost" id="f-ok" onclick="create()" disabled>Create device</button>
+    </div>
+  </div>
+</div>
+
+<div class="dialog" id="rmdialog">
+  <div class="card">
+    <h2>Remove device?</h2>
+    <p style="color:var(--ink-dim); margin:0 0 4px">
+      <b id="rmname" style="color:var(--ink)"></b> and its storage — flash, eFuses
+      and card — will be deleted. A running device is stopped first.</p>
+    <div class="row">
+      <button class="btn text rippleHost" onclick="closeRemove()">Cancel</button>
+      <button class="btn stop rippleHost" onclick="doRemove()">Remove</button>
+    </div>
+  </div>
+</div>
+
+<div class="snack" id="snack"></div>
+
+<script>
+"use strict";
+/* ================= ripple ================= */
+document.addEventListener("pointerdown", e => {
+  const host = e.target.closest(".rippleHost, .btn, .key, .iconbtn, .fab");
+  if (!host) return;
+  const r = host.getBoundingClientRect();
+  const rip = document.createElement("span");
+  rip.className = "rip";
+  const d = Math.max(r.width, r.height) * 2.2;
+  rip.style.cssText = `width:${d}px;height:${d}px;left:${e.clientX - r.left - d/2}px;top:${e.clientY - r.top - d/2}px`;
+  host.appendChild(rip);
+  setTimeout(() => rip.remove(), 500);
+});
+
+/* ================= plumbing ================= */
+const $ = id => document.getElementById(id);
+let snackTimer;
+function snack(msg, undoFn) {
+  const el = $("snack");
+  el.textContent = msg;
+  if (undoFn) {
+    const b = document.createElement("button");
+    b.textContent = "Undo";
+    b.onclick = () => { undoFn(); el.classList.remove("show"); };
+    el.appendChild(b);
+  }
+  el.classList.add("show");
+  clearTimeout(snackTimer);
+  snackTimer = setTimeout(() => el.classList.remove("show"), undoFn ? 6000 : 2600);
+}
+async function api(path, opts) {
+  const res = await fetch(path, opts);
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(body.error || res.statusText);
+  return body;
+}
+
+/* ================= devices ================= */
+let devices = [], selected = -1, current = null, pollAbort = null;
+
+async function refresh() {
+  devices = (await api("/api/devices")).devices;
+  render();
+}
+function render() {
+  const q = $("filter").value.toLowerCase();
+  const grid = $("devgrid");
+  grid.innerHTML = "";
+  const shown = devices.filter(d => d.name.toLowerCase().includes(q));
+  $("count").textContent = `${shown.length} of ${devices.length}`;
+  shown.forEach((d, i) => {
+    const el = document.createElement("div");
+    el.className = "card dev rippleHost" + (d.running ? " running" : "");
+    el.style.animationDelay = `${i * 45}ms`;
+    el.onclick = () => { selected = devices.indexOf(d); renderDetail(); };
+    el.innerHTML = `
+      <div class="top"><span class="dot"></span>
+        <div><div class="name">${d.name}</div>
+        <div class="meta">${d.board}</div></div>
+        <span style="flex:1"></span>
+        ${d.running ? '<span class="tag">running</span>' : ""}
+      </div>
+      <div class="meta">${d.storage || ""}</div>
+      <div class="meta">${d.created} · ${d.firmware}</div>
+      <div class="actions">
+        ${d.running
+          ? `<button class="btn stop" onclick="event.stopPropagation(); stopRun('${d.name}')">■ Stop</button>`
+          : `<button class="btn filled" onclick="event.stopPropagation(); start('${d.name}')">▶ Start</button>`}
+        <button class="btn text" style="color:var(--error)"
+                onclick="event.stopPropagation(); askRemove('${d.name}')">Remove</button>
+      </div>`;
+    grid.appendChild(el);
+  });
+  renderDetail();
+}
+function renderDetail() {
+  const card = $("detail");
+  const d = devices[selected] ?? null;
+  if (!d) { card.style.display = "none"; return; }
+  card.style.display = "block";
+  $("d-name").textContent = d.name;
+  $("d-spec").innerHTML = [
+    ["board", d.board], ["mac", d.mac], ["firmware", d.firmware],
+    ["storage", d.storage], ["created", d.created],
+  ].map(([k, v]) => `<tr><td>${k}</td><td>${v}</td></tr>`).join("");
+  $("d-face").src = `/api/skin/${d.board}.png`;
+}
+
+/* ================= create / remove ================= */
+let sheetBoard = "tdeck-max", sheetFile = null;
+function openSheet() { $("sheet").classList.add("open"); sheetOk(); }
+function closeSheet() { $("sheet").classList.remove("open"); }
+function seg(btn, board) {
+  sheetBoard = board;
+  for (const b of document.querySelectorAll("#f-board button")) b.classList.remove("on");
+  btn.classList.add("on");
+}
+function sheetOk() {
+  $("f-ok").disabled = !$("f-name").value.trim() || !sheetFile;
+}
+function chooseFile(files) {
+  sheetFile = files[0] || null;
+  $("f-drop-label").textContent = sheetFile ? sheetFile.name : "Drop a .bin here";
+  sheetOk();
+}
+async function create() {
+  try {
+    const up = await fetch(`/api/firmware?name=${encodeURIComponent(sheetFile.name)}`,
+                           { method: "POST", body: sheetFile });
+    if (!up.ok) throw new Error((await up.json()).error);
+    const made = await api("/api/devices", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: $("f-name").value.trim(),
+                             board: sheetBoard, firmware: (await up.json()).path }),
+    });
+    closeSheet();
+    await refresh();
+    snack(`${made.name} created — its storage lives in devices/${made.name}/`);
+    start(made.name);
+  } catch (err) { snack(String(err.message || err)); }
+}
+
+let removing = null, removedBackup = null, removedIndex = 0;
+function askRemove(name) {
+  removing = name;
+  $("rmname").textContent = name;
+  $("rmdialog").classList.add("open");
+}
+function closeRemove() { $("rmdialog").classList.remove("open"); }
+async function doRemove() {
+  closeRemove();
+  const index = devices.findIndex(d => d.name === removing);
+  removedBackup = devices[index];
+  removedIndex = index;
+  await api(`/api/devices/${encodeURIComponent(removing)}`, { method: "DELETE" });
+  devices.splice(index, 1);
+  render();
+  snack(`removed ${removing}`, async () => {
+    // The folder is gone; re-create it from the same firmware is the real
+    // undo, so offer that rather than pretend.
+    snack(`the folder was deleted — re-create "${removedBackup.name}" from ${removedBackup.firmware}`);
+  });
+}
+
+/* ================= run view ================= */
+let frameMtime = 0, frameAbort = null, histFrames = [], uartAfter = 0,
+    uptimeTimer = null, bootT = 0, symHeld = false, shiftHeld = false;
+
+async function start(name) {
+  const r = await api(`/api/devices/${encodeURIComponent(name)}/start`,
+                      { method: "POST" });
+  showRun(r.id, r.board);
+}
+function showRun(id, board) {
+  current = id;
+  window.board = board;
+  frameMtime = 0; uartAfter = 0; histFrames = []; symHeld = false;
+  $("view-devices").style.display = "none";
+  $("view-run").style.display = "block";
+  $("viewtitle").innerHTML = `<h1>${id}</h1><span class="count">running · ${board}</span>`;
+  $("census").innerHTML =
+    `<span class="chip">${board}</span>` +
+    `<span class="chip">${board === "tdeck-max" ? "240×320 e-paper" : "320×240 LCD"}</span>`;
+  buildKbd(board);
+  $("paper").src = "";
+  bootT = Date.now();
+  clearInterval(uptimeTimer);
+  uptimeTimer = setInterval(() => {
+    $("uptime").textContent = `running ${Math.floor((Date.now() - bootT) / 1000)}s`;
+  }, 1000);
+  pollLoop();
+  uartLoop();
+  refresh();
+}
+function back() {
+  if (pollAbort) pollAbort.abort();
+  clearInterval(uptimeTimer);
+  $("view-run").style.display = "none";
+  $("view-devices").style.display = "block";
+  $("viewtitle").innerHTML = `<h1>Devices</h1><span class="count" id="count"></span>`;
+  current = null;
+  refresh();
+}
+async function stopRun() {
+  if (!current) return;
+  const name = current;
+  try { await api(`/api/devices/${encodeURIComponent(name)}/stop`, { method: "POST" }); }
+  finally { back(); snack(`${name} stopped — its card went back to the folder`); }
+}
+
+/* -- the frame: long-polled, with a history scrubber --------------------- */
+async function pollLoop() {
+  const controller = new AbortController();
+  pollAbort = controller;
+  while (current && !controller.signal.aborted) {
+    try {
+      const res = await fetch(`/api/runs/${encodeURIComponent(current)}/frame?since=${frameMtime}`,
+                              { signal: controller.signal });
+      if (res.status === 200) {
+        const mtime = res.headers.get("X-Frame-Mtime");
+        const url = URL.createObjectURL(await res.blob());
+        if (histLive) $("paper").src = url;
+        frameMtime = +mtime || frameMtime;
+        refreshHist();
+      }
+    } catch (err) { if (controller.signal.aborted) return; }
+  }
+}
+async function refreshHist() {
+  const data = await api(`/api/runs/${encodeURIComponent(current)}/frames`);
+  const changed = data.frames.length !== histFrames.length;
+  histFrames = data.frames;
+  const h = $("hist");
+  h.max = Math.max(0, histFrames.length - 1);
+  if (histLive) h.value = h.max;
+  if (changed) histLive = false === histLive ? histLive : histLive;   // stay
+}
+function showHist(v) {
+  const frame = histFrames[+v];
+  if (!frame) return;
+  $("paper").src = `/api/runs/${encodeURIComponent(current)}/frames/${frame.name}`;
+  histLive = +v === histFrames.length - 1;
+  $("histlabel").textContent = histLive ? "live" : `frame ${+v + 1} of ${histFrames.length}`;
+}
+function replay() {
+  if (playTimer) { clearInterval(playTimer); playTimer = null;
+    $("playbtn").textContent = "▶ Replay"; return; }
+  let at = 0;
+  $("playbtn").textContent = "■ Stop replay";
+  playTimer = setInterval(() => {
+    if (at >= histFrames.length - 1) { clearInterval(playTimer); playTimer = null;
+      $("playbtn").textContent = "▶ Replay"; return; }
+    $("hist").value = ++at; showHist(at);
+  }, 700);
+}
+let playTimer = null, histLive = true;
+
+/* -- the serial console ---------------------------------------------------- */
+async function uartLoop() {
+  while (current) {
+    const id = encodeURIComponent(current);
+    try {
+      const data = await api(`/api/runs/${id}/uart?after=${uartAfter}`);
+      if (data.lines.length) {
+        uartAfter = data.total;
+        const el = $("uart");
+        for (const line of data.lines) consolePush(el, line);
+      }
+      // The keyboard's backlight, as the guest itself drives it (ADR 0129).
+      const state = await api(`/api/runs/${id}/state`).catch(() => ({}));
+      $("deck").classList.toggle("glow", +state.keyboard_backlight > 0);
+    } catch (err) { /* a stopped run ends this loop via current = null */ }
+    await new Promise(r => setTimeout(r, 1500));
+  }
+}
+const consoleLines = [];
+function consolePush(el, line) {
+  consoleLines.push(line);
+  if (consoleLines.length > 80) consoleLines.shift();
+  if (el.classList.contains("open")) {
+    el.innerHTML = consoleLines.map(l => `<div>${l}</div>`).join("");
+    el.scrollTop = el.scrollHeight;
+  } else {
+    el.textContent = consoleLines[consoleLines.length - 1];
+  }
+}
+
+/* -- input: touches on the glass, keys from everywhere --------------------- */
+function panelPoint(e) {
+  const r = $("paper").getBoundingClientRect();
+  const img = $("paper").naturalWidth || 240;
+  const board = window.board || "tdeck-max";
+  const [w, h] = board === "tdeck" ? [320, 240] : [240, 320];
+  const vertical = h > w;
+  const x = Math.floor((e.clientX - r.left) / r.width * (vertical ? 240 : 320));
+  const y = Math.floor((e.clientY - r.top) / r.height * (vertical ? 320 : 240));
+  return [Math.max(0, Math.min((vertical ? 240 : 320) - 1, x)),
+          Math.max(0, Math.min((vertical ? 320 : 240) - 1, y))];
+}
+function send(event) {
+  if (!current) return;
+  api(`/api/runs/${encodeURIComponent(current)}/input`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ events: [event] }),
+  }).catch(() => {});
+}
+$("paper").addEventListener("pointerdown", e => {
+  const [x, y] = panelPoint(e);
+  send({ type: "touch", x, y, down: true });
+});
+$("paper").addEventListener("pointermove", e => {
+  if (e.buttons & 1) { const [x, y] = panelPoint(e); send({ type: "touch", x, y, down: true }); }
+});
+$("paper").addEventListener("pointerup", () => send({ type: "touch", down: false }));
+$("paper").addEventListener("pointerleave", () => send({ type: "touch", down: false }));
+
+/* -- the drawn keyboard (device keys, straight to the matrix) -------------- */
+const ROWS = [
+  [["Q","#"],["W","1"],["E","2"],["R","3"],["T","("],["Y",")"],["U","_"],["I","-"],["O","+"],["P","@"]],
+  [["A","*"],["S","4"],["D","5"],["F","6"],["G","/"],["H",":"],["J",";"],["K","'"],["L","\""],["DEL",""]],
+  [["ALT",""],["Z","7"],["X","8"],["C","9"],["V","?"],["B","!"],["N",","],["M","."],["$",""],["ENT",""]],
+  [["UP",""],["0","0"],["SPACE",""],["SYM",""],["UP2",""]],
+];
+function buildKbd(board) {
+  const kbd = $("kbd");
+  kbd.innerHTML = "";
+  ROWS.forEach(row => {
+    const div = document.createElement("div");
+    div.className = "krow";
+    for (const [label, sec] of row) {
+      if (label === "UP2" && board !== "tdeck-max") continue;
+      if (label === "UP" && board === "tdeck-max") {
+        // The Max's bottom row is up, 0, space, sym, up2.
+      }
+      const b = document.createElement("button");
+      b.className = "key" + (label === "SPACE" ? " wide" : "") +
+                    (["ALT","SYM","UP","UP2","DEL","ENT","0"].includes(label)
+                     ? " mod small" : "") + (label === "SPACE" ? " mod" : "");
+      b.innerHTML = label.length === 1
+        ? label + (sec ? `<span class="sec">${sec}</span>` : "")
+        : (label === "SPACE" ? "␣" : label.toLowerCase());
+      b.onpointerdown = () => { pressKey(label, sec, true); b.classList.add("active"); };
+      b.onpointerup = b.onpointerleave = () => {
+        pressKey(label, sec, false); b.classList.remove("active"); };
+      div.appendChild(b);
+    }
+    kbd.appendChild(div);
+  });
+}
+function pressKey(label, sec, down) {
+  const names = { DEL: "DEL", ENT: "ENTER", SPACE: "SPACE", ALT: "ALT",
+                  SYM: "SYM", UP: "UP", UP2: "UP2", "0": "0" };
+  if (label === "SYM") { symHeld = down; }         // latched while held
+  if (down && symHeld && sec && label.length === 1 && label !== sec) {
+    // The chord: sym held with the key types the second character.
+    send({ type: "key", key: "SYM", down: true });
+    send({ type: "key", key: label, down: true });
+    send({ type: "key", key: label, down: false });
+    send({ type: "key", key: "SYM", down: false });
+    return;
+  }
+  send({ type: "key", key: names[label] || label, down });
+}
+
+/* -- the host's keyboard: chars go to the server's chord logic ------------- */
+  document.addEventListener("keydown", e => {
+    const runOpen = $("view-run").style.display !== "none";
+    if (!runOpen || $("sheet").classList.contains("open")) return;
+    // Alt+B passes through as the chord; the guest drives its own backlight,
+    // and the state poll above lights the drawn keyboard when it does.
+    if (e.key === "Shift") shiftHeld = true;
+    if (e.key.length === 1 || ["Enter", "BackSpace", "Space"].includes(e.key))
+      if (!e.ctrlKey || e.altKey || e.metaKey) {
+        e.preventDefault();
+        send({ type: "hostkey", keysym: e.key, char: e.key, down: true });
+      }
+  });
+document.addEventListener("keyup", e => {
+  if ($("view-run").style.display !== "none" && e.key)
+    send({ type: "hostkey", keysym: e.key, char: e.key, down: false });
+  if (e.key === "Shift") shiftHeld = false;
+});
+
+/* ================= init ================= */
+refresh();
+</script>
+</body>
+</html>

@@ -232,3 +232,58 @@ def launch_command(root: Path, outdir: Path, extra: tuple[str, ...] = (),
             "--device", str(root), "--bus", "--outdir", str(outdir),
             "--tag", root.name, "--timeout", str(WINDOW_RUN_TIMEOUT),
             "--stall", str(WINDOW_RUN_TIMEOUT)] + list(extra)
+
+
+class RunHandle:
+    """One device started as a child `emu/run.py --device` process.
+
+    Whoever starts it owns it: the frames it watches and the input it sends
+    are the child run's, and stopping it is the child's own interrupt, so
+    the run's shutdown path — the card back to the folder, the manifest —
+    is what happens (ADRs 0133, 0134). The Tk window and the web server
+    both hold one of these.
+    """
+
+    def __init__(self, device, logs: Path | None = None):
+        self.device = device
+        runs = (logs or Path(__file__).resolve().parent.parent / "logs") \
+            / "devices" / device.name
+        runs.mkdir(parents=True, exist_ok=True)
+        index = 1
+        while (runs / str(index)).exists():
+            index += 1
+        # Reserved here rather than at start, so two handles never aim one
+        # run's output directory at the same number.
+        self.outdir = runs / str(index)
+        self.outdir.mkdir(parents=True)
+        self.proc: "object | None" = None
+
+    def start(self) -> None:
+        import subprocess
+        cmd = launch_command(self.device.root, self.outdir)
+        flags = subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == "win32" else 0
+        self.proc = subprocess.Popen(cmd, cwd=Path(__file__).resolve().parent.parent,
+                                     stdout=subprocess.DEVNULL,
+                                     stderr=subprocess.STDOUT,
+                                     creationflags=flags)
+
+    @property
+    def alive(self) -> bool:
+        import subprocess
+        return (isinstance(self.proc, subprocess.Popen)
+                and self.proc.poll() is None)
+
+    def stop(self) -> None:
+        import signal
+        import subprocess
+        if not isinstance(self.proc, subprocess.Popen) or self.proc.poll() is not None:
+            return
+        if sys.platform == "win32":
+            self.proc.send_signal(signal.CTRL_BREAK_EVENT)
+        else:
+            self.proc.send_signal(signal.SIGINT)
+        try:
+            self.proc.wait(timeout=30)
+        except subprocess.TimeoutExpired:
+            self.proc.kill()
+            self.proc.wait(timeout=15)

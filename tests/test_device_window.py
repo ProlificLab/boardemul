@@ -56,20 +56,20 @@ def test_the_launch_command_is_the_emulators_own_flags(tmp_path):
 
 
 def test_a_never_started_run_stops_as_nothing(tmp_path, firmware, fake_build):
-    from emu.app import DeviceRun
+    from emu.device import RunHandle
     device = device_folder.create(tmp_path / "devices", "pocket", firmware)
-    handle = DeviceRun(device, logs=tmp_path / "logs")
+    handle = RunHandle(device, logs=tmp_path / "logs")
     assert not handle.alive
     handle.stop()                       # a no-op, not an error
     assert not handle.alive
 
 
 def test_the_run_directory_counts_up(tmp_path, firmware, fake_build):
-    from emu.app import DeviceRun
+    from emu.device import RunHandle
     device = device_folder.create(tmp_path / "devices", "pocket", firmware)
     logs = tmp_path / "logs"
-    first = DeviceRun(device, logs=logs).outdir
-    second = DeviceRun(device, logs=logs).outdir
+    first = RunHandle(device, logs=logs).outdir
+    second = RunHandle(device, logs=logs).outdir
     assert first != second and second.parent == first.parent
 
 

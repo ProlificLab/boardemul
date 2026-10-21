@@ -583,58 +583,6 @@ class DeckWindow:
             text=head + self._elide(str(self.path), budget, self.metrics))
 
 
-class DeviceRun:
-    """One device started as a child `emu/run.py --device` process.
-
-    The window owns it: the frames it watches and the input it sends are the
-    child run's, and stopping it is the child's own interrupt, so the run's
-    shutdown path — the card back to the folder, the manifest — is what
-    happens (ADRs 0133, 0134).
-    """
-
-    def __init__(self, device, logs: Path | None = None):
-        self.device = device                    # an emu.device.Device
-        runs = (logs or REPO_ROOT / "logs") / "devices" / device.name
-        runs.mkdir(parents=True, exist_ok=True)
-        index = 1
-        while (runs / str(index)).exists():
-            index += 1
-        # Reserved here rather than at start, so two handles never aim one
-        # run's output directory at the same number.
-        self.outdir = runs / str(index)
-        self.outdir.mkdir(parents=True)
-        self.proc: "subprocess.Popen | None" = None
-
-    def start(self) -> None:
-        import subprocess
-        self.outdir.mkdir(parents=True, exist_ok=True)
-        cmd = _device_folder.launch_command(self.device.root, self.outdir)
-        flags = subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == "win32" else 0
-        self.proc = subprocess.Popen(cmd, cwd=REPO_ROOT,
-                                     stdout=subprocess.DEVNULL,
-                                     stderr=subprocess.STDOUT,
-                                     creationflags=flags)
-
-    @property
-    def alive(self) -> bool:
-        return self.proc is not None and self.proc.poll() is None
-
-    def stop(self) -> None:
-        import signal
-        import subprocess
-        if self.proc is None or self.proc.poll() is not None:
-            return
-        if sys.platform == "win32":
-            self.proc.send_signal(signal.CTRL_BREAK_EVENT)
-        else:
-            self.proc.send_signal(signal.SIGINT)
-        try:
-            self.proc.wait(timeout=30)
-        except subprocess.TimeoutExpired:
-            self.proc.kill()
-            self.proc.wait(timeout=15)
-
-
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -676,7 +624,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # A run this window started, if any. Stopping the window stops it, and
     # its own shutdown path is what puts the card back in the folder.
-    run: "DeviceRun | None" = None
+    run: "_device_folder.RunHandle | None" = None
 
     if args.frames is not None:
         frames, skin = args.frames, SKINS[args.board]
@@ -692,7 +640,7 @@ def main(argv: list[str] | None = None) -> int:
         if kind == "watch":
             frames, skin = value, SKINS[args.board]
         else:
-            run = DeviceRun(value)
+            run = _device_folder.RunHandle(value)
             run.start()
             frames = run.outdir / "frames"
             skin = SKINS[value.board]
