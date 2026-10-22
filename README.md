@@ -15,31 +15,53 @@ its I2C devices, and draws its launcher to the emulated GDEQ031T10 e-paper
 panel. Frames are written to `logs/frames/` as the run proceeds; `latest.png`
 always holds the current screen.
 
+The front door is a browser:
+
+```
+python -m emu.web                # serves http://127.0.0.1:8420 and opens it
+```
+
+The page lists your devices, starts and stops them, shows the panel live
+(long-polled frames), takes touches on the glass and typing on the keyboard
+(the same chord logic the drawn window uses), tails the serial console, and
+can scrub back through the run's frames.
+
 ```
 # in the devcontainer
 python3 emu/run.py firmware/T-Deck-MAX_V3.1_20260313.bin --bus --timeout 200
 python3 tools/make_viewer.py            # single-file HTML of the captured frames
 
-# on the host: open the window, pick a device, start it -- and click it
+# or the Tk window: pick a device, start it -- and click it
 python emu/app.py --scale 2
 # or watch a run's frames directly, as scripts do
 python emu/app.py --frames logs/frames --scale 2
 ```
 
+### Devices
+
+A device is a folder that keeps its identity and storage between runs
+(ADR 0133): `tools/device.py create pocket --firmware F.bin` assembles its
+flash, eFuses and card once under `devices/pocket/`; `device.py start pocket`
+or the web UI boots it, and what the guest saves is kept. Configure
+Meshtastic's dialog once and every later boot is a node that already knows
+itself.
+
 **Working:** the boot chain; flash and eFuse assembly; the MMIO bridge with
 interrupt delivery; I2C0/I2C1 with the board's devices; GPIO levels; SPI2; the
 e-paper panel; PSRAM.
 
-Touch input works: tapping an icon navigates. Click the panel in `emu/app.py`,
-or type on it -- the keyboard drawn on the shell is the vendor's own matrix, so
-a cap that exists sends a key the firmware has. Events are appended as JSON
-lines to `logs/input.jsonl`, which the emulator tails, so a script can drive it
-just as well as a person.
+Touch input works: tapping an icon navigates. Click the panel in the web UI
+or the Tk window -- the keyboard drawn on the shell is the vendor's own
+matrix, so a cap that exists sends a key the firmware has. Events are
+appended as JSON lines to `input.jsonl`, which the emulator tails, so a
+script can drive it just as well as a person. The Max's three touch keys
+under the screen are modelled too, and the vendor firmware answers them by
+going back a screen (ADR 0131).
 
-**Not working yet:** the keyboard is wired but untested against a screen that
-consumes keys -- the launcher is touch-only. The LoRa radio shares SPI2 and is ignored rather than modelled.
-PSRAM only enumerates when presented in quad line mode, which is not what the
-board actually has — see ADR 0007, which is the first thing to re-test after any
+**Not working yet:** the Max's keyboard is wired but untested against a
+screen that consumes keys -- the launcher is touch-only. PSRAM only
+enumerates when presented in quad line mode, which is not what the board
+actually has — see ADR 0007, which is the first thing to re-test after any
 QEMU tag bump.
 
 ### The T-Deck, second board
@@ -157,8 +179,8 @@ the peer it was built for. The link comes up and carries nothing yet.
 ## Tests
 
 ```
-python3 -m pytest tests/            # 170 device, image and board tests, ~5s
-python3 -m pytest tests/ -m slow    # boots both boards under QEMU, ~10 min
+python3 -m pytest tests/            # 618 device, image and board tests, ~25s
+python3 -m pytest tests/ -m slow    # boots both boards under QEMU, ~15 min
 ```
 
 The slow tests skip cleanly without a built QEMU or the vendor firmware. See
@@ -172,7 +194,8 @@ ADR 0012.
     tools/            QEMU fetch and build, flash image assembly, frame viewer,
                       device folders
     tests/            fast device tests, plus golden-frame tests behind -m slow
-    emu/              the emulator: launcher, bus bridge host side, device models
+    emu/              the emulator: launcher, bus bridge host side, device models,
+                      the drawn faces, the web front door
     firmware/         vendor binaries (not committed; see MANIFEST.toml)
     devices/          device folders, made by tools/device.py (ADR 0133)
 
@@ -185,25 +208,32 @@ transaction then *means* is Python. The panel sees whole segments and an I2C
 device sees whole exchanges, instead of either side counting FIFO writes. That
 is what took the first board from 232,320 round trips per frame to about 44.
 
-Our C is six files we own plus a header, copied into the QEMU tree by
+Our C is ten files we own plus a header, copied into the QEMU tree by
 `tools/build_qemu.sh` rather than committed to it. Their tree's own modification
-is six build lines across two `meson.build` files, plus three patches to their
-own logic: a GDMA transmit path that never reported which descriptor finished,
-which crashed the firmware's interrupt handler (ADR 0017); an SPI1 dummy-cycle
-conversion that shifted every runtime flash read by two bytes, which no
-filesystem survived (ADR 0022); and two Bluetooth clock registers the SYSTEM
-model forgot, which the controller checks before it will start (ADR 0023).
-Each is applied from a declared patch file, each is reported upstream, and the
-build stops if any ever fails to apply. See ADR 0001, ADR 0011, ADR 0017,
-ADR 0022 and ADR 0023.
+is a handful of build lines across two `meson.build` files, plus eleven carried
+patches to their own logic, each reported upstream and listed in the build
+script: a GDMA transmit path that never reported which descriptor finished
+(ADR 0017); an SPI1 dummy-cycle conversion that shifted every runtime flash
+read by two bytes (ADR 0022); two Bluetooth clock registers the controller
+checks before it will start (ADR 0023); a cross-thread TLB flush that crashed
+two-thread translation (ADR 0066); GDMA reaching PSRAM (ADR 0083); an
+interrupt-matrix level mirror (ADR 0101); a UART chardev hook (ADR 0105); an
+icount sleep that is not deterministic (ADR 0115); flash writes that land
+synchronously (ADR 0115); UART RX overflow behaviour (ADR 0122); and core
+reset-and-stall semantics (ADR 0123).
+Each is applied from a declared patch file, and the build stops if any ever
+fails to apply. See ADR 0001, ADR 0011, and the ADR beside each patch.
 
 ## Dependencies
 
 One large external component: the Espressif QEMU fork, pinned by tag and used as
 the CPU and SoC engine only (ADR 0001). Everything else is the Python 3.12
-standard library. `emu/app.py` uses tkinter, which is also standard library.
+standard library: `emu/app.py` uses tkinter, the web UI is
+`http.server` plus the browser you already have (ADR 0135).
 
 ## Reading order
 
 Start with `docs/BOOT.md`, then the ADRs in order. ADR 0008 is the one with the
-most transferable lesson.
+most transferable lesson; ADR 0011 is the boundary that made the rest possible;
+ADRs 0126, 0130, 0131, 0133, 0134 and 0135 are the run of decisions that built
+the two front doors and the devices between them.
