@@ -7,6 +7,7 @@ See docs/adr/0004-running-and-observing.md.
 from __future__ import annotations
 
 import argparse
+import faulthandler
 import hashlib
 import json
 import os
@@ -49,6 +50,10 @@ TRACE_EVENTS = ("memory_region_ops_read", "memory_region_ops_write")
 # a status bit that never sets, so it will never terminate on its own.
 DEFAULT_STALL_SECONDS = 8.0
 DEFAULT_TIMEOUT_SECONDS = 45.0
+# Teardown's patience (ADR 0136): past this, every thread's stacks are
+# dumped into the run's directory and the process exits. Shorter than the
+# suite's own teardown kill, so the autopsy lands before the SIGKILL does.
+TEARDOWN_WATCHDOG_SECONDS = 12.0
 
 
 @dataclass
@@ -232,6 +237,17 @@ def _take_the_guest_with_us(signum, frame):
     to anyone who kills one by hand.
     """
     raise KeyboardInterrupt(f"terminated by signal {signum}")
+
+
+def arm_teardown_watchdog(outdir: Path) -> None:
+    """Bounds the shutdown: past the watchdog, every thread's stacks land in
+    the run's directory and the process exits (ADR 0136)."""
+    outdir = Path(outdir)
+    if TEARDOWN_WATCHDOG_SECONDS <= 0:
+        return
+    log = (outdir / "teardown.log").open("wb")
+    faulthandler.dump_traceback_later(TEARDOWN_WATCHDOG_SECONDS, exit=True,
+                                      file=log)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -528,6 +544,7 @@ def main(argv: list[str] | None = None) -> int:
         interrupted = True
         reason, wall = "stopped from outside", time.monotonic() - started
     finally:
+        arm_teardown_watchdog(args.outdir)
         if server:
             _report_bus(server, tail, irq, hw)
             server.stop()
@@ -545,6 +562,7 @@ def main(argv: list[str] | None = None) -> int:
                 if sd is not None:
                     device_folder.save_sdcard(device, sd.image)
             hw.stop()
+        faulthandler.cancel_dump_traceback_later()
 
     radio_stats: dict = {}
     backlight_stats: dict = {}
