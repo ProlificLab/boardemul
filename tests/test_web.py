@@ -226,3 +226,20 @@ def test_the_detail_portrait_serves_the_drawn_face(server):
     status, body, headers = call(client, "GET", "/api/skin/tdeck-max.png")
     assert status == 200
     assert body[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+def test_the_geometry_names_every_cap_and_the_panel(server):
+    client, _d, _s = server
+    status, geo, _h = call(client, "GET", "/api/skin/tdeck-max/geometry")
+    assert status == 200
+    assert len(geo["keys"]) == 35
+    assert geo["screen"]["w"] == 240 and geo["screen"]["h"] == 320
+    assert geo["trackball"] is None              # the Max has none
+    for key in geo["keys"]:
+        assert key["x1"] > key["x0"] and key["y1"] > key["y0"]
+
+    status, geo, _h = call(client, "GET", "/api/skin/tdeck/geometry")
+    assert status == 200
+    assert len(geo["keys"]) == 35
+    assert geo["trackball"]["r"] > 0             # the T-Deck has one
+    assert geo["screen"]["w"] == 320 and geo["screen"]["h"] == 240

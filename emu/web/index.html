@@ -115,9 +115,16 @@
                margin-top: 18px; align-items: start; }
   .stage { background: var(--surface); border-radius: var(--radius-l); padding: 22px;
            display: flex; flex-direction: column; gap: 14px; align-items: center; }
-  .paperwrap { position: relative; background: #0c0e10; border-radius: 6px; padding: 6px; }
-  .paper { display: block; width: 360px; image-rendering: pixelated;
-           background: #d6d8d0; }
+  .devview { position: relative; }
+  .devview .skinimg { display: block; width: 100%; image-rendering: pixelated; }
+  .devview .keyspot { position: absolute; border-radius: 18%; cursor: pointer; }
+  .devview .keyspot:hover { background: #ffffff14; box-shadow: 0 0 0 1px #ffffff26; }
+  .devview.glow .keyspot { background: #ffffff12; box-shadow: 0 0 12px #ffffff1c; }
+  .devview .ballspot { position: absolute; border-radius: 50%; cursor: pointer; }
+  .devview .ballspot:hover { background: #ffffff10; }
+  .panelwrap { position: absolute; overflow: hidden; }
+  .paper { display: block; width: 100%; height: 100%; image-rendering: pixelated;
+           background: #d5d7cf; }
   .runbar { display: flex; gap: 10px; width: 100%; align-items: center; flex-wrap: wrap; }
   .uart {
     font-family: Consolas, monospace; font-size: 11.5px; color: var(--ink-dim);
@@ -247,7 +254,11 @@
   <div id="view-run" style="display:none">
     <div class="runlayout">
       <div class="stage">
-        <div class="paperwrap"><img id="paper" class="paper" alt="the device's panel"></div>
+        <div id="device" class="devview">
+          <img id="skin" class="skinimg" alt="">
+          <div id="panelwrap"><img id="paper" class="paper" alt="the device's panel"></div>
+          <div id="hotspots"></div>
+        </div>
         <div class="runbar">
           <button class="btn tonal rippleHost" onclick="back()">← Devices</button>
           <button class="btn stop rippleHost" onclick="stopRun()">■ Stop</button>
@@ -274,9 +285,8 @@
       </div>
 
       <div class="deck" id="deck">
-        <h2>Keyboard — the device's own matrix</h2>
-        <div id="kbd"></div>
-        <div class="hint">Click caps to type; type on your real keyboard and the same chords fire. Shift capitals, the printed second characters need sym, Alt+B is the backlight.</div>
+        <h2>The device</h2>
+        <div class="hint">This is the device itself, drawn from LilyGO's own sources: the panel is live, every cap clicks, the wheel rolls the trackball, and the keyboard's backlight glows when the guest lights it. Type on your real keyboard — the chords are the device's (ADR 0127).</div>
       </div>
     </div>
   </div>
@@ -483,7 +493,7 @@ function showRun(id, board) {
   $("census").innerHTML =
     `<span class="chip">${board}</span>` +
     `<span class="chip">${board === "tdeck-max" ? "240×320 e-paper" : "320×240 LCD"}</span>`;
-  buildKbd(board);
+  await loadSkin(board);
   $("paper").src = "";
   bootT = Date.now();
   clearInterval(uptimeTimer);
@@ -570,7 +580,7 @@ async function uartLoop() {
       }
       // The keyboard's backlight, as the guest itself drives it (ADR 0129).
       const state = await api(`/api/runs/${id}/state`).catch(() => ({}));
-      $("deck").classList.toggle("glow", +state.keyboard_backlight > 0);
+      $("device").classList.toggle("glow", +state.keyboard_backlight > 0);
     } catch (err) { /* a stopped run ends this loop via current = null */ }
     await new Promise(r => setTimeout(r, 1500));
   }
@@ -616,52 +626,117 @@ $("paper").addEventListener("pointermove", e => {
 $("paper").addEventListener("pointerup", () => send({ type: "touch", down: false }));
 $("paper").addEventListener("pointerleave", () => send({ type: "touch", down: false }));
 
-/* -- the drawn keyboard (device keys, straight to the matrix) -------------- */
-const ROWS = [
-  [["Q","#"],["W","1"],["E","2"],["R","3"],["T","("],["Y",")"],["U","_"],["I","-"],["O","+"],["P","@"]],
-  [["A","*"],["S","4"],["D","5"],["F","6"],["G","/"],["H",":"],["J",";"],["K","'"],["L","\""],["DEL",""]],
-  [["ALT",""],["Z","7"],["X","8"],["C","9"],["V","?"],["B","!"],["N",","],["M","."],["$",""],["ENT",""]],
-  [["UP",""],["0","0"],["SPACE",""],["SYM",""],["UP2",""]],
-];
-function buildKbd(board) {
-  const kbd = $("kbd");
-  kbd.innerHTML = "";
-  ROWS.forEach(row => {
-    const div = document.createElement("div");
-    div.className = "krow";
-    for (const [label, sec] of row) {
-      if (label === "UP2" && board !== "tdeck-max") continue;
-      if (label === "UP" && board === "tdeck-max") {
-        // The Max's bottom row is up, 0, space, sym, up2.
-      }
-      const b = document.createElement("button");
-      b.className = "key" + (label === "SPACE" ? " wide" : "") +
-                    (["ALT","SYM","UP","UP2","DEL","ENT","0"].includes(label)
-                     ? " mod small" : "") + (label === "SPACE" ? " mod" : "");
-      b.innerHTML = label.length === 1
-        ? label + (sec ? `<span class="sec">${sec}</span>` : "")
-        : (label === "SPACE" ? "␣" : label.toLowerCase());
-      b.onpointerdown = () => { pressKey(label, sec, true); b.classList.add("active"); };
-      b.onpointerup = b.onpointerleave = () => {
-        pressKey(label, sec, false); b.classList.remove("active"); };
-      div.appendChild(b);
-    }
-    kbd.appendChild(div);
-  });
+/* -- the HTML skin: the device's own face, clickable ----------------------- */
+let skinGeom = null, zoom = 1.5;
+const MODS = new Set(["ALT", "SYM", "LSHIFT", "RSHIFT"]);
+const KEY_ALIAS = { DEL: "DEL", ENT: "ENTER", ENTER: "ENTER", SPACE: "SPACE",
+                    ALT: "ALT", SYM: "SYM", UP: "UP", UP2: "UP2", "0": "0" };
+let latched = [];                    // modifiers held by a previous click
+
+async function loadSkin(board) {
+  skinGeom = await api(`/api/skin/${board}/geometry`);
+  $("skin").src = skinGeom.image;
+  $("panelwrap").style.background = skinGeom.screen.idle;
+  layoutSkin();
+  const spots = $("hotspots");
+  spots.innerHTML = "";
+  for (const key of skinGeom.keys) {
+    const spot = document.createElement("div");
+    spot.className = "keyspot";
+    spot.title = key.name;
+    spot.style.left = pct(key.x0, skinGeom.width);
+    spot.style.top = pct(key.y0, skinGeom.height);
+    spot.style.width = pct(key.x1 - key.x0, skinGeom.width);
+    spot.style.height = pct(key.y1 - key.y0, skinGeom.height);
+    spot.addEventListener("pointerdown", () => keyDown(key.name));
+    spot.addEventListener("pointerup", () => keyUp(key.name));
+    spot.addEventListener("pointerleave", () => keyUp(key.name));
+    spots.appendChild(spot);
+  }
+  if (skinGeom.trackball) {
+    const ball = skinGeom.trackball;
+    const spot = document.createElement("div");
+    spot.className = "ballspot";
+    spot.title = "trackball — the wheel rolls it, clicking presses it (ADR 0128)";
+    const d = ball.r * 2;
+    spot.style.left = pct(ball.cx - ball.r, skinGeom.width);
+    spot.style.top = pct(ball.cy - ball.r, skinGeom.height);
+    spot.style.width = pct(d, skinGeom.width);
+    spot.style.height = pct(d, skinGeom.height);
+    spot.addEventListener("pointerdown", () => send({ type: "trackball", press: true }));
+    spot.addEventListener("pointerup", () => send({ type: "trackball", press: false }));
+    spot.addEventListener("wheel", e => {
+      e.preventDefault();
+      const sideways = e.shiftKey;
+      const ahead = e.deltaY < 0;
+      send({ type: "trackball",
+             roll: sideways ? (ahead ? "left" : "right") : (ahead ? "up" : "down"),
+             steps: 1 });
+    }, { passive: false });
+    spots.appendChild(spot);
+  }
+  layoutSkin();
 }
-function pressKey(label, sec, down) {
-  const names = { DEL: "DEL", ENT: "ENTER", SPACE: "SPACE", ALT: "ALT",
-                  SYM: "SYM", UP: "UP", UP2: "UP2", "0": "0" };
-  if (label === "SYM") { symHeld = down; }         // latched while held
-  if (down && symHeld && sec && label.length === 1 && label !== sec) {
-    // The chord: sym held with the key types the second character.
-    send({ type: "key", key: "SYM", down: true });
-    send({ type: "key", key: label, down: true });
-    send({ type: "key", key: label, down: false });
-    send({ type: "key", key: "SYM", down: false });
+
+function pct(value, total) {
+  return `${(value / total * 100).toFixed(3)}%`;
+}
+
+function layoutSkin() {
+  if (!skinGeom) return;
+  const dev = $("device");
+  dev.style.width = `${skinGeom.width * zoom}px`;
+  const scr = skinGeom.screen;
+  const wrap = $("panelwrap");
+  wrap.style.left = pct(scr.x, skinGeom.width);
+  wrap.style.top = pct(scr.y, skinGeom.height);
+  wrap.style.width = pct(scr.w, skinGeom.width);
+  wrap.style.height = pct(scr.h, skinGeom.height);
+}
+
+function setScale(factor, btn) {
+  zoom = factor;
+  for (const b of document.querySelectorAll("#scaleseg button")) b.classList.remove("on");
+  btn.classList.add("on");
+  layoutSkin();
+}
+
+function screenshot() {
+  fetch($("paper").src)
+    .then(res => res.blob())
+    .then(blob => {
+      const a = document.createElement("a");
+      a.download = `frame-${current || "device"}.png`;
+      a.href = URL.createObjectURL(blob);
+      a.click();
+      snack("frame saved");
+    })
+    .catch(() => snack("no frame to save yet"));
+}
+
+/* -- drawn-key input: latched modifiers, then the key, as the caps work ---- */
+function keyDown(name) {
+  const key = KEY_ALIAS[name] || name;
+  if (MODS.has(key)) {
+    if (latched.includes(key)) {
+      latched = latched.filter(m => m !== key);
+      send({ type: "key", key, down: false });
+    } else {
+      latched.push(key);
+      send({ type: "key", key, down: true });
+    }
     return;
   }
-  send({ type: "key", key: names[label] || label, down });
+  for (const mod of latched) send({ type: "key", key: mod, down: true });
+  send({ type: "key", key, down: true });
+}
+
+function keyUp(name) {
+  const key = KEY_ALIAS[name] || name;
+  if (MODS.has(key)) return;              // a latched modifier stays until used
+  send({ type: "key", key, down: false });
+  for (const mod of latched) send({ type: "key", key: mod, down: false });
+  latched = [];
 }
 
 /* -- the host's keyboard: chars go to the server's chord logic ------------- */

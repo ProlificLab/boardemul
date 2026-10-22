@@ -169,23 +169,60 @@ def _storage(device) -> str:
 
 
 _SKIN_CACHE: dict[str, bytes] = {}
+_SKIN_GEOMETRY_CACHE: dict[str, dict] = {}
 
 
-def _skin_png(board: str) -> bytes | None:
-    """The board's drawn face, as the detail card's portrait."""
-    if board in _SKIN_CACHE:
-        return _SKIN_CACHE[board]
-    import base64
+def _face_module(board: str):
     from emu.skin import SKINS
     skin = SKINS.get(board)
     if skin is None or skin.face is None:
         return None
     from emu import max_face, tdeck_face
-    module = {"max": max_face, "tdeck": tdeck_face}[skin.face]
-    face = module.build(1)
+    return {"max": max_face, "tdeck": tdeck_face}[skin.face]
+
+
+def _skin_png(board: str, scale: int = 1) -> bytes | None:
+    """The board's drawn face, as the detail card's portrait."""
+    key = f"{board}@{scale}"
+    if key in _SKIN_CACHE:
+        return _SKIN_CACHE[key]
+    import base64
+    module = _face_module(board)
+    if module is None:
+        return None
+    face = module.build(scale)
     png = base64.b64decode(face.raster.tk_data())
-    _SKIN_CACHE[board] = png
+    _SKIN_CACHE[key] = png
     return png
+
+
+def _skin_geometry(board: str) -> dict | None:
+    """The drawn face's interactive geometry, in scale-1 canvas pixels:
+    where the panel sits, where every cap is, where the trackball is
+    (ADRs 0126, 0130 — the same data the raster skin was painted from)."""
+    if board in _SKIN_GEOMETRY_CACHE:
+        return _SKIN_GEOMETRY_CACHE[board]
+    from emu.skin import SKINS
+    skin = SKINS.get(board)
+    module = _face_module(board)
+    if skin is None or module is None:
+        return None
+    face = module.build(1)
+    geometry = {
+        "board": board,
+        "width": face.width,
+        "height": face.height,
+        "image": f"/api/skin/{board}.png?scale=2",
+        "screen": {"x": face.screen[0], "y": face.screen[1],
+                   "w": skin.screen_w, "h": skin.screen_h,
+                   "idle": skin.idle},
+        "keys": [{"name": name, "x0": x0, "y0": y0, "x1": x1, "y1": y1}
+                 for x0, y0, x1, y1, name in face.keys],
+        "trackball": ({"cx": face.trackball[0], "cy": face.trackball[1],
+                       "r": face.trackball[2]} if face.trackball[2] else None),
+    }
+    _SKIN_GEOMETRY_CACHE[board] = geometry
+    return geometry
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -254,7 +291,9 @@ class Handler(BaseHTTPRequestHandler):
                     for d in device_folder.all_devices(self.server.state.devices)]})
 
             if segs[1] == "skin" and len(segs) == 3:
-                png = _skin_png(segs[2].removesuffix(".png"))
+                board = segs[2].removesuffix(".png")
+                scale = int(self._query().get("scale", 1))
+                png = _skin_png(board, scale)
                 if png is None:
                     return self._json({"error": "no such board"}, 404)
                 self.send_response(200)
@@ -264,6 +303,12 @@ class Handler(BaseHTTPRequestHandler):
                 self.end_headers()
                 self.wfile.write(png)
                 return
+
+            if segs[1] == "skin" and len(segs) == 4 and segs[3] == "geometry":
+                geometry = _skin_geometry(segs[2])
+                if geometry is None:
+                    return self._json({"error": "no such board"}, 404)
+                return self._json(geometry)
 
             if segs[1] == "runs" and len(segs) == 2:
                 with self.server.state.lock:
