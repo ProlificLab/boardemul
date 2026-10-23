@@ -764,7 +764,10 @@ document.addEventListener("keyup", e => {
 });
 
 /* ================= init ================= */
-refresh();
+const autorun = new URLSearchParams(location.search).get("run");
+refresh().then(() => {
+  if (autorun) start(autorun).catch(err => snack("auto-start: " + err.message));
+}).catch(err => snack("load failed: " + err.message));
 </script>
 </body>
 </html>
