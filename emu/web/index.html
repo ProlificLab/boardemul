@@ -256,7 +256,7 @@
       <div class="stage">
         <div id="device" class="devview">
           <img id="skin" class="skinimg" alt="">
-          <div id="panelwrap"><img id="paper" class="paper" alt="the device's panel"></div>
+          <div id="panelwrap" class="panelwrap"><img id="paper" class="paper" alt="the device's panel"></div>
           <div id="hotspots"></div>
         </div>
         <div class="runbar">
@@ -697,10 +697,12 @@ function layoutSkin() {
   wrap.style.top = pct(scr.y, skinGeom.height);
   wrap.style.width = pct(scr.w, skinGeom.width);
   wrap.style.height = pct(scr.h, skinGeom.height);
-  // A one-line self-report of the layout, for diagnostics.
-  document.title = `skin ${skinGeom.width}x${skinGeom.height} | device ${dev.style.width}` +
-    ` | panel @${wrap.style.left},${wrap.style.top} ${wrap.style.width}x${wrap.style.height}` +
-    ` | dev ${dev.offsetWidth}x${dev.offsetHeight}`;
+  // A one-line self-report of the layout, when ?debug is on.
+  if (new URLSearchParams(location.search).has("debug")) {
+    document.title = `skin ${skinGeom.width}x${skinGeom.height} | device ${dev.style.width}` +
+      ` | panel @${wrap.style.left},${wrap.style.top} ${wrap.style.width}x${wrap.style.height}` +
+      ` | dev ${dev.offsetWidth}x${dev.offsetHeight}`;
+  }
 }
 
 function setScale(factor, btn) {
