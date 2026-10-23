@@ -95,10 +95,14 @@ class ServerState:
             return self.runs.get(name)
 
     def start(self, name: str) -> dict:
-        device = device_folder.load(device_folder.folder(self.devices, name))
         with self.lock:
-            if name in self.runs and self.runs[name].alive:
-                raise Conflict(f"{name} is already running")
+            existing = self.runs.get(name)
+            if existing is not None and existing.alive:
+                # Idempotent: starting a running device opens it, however
+                # many times the button is pressed.
+                return {"id": name, "outdir": str(existing.outdir),
+                        "board": existing.device.board}
+            device = device_folder.load(device_folder.folder(self.devices, name))
             handle = device_folder.RunHandle(device)
             handle.start()
             self.runs[name] = handle

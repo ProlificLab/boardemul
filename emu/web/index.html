@@ -395,7 +395,8 @@ function render() {
       <div class="meta">${d.created} · ${d.firmware}</div>
       <div class="actions">
         ${d.running
-          ? `<button class="btn stop" onclick="event.stopPropagation(); stopRun('${d.name}')">■ Stop</button>`
+          ? `<button class="btn filled" onclick="event.stopPropagation(); openRun('${d.name}')">Open</button>
+             <button class="btn stop" onclick="event.stopPropagation(); stopRun('${d.name}')">■ Stop</button>`
           : `<button class="btn filled" onclick="event.stopPropagation(); start('${d.name}')">▶ Start</button>`}
         <button class="btn text" style="color:var(--error)"
                 onclick="event.stopPropagation(); askRemove('${d.name}')">Remove</button>
@@ -482,6 +483,10 @@ async function start(name) {
   const r = await api(`/api/devices/${encodeURIComponent(name)}/start`,
                       { method: "POST" });
   showRun(r.id, r.board);
+}
+function openRun(name) {
+  const d = devices.find(x => x.name === name);
+  if (d) showRun(name, d.board);
 }
 function showRun(id, board) {
   current = id;
