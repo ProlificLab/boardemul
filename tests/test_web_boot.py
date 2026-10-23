@@ -102,11 +102,16 @@ def test_boot_touch_and_the_frame_moves(web) -> None:
     assert listing["devices"][0]["running"] is True
 
     # -- a tap through the input API, then the panel moves ------------------
+    # A real touch is a hold: the guest's driver polls on the interrupt, so
+    # a press and release in the same instant is a touch nothing sees.
     status, _accepted, _h = call(client, "POST", "/api/runs/pocket/input",
                                  {"events": [
                                      {"type": "touch", "x": SETTING_ICON[0],
-                                      "y": SETTING_ICON[1], "down": True},
-                                     {"type": "touch", "down": False}]})
+                                      "y": SETTING_ICON[1], "down": True}]})
+    assert status == 200
+    time.sleep(0.8)
+    call(client, "POST", "/api/runs/pocket/input",
+         {"events": [{"type": "touch", "down": False}]})
     assert status == 200
 
     body2, mtime2 = wait_frame(client, mtime, 120.0)
