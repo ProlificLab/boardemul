@@ -529,6 +529,8 @@ async function stopRun() {
 async function pollLoop() {
   const controller = new AbortController();
   pollAbort = controller;
+  // ?once=1 fetches a single frame and stops — for deterministic tests.
+  const once = new URLSearchParams(location.search).has("once");
   while (current && !controller.signal.aborted) {
     try {
       const res = await fetch(`/api/runs/${encodeURIComponent(current)}/frame?since=${frameMtime}`,
@@ -541,6 +543,7 @@ async function pollLoop() {
         refreshHist();
       }
     } catch (err) { if (controller.signal.aborted) return; }
+    if (once) return;
   }
 }
 async function refreshHist() {
