@@ -488,7 +488,7 @@ function openRun(name) {
   const d = devices.find(x => x.name === name);
   if (d) showRun(name, d.board);
 }
-function showRun(id, board) {
+async function showRun(id, board) {
   current = id;
   window.board = board;
   frameMtime = 0; uartAfter = 0; histFrames = []; symHeld = false;
