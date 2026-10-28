@@ -95,9 +95,20 @@ TOUCH_REPORT_HZ = 500
 # it needs no help from ADR 0013 and does not get any.
 SOC_DEVICES: list[str] = []
 
+# The WiFi MAC's page (ADR 0137): the same C device the T-Deck board wires,
+# because the WiFi MAC is a property of the ESP32-S3 the two boards share, not
+# of the board around it. With no access point configured it lets the firmware
+# scan and find nothing, correctly; with one, the launcher's scan answers.
+WIFI_MAC_BASE = 0x60033000
+IRQ_WIFI_MAC = 0            # ETS_WIFI_MAC_INTR_SOURCE
+
 # Windows nothing models. Claiming them changes no behaviour on its own -- reads
 # still return what was last written -- but it stops read-modify-write being
 # silently discarded, which is what made the backlight PWM divide by zero.
+#
+# The radio PHY pages are the T-Deck's set (ADR 0019, ADR 0054): the same chip
+# runs the same PHY bring-up on both boards once esp_wifi_start() runs, and the
+# gates in PhyGates answer the waits that stall it otherwise.
 UNMODELLED = {
     "ledc": 0x60019000,
     "i2s0": 0x6002D000,
@@ -106,6 +117,12 @@ UNMODELLED = {
     "pcnt": 0x60017000,
     "spi0": SPI0_BASE,
     "spi3": SPI3_BASE,
+    "radio_unknown": 0x6000E000,
+    "fe": 0x60006000,
+    "nrx": 0x6001C000,
+    "bb": 0x6001D000,
+    "wifi_mac3": 0x60036000,
+    "wifi_mac4": 0x60037000,
 }
 
 
@@ -130,6 +147,50 @@ class TraceRegion(Region):
         """These are registers inside the chip, so a reset clears them. A
         second boot then finds the window as the first one did."""
         self.regs.clear()
+
+
+class PhyGates(TraceRegion):
+    """A radio register page whose completion flags can be answered.
+
+    Discovered on the T-Deck (ADR 0019, ADR 0054) and shared here because the
+    gates are the ESP32-S3's, not the board's: the same ROM and app polling
+    loops run on this board once the launcher's WiFi stack starts (ADR 0137).
+
+    On by default: every wait in GATES is answered, and that is what lets the
+    vendor firmware get through esp_wifi_start() and build its interface.
+    BOARDEMUL_PHY_GATES=0 turns it back into a plain trace window, which is
+    how each gate was found -- the firmware then stalls at the first
+    unanswered wait, and the PC-watch hatch in the bridge says which.
+
+    Every entry was read off a disassembled polling loop, never guessed, and
+    each is one register and the exact bits it waits to see. The rule is one
+    address at a time: these registers are shared with values early boot reads
+    back, and forcing bits across a whole page hangs the guest at reset.
+    """
+
+    # absolute address -> bits forced high on read
+    GATES = {
+        0x6000e050: 0x07000000,   # ROM  : bnei extui(bits 26..24) == 7, state done
+        0x6000e04c: 0x01000000,   # app  : bnone bit 24, SAR step complete
+        0x60006174: 0x00010000,   # ROM  : bnone bit 16, FE calibration done
+        0x60033d14: 0x00000001,   # app  : bbci bit 0, MAC reset acknowledged
+    }
+
+    @classmethod
+    def covers(cls, base: int, size: int = 0x1000) -> bool:
+        """Whether any gate lives in this page, so a page is wired through
+        this class by content rather than by name."""
+        return any(base <= a < base + size for a in cls.GATES)
+
+    def __init__(self, name: str, base: int, size: int = 0x1000):
+        super().__init__(name, base, size)
+        self._gated = os.environ.get("BOARDEMUL_PHY_GATES", "1") != "0"
+
+    def read(self, offset: int, size: int) -> int:
+        v = super().read(offset, size)
+        if self._gated:
+            v |= self.GATES.get(self.base + offset, 0)
+        return v
 
 
 def i2c_devices(clock=None) -> list[I2CDevice]:
@@ -234,10 +295,6 @@ def build(outdir: Path, air: str | None = None, ble_air: str | None = None,
     reason.
     """
     outdir = Path(outdir)
-    if wifi_ap:
-        logging.getLogger("board").warning(
-            "this board has no WiFi MAC modelled, so the access point %r is "
-            "not put on the air", wifi_ap[0])
     panel = EPaperPanel(outdir / "frames",
                         quarter_turns=int(os.environ.get("BOARDEMUL_ROTATE", "0")))
     gpio = GpioClient(outdir / "gpio.sock")
@@ -278,7 +335,9 @@ def build(outdir: Path, air: str | None = None, ble_air: str | None = None,
     # Most of these windows are claimed only so that an access to them is
     # visible rather than swallowed. The backlight controller is the one
     # with a model behind it (ADR 0053).
-    regions: list[Region] = [Ledc(n, b) if n == "ledc" else TraceRegion(n, b)
+    regions: list[Region] = [Ledc(n, b) if n == "ledc"
+                             else PhyGates(n, b) if PhyGates.covers(b)
+                             else TraceRegion(n, b)
                              for n, b in UNMODELLED.items()]
 
     # GPIO is declared first: the SPI master registers a chip-select watch when
@@ -298,10 +357,28 @@ def build(outdir: Path, air: str | None = None, ble_air: str | None = None,
         f"socket={i2c0.socket_path}",
         f"esp-i2c-master,name=i2c1,base=0x{I2C1_BASE:x},irq={IRQ_I2C_EXT1},"
         f"socket={i2c1.socket_path}",
+        # The WiFi MAC, the T-Deck's device on the same chip (ADR 0137). An
+        # access point in the air when a run asks for one; without one the
+        # firmware's scan runs and correctly finds nothing.
+        f"esp-wifi-mac,base=0x{WIFI_MAC_BASE:x},irq={IRQ_WIFI_MAC}"
+        + (f",beacon-ms={min(wifi_ap[1], 5)},ap-channel={wifi_ap[2] or 1}"
+           f",frames={outdir / 'wifi.sock'}" if wifi_ap else ""),
     ]
+
+    frames = None
+    if wifi_ap:
+        # The network, and the peer that answers for it (ADR 0064).
+        from emu.devices.wifi_ap import AccessPoint, FrameChannel, Network
+        from emu.uplink import Uplink
+        uplink = Uplink() if len(wifi_ap) > 5 and wifi_ap[5] else None
+        frames = FrameChannel(outdir / "wifi.sock", AccessPoint(Network(
+            ssid=wifi_ap[0], channel=wifi_ap[2] or 1, wpa2=wifi_ap[3],
+            passphrase=wifi_ap[4] if len(wifi_ap) > 4 else "",
+            beacon_ms=wifi_ap[1]), uplink=uplink))
+
     return Board(regions=regions, gpio=gpio, spi=spi, i2c0=i2c0, i2c1=i2c1,
                  panel=panel, gps=receiver, gps_uart=2, modem=modem, clock=clock,
-                 devices=devices)
+                 frames=frames, devices=devices)
 
 
 def attach_input(server: BusServer, board: Board, outdir: Path) -> InputTail:

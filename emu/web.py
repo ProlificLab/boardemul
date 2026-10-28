@@ -185,8 +185,21 @@ def _face_module(board: str):
     return {"max": max_face, "tdeck": tdeck_face}[skin.face]
 
 
+def _bake_legends(face) -> None:
+    """Render the face's Tk text items into its own raster (ADR 0135): a
+    browser cannot draw the canvas text the window lays over the image."""
+    from emu import font
+    from emu.raster import hex_colour
+    for text in face.texts:
+        font.draw_text(face.raster, text.x, text.y, text.text, text.size,
+                       hex_colour(text.colour), anchor=text.anchor,
+                       bold=text.bold)
+
+
 def _skin_png(board: str, scale: int = 1) -> bytes | None:
-    """The board's drawn face, as the detail card's portrait."""
+    """The board's drawn face, as the detail card's portrait - with its
+    legends baked in, because a browser cannot draw the Tk text that the
+    window lays over the raster (ADR 0126, decision 3)."""
     key = f"{board}@{scale}"
     if key in _SKIN_CACHE:
         return _SKIN_CACHE[key]
@@ -195,6 +208,7 @@ def _skin_png(board: str, scale: int = 1) -> bytes | None:
     if module is None:
         return None
     face = module.build(scale)
+    _bake_legends(face)
     png = base64.b64decode(face.raster.tk_data())
     _SKIN_CACHE[key] = png
     return png
