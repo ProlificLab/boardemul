@@ -100,10 +100,18 @@ def test_the_wifi_screen_answers_a_scan(web) -> None:
         {"args": ["--wifi-ap", f"{AP_NAME},100,1"]})
     assert status == 200 and run["board"] == "tdeck-max"
 
-    # The launcher draws; tap the WiFi icon and let the screen change.
-    status, frames, _h = call(client, "GET", "/api/runs/pocket/frames")
-    assert status == 200 and len(frames["frames"]) >= 1
-    launcher = frames["frames"][-1]["name"]
+    # The launcher draws (tens of seconds of guest time); tap the WiFi icon
+    # once it is up, and let the screen change.
+    launcher = None
+    deadline = time.monotonic() + 240.0
+    while time.monotonic() < deadline:
+        status, frames, _h = call(client, "GET", "/api/runs/pocket/frames")
+        assert status == 200
+        if len(frames["frames"]) >= 3:
+            launcher = frames["frames"][-1]["name"]
+            break
+        time.sleep(1)
+    assert launcher, "the launcher never drew"
     tap(client, *WIFI_ICON)
     wifi_screen = wait_new_frame(client, launcher, 90.0)
     assert wifi_screen, "tapping the WiFi icon changed nothing"
