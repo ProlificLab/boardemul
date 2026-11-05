@@ -244,8 +244,10 @@ class RunHandle:
     both hold one of these.
     """
 
-    def __init__(self, device, logs: Path | None = None):
+    def __init__(self, device, logs: Path | None = None,
+                 extra: tuple[str, ...] = ()):
         self.device = device
+        self.extra = extra             # per-run wiring: --wifi-ap, --air…
         runs = (logs or Path(__file__).resolve().parent.parent / "logs") \
             / "devices" / device.name
         runs.mkdir(parents=True, exist_ok=True)
@@ -260,7 +262,7 @@ class RunHandle:
 
     def start(self) -> None:
         import subprocess
-        cmd = launch_command(self.device.root, self.outdir)
+        cmd = launch_command(self.device.root, self.outdir, self.extra)
         flags = subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == "win32" else 0
         self.proc = subprocess.Popen(cmd, cwd=Path(__file__).resolve().parent.parent,
                                      stdout=subprocess.DEVNULL,

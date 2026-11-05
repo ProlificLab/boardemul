@@ -94,7 +94,7 @@ class ServerState:
         with self.lock:
             return self.runs.get(name)
 
-    def start(self, name: str) -> dict:
+    def start(self, name: str, extra: tuple[str, ...] = ()) -> dict:
         with self.lock:
             existing = self.runs.get(name)
             if existing is not None and existing.alive:
@@ -103,7 +103,7 @@ class ServerState:
                 return {"id": name, "outdir": str(existing.outdir),
                         "board": existing.device.board}
             device = device_folder.load(device_folder.folder(self.devices, name))
-            handle = device_folder.RunHandle(device)
+            handle = device_folder.RunHandle(device, extra=extra)
             handle.start()
             self.runs[name] = handle
             self.writers[name] = InputWriter(handle.outdir / "input.jsonl")
@@ -373,7 +373,8 @@ class Handler(BaseHTTPRequestHandler):
                     return self._create()
                 name = segs[2]
                 if len(segs) == 4 and segs[3] == "start":
-                    result = self.server.state.start(name)
+                    extra = tuple(self._body().get("args", []))
+                    result = self.server.state.start(name, extra=extra)
                     return self._json(result)
                 if len(segs) == 4 and segs[3] == "stop":
                     self.server.state.stop(name)
