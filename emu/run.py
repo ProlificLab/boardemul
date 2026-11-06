@@ -51,9 +51,10 @@ TRACE_EVENTS = ("memory_region_ops_read", "memory_region_ops_write")
 DEFAULT_STALL_SECONDS = 8.0
 DEFAULT_TIMEOUT_SECONDS = 45.0
 # Teardown's patience (ADR 0136): past this, every thread's stacks are
-# dumped into the run's directory and the process exits. Shorter than the
-# suite's own teardown kill, so the autopsy lands before the SIGKILL does.
-TEARDOWN_WATCHDOG_SECONDS = 12.0
+# dumped into the run's directory and the process exits. It has to beat the
+# suite's own teardown kill (15 s) with room for the QEMU shutdown (5 s)
+# that runs before the arming, hence 8.
+TEARDOWN_WATCHDOG_SECONDS = 8.0
 
 
 @dataclass
