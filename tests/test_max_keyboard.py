@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
-"""The Max launcher's keyboard: decoded, queued, and ignored — recorded.
+"""The Max launcher ignores its keyboard; its sub-screens consume it.
 
-The vendor's own `peri_keypad.cpp` decodes TCA8418 events into its queue
-but the bridge to the UI is commented out (`keypad_listener` is never
-invoked), so the launcher is touch-only by LilyGO's code, not by a gap in
-the emulator. This test holds that record: touches move the panel, keys do
-not — and if a firmware starts acting on keys, the second assertion fails
-and the record updates itself.
+The vendor's `peri_keypad.cpp` decodes TCA8418 events into its own queue
+with the bridge to the UI commented out — and the launcher never reads that
+queue, so its icon grid is touch-only. Once a sub-screen is open, though,
+the keys arrive: this test drives the WiFi screen with the matrix's UP and
+ENTER through the input API and holds the frames that changed as evidence.
 
 Slow: boots the factory firmware under QEMU. Skips without it.
 """
@@ -30,7 +29,7 @@ pytestmark = [
     pytest.mark.skipif(not FIRMWARE.exists(), reason="vendor firmware not present"),
 ]
 
-WIFI_ICON = (57, 152)       # a launcher target that demonstrably navigates
+WIFI_ICON = (57, 152)       # the launcher's row 2, column 1
 
 
 @pytest.fixture(scope="module")
@@ -76,8 +75,8 @@ def digest(client) -> str:
     status, frames, _h = call(client, "GET", "/api/runs/pocket/frames")
     assert status == 200 and frames["frames"], "no frames drawn"
     latest = frames["frames"][-1]["name"]
-    url = f"/api/runs/pocket/frames/{latest}"
-    status, body, _h = call(client, "GET", url)
+    status, body, _h = call(client, "GET",
+                            f"/api/runs/pocket/frames/{latest}")
     return region_digest(_as_frame(body))
 
 
@@ -104,42 +103,57 @@ def key(client, name: str, hold: float = 0.15) -> None:
          {"events": [{"type": "key", "key": name, "down": False}]})
 
 
-def wait_change(client, old: str, timeout: float) -> bool:
+def wait_change(client, old: str, timeout: float) -> str | None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        if digest(client) != old:
-            return True
+        new = digest(client)
+        if new != old:
+            return new
         time.sleep(1)
-    return False
+    return None
 
 
-def test_touch_moves_the_panel_keys_do_not(web) -> None:
+def test_the_launcher_ignores_keys_and_its_wifi_screen_consumes_them(
+        web) -> None:
     client = web["client"]
 
-    status, run, _h = call(client, "POST", "/api/devices/pocket/start", {})
+    status, _run, _h = call(client, "POST", "/api/devices/pocket/start", {})
     assert status == 200
 
     deadline = time.monotonic() + 240.0
+    launcher = None
     while time.monotonic() < deadline:
         status, frames, _h = call(client, "GET", "/api/runs/pocket/frames")
         if status == 200 and len(frames["frames"]) >= 3:
+            launcher = frames["frames"][-1]["name"]
             break
         time.sleep(1)
-    else:
-        pytest.fail("the launcher never drew")
+    assert launcher, "the launcher never drew"
     time.sleep(8)                       # let the first screen settle
 
-    # The guard: touches demonstrably navigate — tap the WiFi icon.
+    # The record the discovery made: the launcher's icon grid does not read
+    # the keypad queue — the vendor's bridge to it is commented out.
     before = digest(client)
-    tap(client, *WIFI_ICON)
-    assert wait_change(client, before, 90.0), "even the touch did nothing"
+    key(client, "UP")
+    assert wait_change(client, before, 15.0) is None, (
+        "the launcher reacted to UP: the vendor reads the keypad queue here "
+        "now — update this record")
 
-    # The record: the matrix's keys are decoded into the vendor's queue and
-    # the launcher ignores them — UP, ENTER, SPACE and a letter alike.
-    for name in ("UP", "ENTER", "SPACE", "Q"):
-        settle = digest(client)
-        key(client, name)
-        assert not wait_change(client, settle, 20.0), (
-            f"the launcher reacted to {name}: the vendor's keypad-to-UI "
-            "bridge is no longer commented out in peri_keypad.cpp — update "
-            "this record to what the keys now do")
+    # Open the WiFi screen by touch, then hand the screen the keyboard.
+    tap(client, *WIFI_ICON)
+    wifi = wait_change(client, before, 90.0)
+    assert wifi, "tapping the WiFi icon changed nothing"
+    time.sleep(8)                       # let the new screen settle
+
+    after_up = wait_change(client, wifi, 15.0)
+    if after_up is None:
+        key(client, "UP")
+        after_up = wait_change(client, wifi, 15.0)
+    assert after_up, "the WiFi screen ignores UP"
+
+    key(client, "ENTER")
+    after_enter = wait_change(client, after_up, 15.0)
+    if after_enter is None:
+        key(client, "ENTER")
+        after_enter = wait_change(client, after_up, 15.0)
+    assert after_enter, "the WiFi screen ignores ENTER"
