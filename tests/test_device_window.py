@@ -43,7 +43,6 @@ def fake_build(tmp_path, monkeypatch):
 
 
 def test_the_launch_command_is_the_emulators_own_flags(tmp_path):
-    from emu import app
     root = tmp_path / "devices" / "pocket"
     outdir = tmp_path / "logs" / "pocket" / "1"
     cmd = device_folder.launch_command(root, outdir)
