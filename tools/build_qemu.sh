@@ -7,31 +7,44 @@ set -euo pipefail
 # Bumping this is an ADR-level decision, not a routine update. The whole point
 # of ADR 0001's boundary rule is that this bump stays a two-line diff; if it
 # ever costs more than that, the boundary has been breached.
-QEMU_TAG="esp-develop-9.2.2-20260417"
+#
+# Pinned by SHA on the esp-develop branch rather than by tag: Espressif stopped
+# cutting dated esp- tags, and a moving branch is not a reproducible pin
+# (ADR 0138).
+QEMU_BRANCH="esp-develop"
+QEMU_SHA="7411393a2f61e6f0b05af00276d30780769e0839"
 QEMU_REPO="https://github.com/espressif/qemu.git"
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SRC="${REPO_ROOT}/third_party/qemu"
 BUILD="${SRC}/build"
 
+sha_of() {
+    git -C "${SRC}" rev-parse HEAD 2>/dev/null
+}
+
 if [[ ! -d "${SRC}/.git" ]]; then
-    echo "==> cloning ${QEMU_TAG}"
+    echo "==> cloning esp-develop at ${QEMU_SHA}"
     mkdir -p "$(dirname "${SRC}")"
     # Deliberately not --recurse-submodules. QEMU's submodules are almost
     # all ROM sources -- edk2 alone drags in its own openssl, mbedtls and
     # brotli -- for firmware targets we never build. configure pulls the few
     # subprojects xtensa-softmmu actually needs.
-    git clone --depth 1 --branch "${QEMU_TAG}" "${QEMU_REPO}" "${SRC}"
+    # Fetched by SHA, not by branch: the branch moves, the pin does not.
+    git init "${SRC}"
+    git -C "${SRC}" remote add origin "${QEMU_REPO}"
+    git -C "${SRC}" fetch --depth 1 origin "${QEMU_SHA}"
+    git -C "${SRC}" checkout --detach FETCH_HEAD
 else
-    # An unexpected tag here means someone edited the tree in place, which
+    # An unexpected SHA here means someone edited the tree in place, which
     # ADR 0001 forbids. Fail loudly rather than build something unidentifiable.
-    have="$(git -C "${SRC}" describe --tags --exact-match 2>/dev/null || echo '<none>')"
-    if [[ "${have}" != "${QEMU_TAG}" ]]; then
-        echo "ERROR: ${SRC} is at '${have}', expected '${QEMU_TAG}'." >&2
+    have="$(sha_of)"
+    if [[ "${have}" != "${QEMU_SHA}"* ]]; then
+        echo "ERROR: ${SRC} is at '${have}', expected '${QEMU_SHA}.'" >&2
         echo "       Remove third_party/qemu and re-run to get a clean tree." >&2
         exit 1
     fi
-    echo "==> reusing existing clone at ${QEMU_TAG}"
+    echo "==> reusing existing clone at ${QEMU_SHA}"
 fi
 
 # ADR 0005: our C sources live in this repo and are installed into the QEMU tree
@@ -121,8 +134,9 @@ fi
 #   core-reset-and-stall.patch            ADR 0123  issue 189, offered as PR 190
 # Each PR of ours is the same diff as the patch beside it, against esp-develop,
 # from github.com/ProlificLab/qemu; PR 185 is another user's fix for the same
-# defect, equivalent rather than identical. When one is merged and the pinned tag moves past
-# it, delete the patch and supersede its ADR rather than carrying it on.
+# defect, equivalent rather than identical. When one is merged and the pinned
+# SHA moves past it, delete the patch and supersede its ADR rather than
+# carrying it on.
 # Applied from patch files rather than by hand so that they are declared,
 # reviewed like anything else, and fail loudly if a tag bump moves the code.
 for name in gdma-out-eof-desc.patch spi1-dummy-lanes.patch system-bt-lpck-regs.patch \
@@ -152,7 +166,11 @@ if [[ ! -f "${BUILD}/build.ninja" ]]; then
     ( cd "${BUILD}" && ../configure \
         --target-list=xtensa-softmmu \
         --disable-werror \
-        --enable-trace-backends=log )
+        --enable-trace-backends=log \
+        --enable-gcrypt )
+    # --enable-gcrypt is explicit: our esp_wifi_mac.c links gcrypt directly,
+    # and on a host that happens to carry gnutls, configure's auto choice
+    # would skip gcrypt and the link would fail (ADR 0138).
 fi
 
 echo "==> building with $(nproc) jobs"
