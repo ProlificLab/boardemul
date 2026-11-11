@@ -264,8 +264,11 @@ class RunHandle:
         import subprocess
         cmd = launch_command(self.device.root, self.outdir, self.extra)
         flags = subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == "win32" else 0
+        # The child's console lands in its own run directory: a run.py that
+        # dies at startup must say why where the run can be read (ADR 0133).
+        console = open(self.outdir / "console.log", "wb")
         self.proc = subprocess.Popen(cmd, cwd=Path(__file__).resolve().parent.parent,
-                                     stdout=subprocess.DEVNULL,
+                                     stdout=console,
                                      stderr=subprocess.STDOUT,
                                      creationflags=flags)
 
