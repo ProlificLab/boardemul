@@ -244,3 +244,70 @@ def test_run_takes_the_devices_identity_without_rebuilding(
     assert any(f"file={device.flash}," in arg for arg in cmd)
     assert any(f"file={device.efuse}," in arg for arg in cmd)
     assert "02:00:00:00:00:09" not in cmd            # the MAC is in the eFuses
+
+
+# -- snapshots and the card (ADR 0149) ----------------------------------------
+
+
+def test_a_snapshot_brings_back_storage_card_and_settings(tmp_path, firmware,
+                                                         fake_build):
+    device = device_folder.create(tmp_path / "devices", "pocket", firmware)
+    device = device_folder.set_settings(device, ["--reboot"])
+    taken = device_folder.snapshot(device, "good")
+    assert taken.label == "good" and taken.bytes > 32 * 1024 * 1024
+    device.flash.write_bytes(b"broken")
+    device.sdcard.write_bytes(b"\xff" * len(device.sdcard.read_bytes()))
+    device = device_folder.set_settings(device, [])
+    back = device_folder.restore(device, "good")
+    assert back.flash.read_bytes() == b"flash"
+    assert back.sdcard.read_bytes()[:1] != b"\xff"
+    assert back.settings == ("--reboot",)
+    assert [s.label for s in device_folder.snapshots(back)] == ["good"]
+    device_folder.forget(back, "good")
+    assert device_folder.snapshots(back) == []
+
+
+@pytest.mark.parametrize("label", ["", "../x", "a b", "x" * 41])
+def test_a_snapshot_label_is_a_plain_word(tmp_path, firmware, fake_build, label):
+    device = device_folder.create(tmp_path / "devices", "pocket", firmware)
+    with pytest.raises(device_folder.DeviceError):
+        device_folder.snapshot(device, label or "/")
+
+
+def test_a_held_device_is_neither_snapshotted_nor_given_a_card(tmp_path, firmware,
+                                                               fake_build):
+    """While a run holds the folder its files are not a state the device was
+    ever in (ADR 0149)."""
+    device = device_folder.create(tmp_path / "devices", "pocket", firmware)
+    (device.root / device_folder.RUNNING).write_text("1 2026-11-18T12:00:00\n")
+    assert device_folder.held(device) == "2026-11-18T12:00:00"
+    with pytest.raises(device_folder.DeviceBusy, match="stop it first"):
+        device_folder.snapshot(device)
+    with pytest.raises(device_folder.DeviceBusy):
+        device_folder.card_from_files(device, [("A.TXT", b"a")])
+
+
+def test_a_card_made_from_files_holds_them_and_keeps_the_old_one(tmp_path, firmware,
+                                                                fake_build):
+    device = device_folder.create(tmp_path / "devices", "pocket", firmware)
+    old = device.sdcard.read_bytes()
+    taken = device_folder.card_from_files(device, [("notes.txt", b"hello card")])
+    image = device.sdcard.read_bytes()
+    assert len(image) == len(old)
+    assert b"NOTES   TXT" in image and b"hello card" in image
+    kept = device.root / "snapshots" / taken.label / "sdcard.img"
+    assert kept.read_bytes() == old
+
+
+@pytest.mark.parametrize("name", ["much-too-long.txt", "a.long", "two.dots.txt"])
+def test_a_name_that_is_not_8_3_is_refused(tmp_path, firmware, fake_build, name):
+    device = device_folder.create(tmp_path / "devices", "pocket", firmware)
+    with pytest.raises(device_folder.DeviceError, match="8.3"):
+        device_folder.card_from_files(device, [(name, b"x")])
+
+
+def test_removing_a_device_takes_its_snapshots(tmp_path, firmware, fake_build):
+    device = device_folder.create(tmp_path / "devices", "pocket", firmware)
+    device_folder.snapshot(device, "one")
+    device_folder.remove(device)
+    assert not device.root.exists()

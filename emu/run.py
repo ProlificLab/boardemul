@@ -397,6 +397,9 @@ def main(argv: list[str] | None = None) -> int:
             device = device_folder.load(args.device)
         except device_folder.DeviceError as exc:
             raise SystemExit(str(exc))
+        # Until this run ends the folder is not a state the device was ever in:
+        # a snapshot or a new card waits for it (ADR 0149).
+        device_folder.hold(device)
         if args.overlay:
             raise SystemExit("--device keeps its own storage; --overlay would "
                              "rebuild it (use tools/device.py flash)")

@@ -21,6 +21,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import socket
 import sys
 from dataclasses import dataclass
@@ -41,6 +42,10 @@ SD_BOARDS: dict[str, int] = {"tdeck-max": 32, "tdeck": 32}
 
 class DeviceError(Exception):
     """Raised for anything a folder, its manifest or its firmware gets wrong."""
+
+
+class DeviceBusy(DeviceError):
+    """Raised when a run holds the folder and the request needs it stopped."""
 
 
 # The run settings a device keeps and a page may pass, and whether each takes
@@ -260,10 +265,179 @@ def set_settings(device: Device, settings) -> Device:
 
 
 def remove(device: Device) -> None:
-    for path in (device.sdcard, device.flash, device.efuse, device.root / MANIFEST):
+    for path in (device.sdcard, device.flash, device.efuse, device.root / MANIFEST,
+                 device.root / RUNNING):
         path.unlink(missing_ok=True)
+    shutil.rmtree(device.root / SNAPSHOTS, ignore_errors=True)
     if device.root.is_dir():
         device.root.rmdir()
+
+
+# -- a run holds the folder while it runs (ADR 0149) --------------------------
+
+RUNNING = "running"
+
+
+def hold(device: Device) -> None:
+    """Say that a run holds this folder until it ends: its card is written back
+    then, and QEMU writes its flash as the guest does, so until then the files
+    are not a state the device was ever in."""
+    marker = device.root / RUNNING
+    marker.write_text(f"{os.getpid()} {datetime.datetime.now().isoformat(timespec='seconds')}\n",
+                      encoding="utf-8")
+    import atexit
+    atexit.register(lambda: marker.unlink(missing_ok=True))
+
+
+def held(device: Device) -> str | None:
+    """Since when a run has held the folder, or None."""
+    marker = device.root / RUNNING
+    try:
+        words = marker.read_text(encoding="utf-8").split()
+    except OSError:
+        return None
+    return words[1] if len(words) > 1 else "an unknown time"
+
+
+def _require_stopped(device: Device) -> None:
+    since = held(device)
+    if since is not None:
+        raise DeviceBusy(
+            f"{device.name} is running (since {since}); stop it first. If no "
+            f"run holds it, remove {device.root / RUNNING}")
+
+
+# -- snapshots of a stopped device's storage (ADR 0149) -----------------------
+
+SNAPSHOTS = "snapshots"
+SNAPSHOT_LABEL = re.compile(r"[A-Za-z0-9._-]{1,40}\Z")
+
+
+@dataclass(frozen=True)
+class Snapshot:
+    label: str
+    taken: str
+    bytes: int
+
+
+def _storage_files(device: Device) -> list[Path]:
+    return [p for p in (device.flash, device.efuse, device.sdcard,
+                        device.root / MANIFEST) if p.is_file()]
+
+
+def _describe(folder: Path) -> Snapshot:
+    taken = datetime.datetime.fromtimestamp(folder.stat().st_mtime)
+    return Snapshot(label=folder.name, taken=taken.isoformat(timespec="seconds"),
+                    bytes=sum(p.stat().st_size for p in folder.iterdir()
+                              if p.is_file()))
+
+
+def snapshot(device: Device, label: str | None = None) -> Snapshot:
+    """Copy a stopped device's storage, manifest included, into
+    snapshots/<label>/."""
+    _require_stopped(device)
+    label = label or datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+    if not SNAPSHOT_LABEL.match(label):
+        raise DeviceError(f"{label!r} is not a snapshot label: letters, digits, "
+                          "'.', '_' and '-', 1 to 40 of them")
+    target = device.root / SNAPSHOTS / label
+    if target.exists():
+        raise DeviceError(f"{device.name} already has a snapshot {label!r}")
+    target.mkdir(parents=True)
+    try:
+        for path in _storage_files(device):
+            shutil.copy2(path, target / path.name)
+    except Exception:
+        shutil.rmtree(target, ignore_errors=True)
+        raise
+    os.utime(target)
+    return _describe(target)
+
+
+def snapshots(device: Device) -> list[Snapshot]:
+    folder = device.root / SNAPSHOTS
+    if not folder.is_dir():
+        return []
+    found = [_describe(p) for p in folder.iterdir()
+             if p.is_dir() and (p / FLASH).is_file()]
+    return sorted(found, key=lambda s: s.taken)
+
+
+def _snapshot_folder(device: Device, label: str) -> Path:
+    if not SNAPSHOT_LABEL.match(label or ""):
+        raise DeviceError(f"{label!r} is not a snapshot label")
+    folder = device.root / SNAPSHOTS / label
+    if not (folder / FLASH).is_file():
+        raise DeviceError(f"{device.name} has no snapshot {label!r}")
+    return folder
+
+
+def restore(device: Device, label: str) -> Device:
+    """Put a stopped device back as the snapshot has it: storage, card and
+    manifest, so its settings come back with the storage they were made with."""
+    _require_stopped(device)
+    folder = _snapshot_folder(device, label)
+    for name in (FLASH, EFUSE, SDCARD, MANIFEST):
+        kept = folder / name
+        if kept.is_file():
+            shutil.copy2(kept, device.root / name)
+        elif name == SDCARD:
+            # It had no card then.
+            (device.root / name).unlink(missing_ok=True)
+    return load(device.root)
+
+
+def forget(device: Device, label: str) -> None:
+    shutil.rmtree(_snapshot_folder(device, label))
+
+
+# -- the card, in and out (ADR 0149) ------------------------------------------
+
+def card_bytes(device: Device) -> int:
+    """The size of the card the device's board builds."""
+    if device.board not in SD_BOARDS:
+        raise DeviceError(f"a {device.board} has no card")
+    return SD_BOARDS[device.board] * 1024 * 1024
+
+
+def _before_card(device: Device) -> Snapshot:
+    return snapshot(device, "before-card-"
+                    + datetime.datetime.now().strftime("%Y%m%d-%H%M%S"))
+
+
+def replace_card(device: Device, image: bytes) -> Snapshot:
+    """Make `image` the device's card, after a snapshot of the one it had.
+    Returns that snapshot."""
+    _require_stopped(device)
+    if len(image) != card_bytes(device):
+        raise DeviceError(f"a card image for a {device.board} is "
+                          f"{card_bytes(device)} bytes, not {len(image)}")
+    taken = _before_card(device)
+    device.sdcard.write_bytes(image)
+    return taken
+
+
+SHORT_NAME = re.compile(r"[A-Z0-9_~!#$%&'()@^`{}-]{1,8}(\.[A-Z0-9_~!#$%&'()@^`{}-]{1,3})?\Z")
+
+
+def card_from_files(device: Device, files: list[tuple[str, bytes]]) -> Snapshot:
+    """A fresh card holding these files in its root directory, under their
+    8.3 names, after a snapshot of the card it had."""
+    names = [name.upper() for name, _data in files]
+    bad = [name for name in names if not SHORT_NAME.match(name)]
+    if bad:
+        raise DeviceError(f"not 8.3 names: {', '.join(bad)}")
+    if len(set(names)) != len(names):
+        raise DeviceError("two files have the same name on the card")
+    if len(files) > sdimage.ROOT_ENTRIES - 1:
+        raise DeviceError("more files than the card's root directory holds")
+    room = card_bytes(device) - sdimage.PARTITION_LBA * sdimage.SECTOR - 2 * 1024 * 1024
+    if sum(len(data) for _name, data in files) > room:
+        raise DeviceError("the files are more than the card holds")
+    image = sdimage.build(size_mb=SD_BOARDS[device.board],
+                          files=tuple(sdimage.File(name, data)
+                                      for name, (_n, data) in zip(names, files)))
+    return replace_card(device, bytes(image))
 
 
 def all_devices(devices: Path) -> list[Device]:
