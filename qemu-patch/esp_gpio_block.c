@@ -27,6 +27,7 @@
 #include "qapi/error.h"
 #include "qom/object.h"
 #include "hw/misc/esp_board_glue.h"
+#include "sysemu/reset.h"
 
 #include <sys/socket.h>
 #include <sys/un.h>
@@ -193,6 +194,20 @@ static void gpio_update_irq(EspGpioBlock *s)
     }
     s->irq_level = level;
     qemu_set_irq(s->irq_line, level);
+}
+
+/* After a machine reset, drive the level this device holds, whatever it last
+ * drove. A peripheral reset clears the interrupt matrix's record of every
+ * source, and this device is not reset with it (ADR 0035): forwarding only a
+ * change would then lose the next interrupt, the matrix holding 0 and this
+ * device 1. After a CPU reset the matrix kept the level, and it forwards only a
+ * change, so driving the same level again does nothing (ADR 0142). */
+static void gpio_reset(void *opaque)
+{
+    EspGpioBlock *s = opaque;
+
+    s->irq_level = -1;
+    gpio_update_irq(s);
 }
 
 static void gpio_latch(EspGpioBlock *s, unsigned pin, int before, int after)
@@ -478,6 +493,7 @@ static void gpio_realize(DeviceState *dev, Error **errp)
             return;
         }
         s->irq_line = qdev_get_gpio_in(DEVICE(intc), s->irq_source);
+        qemu_register_reset(gpio_reset, s);
     }
 
     if (s->socket_path) {

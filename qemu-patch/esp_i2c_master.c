@@ -29,6 +29,7 @@
 #include "qom/object.h"
 #include "qemu/main-loop.h"
 #include "hw/misc/esp_board_glue.h"
+#include "sysemu/reset.h"
 #include "qemu/timer.h"
 
 #include <sys/socket.h>
@@ -218,6 +219,20 @@ static void i2c_irq_due(void *opaque)
     }
     s->irq_level = level;
     qemu_set_irq(s->irq_line, level);
+}
+
+/* After a machine reset, drive the level this device holds, whatever it last
+ * drove. A peripheral reset clears the interrupt matrix's record of every
+ * source, and this device is not reset with it (ADR 0035): forwarding only a
+ * change would then lose the next interrupt, the matrix holding 0 and this
+ * device 1. After a CPU reset the matrix kept the level, and it forwards only a
+ * change, so driving the same level again does nothing (ADR 0142). */
+static void i2c_reset(void *opaque)
+{
+    EspI2cMaster *s = opaque;
+
+    s->irq_level = -1;
+    i2c_irq_due(s);
 }
 
 /* Deferred rather than raised from inside the MMIO handler.
@@ -577,6 +592,7 @@ static void i2c_realize(DeviceState *dev, Error **errp)
         }
         s->irq_line = qdev_get_gpio_in(DEVICE(intc), s->irq_source);
         s->irq_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, i2c_irq_due, s);
+        qemu_register_reset(i2c_reset, s);
     }
 
     s->fd = socket(AF_UNIX, SOCK_STREAM, 0);
