@@ -155,3 +155,4 @@ superseded ADR is marked superseded and points forward.
 | [0147](0147-a-new-machine-is-ready-in-three-commands.md) | A new machine is ready in three commands, and says what it lacks | Accepted (amends 0003's manifest) |
 | [0148](0148-the-max-carries-the-chips-sound-and-bluetooth.md) | The Max board carries the chip's I2S controllers and Bluetooth core | Accepted (follows 0137) |
 | [0149](0149-a-device-keeps-snapshots-and-its-card-is-yours.md) | A device keeps snapshots of its storage, and its card is yours | Accepted (adds to 0133) |
+| [0150](0150-a-firmware-brings-its-filesystem.md) | A firmware brings its filesystem, as its installer would | Accepted (adds to 0021, 0147) |
