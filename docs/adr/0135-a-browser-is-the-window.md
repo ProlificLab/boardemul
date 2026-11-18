@@ -7,7 +7,7 @@ door; the Tk window remains as the lightweight viewer it already was.
 
 The viewer's contract has always been client-shaped: frames arrive as PNGs
 in a directory, input leaves as JSON lines in a file, and anything that
-reads one and writes the other is a working window (ADR 0010, ADR 0103's
+reads one and writes the other is a working window (ADR 0010, ADR 0129's
 backlight state file). The Tk app is one such client — and building the
 device chooser inside it (ADR 0134) meant hand-rolling everything a
 browser does for free: anti-aliased shapes painted a pixel at a time,
