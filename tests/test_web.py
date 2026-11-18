@@ -343,6 +343,47 @@ def test_start_passes_the_run_settings_through(server, monkeypatch):
     assert status == 200 and seen == [tuple(args)]
 
 
+@pytest.mark.parametrize("args", [
+    ["--air", "../devices"], ["--air", "Mesh"], ["--ble-air", "a/b"],
+    ["--air", "-x"], ["--air", "m" * 33],
+])
+def test_an_air_is_a_name_never_a_path(server, args):
+    """ADR 0145: the page names an air; where it lives is the run's to say."""
+    client, devices, started = server
+    _pocket(client, devices)
+    status, _b, _h = call(client, "POST", "/api/devices/pocket/start", {"args": args})
+    assert status == 400 and started == []
+
+
+def test_a_device_keeps_its_settings(server):
+    client, devices, _s = server
+    _pocket(client, devices)
+    kept = ["--air", "mesh", "--at", "120,0", "--gps", "48.85,2.35", "--reboot"]
+    status, body, _h = call(client, "POST", "/api/devices/pocket/settings",
+                            {"settings": kept})
+    assert status == 200 and body["settings"] == kept
+    manifest = json.loads((devices / "pocket" / "device.json").read_text())
+    assert manifest["settings"] == kept
+    status, body, _h = call(client, "GET", "/api/devices")
+    assert body["devices"][0]["settings"] == kept
+
+
+def test_settings_are_held_to_the_same_list(server):
+    client, devices, _s = server
+    _pocket(client, devices)
+    status, body, _h = call(client, "POST", "/api/devices/pocket/settings",
+                            {"settings": ["--qemu", "/bin/sh"]})
+    assert status == 400
+    assert json.loads((devices / "pocket" / "device.json").read_text())["settings"] == []
+
+
+def test_settings_for_a_device_that_is_not_there_404(server):
+    client, _devices, _s = server
+    status, _b, _h = call(client, "POST", "/api/devices/ghost/settings",
+                          {"settings": ["--reboot"]})
+    assert status == 404
+
+
 # -- a run that ends says why; the board's state is read where it is written --
 
 

@@ -40,15 +40,9 @@ UPLOADS = ".uploads"
 # boards have (ADR 0139).
 UPLOAD_LIMIT = 64 * 1024 * 1024
 
-# The per-run settings the browser may pass to `start`, and whether each
-# takes a value (ADR 0139). Nothing here names a file, a directory or a
-# program; those stay on the command line of whoever types them.
-RUN_FLAGS = {
-    "--wifi-ap": True, "--wifi-wpa2": False, "--wifi-pass": True,
-    "--wifi-uplink": False, "--gps": True, "--at": True, "--antenna": True,
-    "--environment": True, "--obstruction": True, "--icount": False,
-    "--reboot": False,
-}
+# The per-run settings the browser may pass, and the ones a device keeps,
+# are emu/device.py's RUN_FLAGS (ADRs 0139, 0145).
+RUN_FLAGS = device_folder.RUN_FLAGS
 
 # What a request's Host may name, at the server's own port (ADR 0139).
 LOOPBACK = ("127.0.0.1", "localhost", "[::1]")
@@ -167,24 +161,11 @@ class Refused(Exception):
 
 
 def run_args(args) -> tuple[str, ...]:
-    """The browser's run arguments, held to RUN_FLAGS (ADR 0139)."""
-    if not isinstance(args, list):
-        raise Refused(400, "args must be a list")
-    out: list[str] = []
-    i = 0
-    while i < len(args):
-        flag = args[i]
-        if not isinstance(flag, str) or flag not in RUN_FLAGS:
-            raise Refused(400, f"{flag!r} is not a setting a run takes from here")
-        out.append(flag)
-        i += 1
-        if RUN_FLAGS[flag]:
-            value = args[i] if i < len(args) else None
-            if not isinstance(value, str) or value.startswith("--"):
-                raise Refused(400, f"{flag} needs a value")
-            out.append(value)
-            i += 1
-    return tuple(out)
+    """The browser's run arguments, held to RUN_FLAGS (ADRs 0139, 0145)."""
+    try:
+        return device_folder.check_settings(args)
+    except device_folder.DeviceError as exc:
+        raise Refused(400, str(exc)) from None
 
 
 class NotFound(Exception):
@@ -201,6 +182,7 @@ def device_json(device) -> dict:
         "storage": _storage(device),
         "created": (device.created or "").split("T")[0],
         "overlays": list(device.overlays),
+        "settings": list(device.settings),
         "running": running,
     }
 
@@ -461,6 +443,8 @@ class Handler(BaseHTTPRequestHandler):
                 if len(segs) == 4 and segs[3] == "remove":
                     self._remove(name)
                     return self._json({"removed": name})
+                if len(segs) == 4 and segs[3] == "settings":
+                    return self._settings(name)
             if segs[:2] == ["api", "runs"] and len(segs) == 4 and segs[3] == "input":
                 return self._input(segs[2])
             return self._json({"error": "not found"}, 404)
@@ -502,6 +486,14 @@ class Handler(BaseHTTPRequestHandler):
             psram_octal=bool(body.get("psram_octal", False)),
             overlays=tuple(body.get("overlays", ())))
         self._json(device_json(device), 201)
+
+    def _settings(self, name: str) -> None:
+        """Keep a device's run settings (ADR 0145): held to the same list a
+        start takes, each air a name, applied from the next start on."""
+        settings = run_args(self._body().get("settings", []))
+        device = device_folder.load(device_folder.folder(
+            self.server.state.devices, name))
+        self._json(device_json(device_folder.set_settings(device, settings)))
 
     def _remove(self, name: str) -> None:
         self.server.state.stop(name)

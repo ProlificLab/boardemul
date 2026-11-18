@@ -60,6 +60,13 @@ or the web UI boots it, and what the guest saves is kept. Configure
 Meshtastic's dialog once and every later boot is a node that already knows
 itself.
 
+A device also keeps what every run of it is told about the world around it
+(ADR 0145): an access point to join, a GPS position, and an air with its
+place on it. Set them on the page's Settings sheet, or with
+`device.py settings pocket -- --air mesh --at 50,0 --wifi-ap deck`. Devices
+given the same air name hear each other's LoRa radios, on Windows too, where
+each run is its own container: the runs then meet on a Docker network.
+
 **Working on the Max:** the boot chain, flash and eFuses; PSRAM; the e-paper
 panel; touch, the three touch keys and the keyboard; the LoRa radio on chip
 select 3 (ADR 0102); the SD card; I2C0/I2C1 with the board's parts, the fuel
@@ -101,8 +108,7 @@ without one it finds nothing, correctly.
 Getting there is five records long, and each one is a wall the firmware stopped
 at and how it was read rather than guessed: the FPU enabled out of reset
 (ADR 0013, now QEMU's own reset value, as on silicon: ADR 0143), both I2S
-directions with one patch carried to QEMU's GDMA
-(ADR 0016, 0017), four radio bring-up waits answered from disassembled loops
+directions with one patch carried to QEMU's GDMA (ADR 0016, 0017), four radio bring-up waits answered from disassembled loops
 (ADR 0019), and the SAR ADC that `analogRead()` spins on plus the touch
 interrupt's real polarity (ADR 0020).
 

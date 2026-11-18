@@ -196,6 +196,15 @@
   .drop:hover, .drop.over { border-color: var(--primary); background: #1b2431; }
   .drop b { color: var(--ink); }
   .sheet .row, .dialog .row { display: flex; gap: 10px; justify-content: flex-end; margin-top: 18px; }
+  .sheet .card.wide { width: 520px; max-height: calc(100vh - 48px); overflow-y: auto; }
+  .group { border-top: 1px solid var(--outline); padding-top: 14px; margin-top: 4px; }
+  .group h4 { margin: 0 0 4px; font-size: 13px; font-weight: 600; color: var(--ink); }
+  .group .why { font-size: 12px; color: var(--ink-faint); margin: 0 0 12px; }
+  .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .check { display: flex; align-items: center; gap: 9px; font-size: 13.5px;
+           color: var(--ink); margin: 0 0 12px; cursor: pointer; }
+  .check input { width: 17px; height: 17px; accent-color: var(--primary); }
+  .check input:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
 
   .snack { position: fixed; left: 50%; bottom: 26px;
            transform: translateX(-50%) translateY(80px);
@@ -313,6 +322,50 @@
   </div>
 </div>
 
+<div class="sheet" id="setsheet">
+  <div class="card wide">
+    <h2>Settings for <span id="s-name"></span></h2>
+    <div class="group">
+      <h4>On the air</h4>
+      <p class="why">Devices given the same air name hear each other's LoRa radio. Where each stands, in metres, sets how strong it arrives.</p>
+      <div class="pair">
+        <div class="field"><label for="s-air">Air name</label>
+          <input type="text" id="s-air" placeholder="mesh" autocomplete="off"></div>
+        <div class="field"><label for="s-at">Place, x,y in metres</label>
+          <input type="text" id="s-at" placeholder="0,0" autocomplete="off"></div>
+      </div>
+      <div class="field" id="s-ble-field"><label for="s-ble">Bluetooth air name</label>
+        <input type="text" id="s-ble" placeholder="leave empty for none" autocomplete="off"></div>
+    </div>
+    <div class="group">
+      <h4>Wi-Fi</h4>
+      <p class="why">An access point for the device to find and join.</p>
+      <div class="pair">
+        <div class="field"><label for="s-ssid">Network name</label>
+          <input type="text" id="s-ssid" placeholder="none" autocomplete="off"></div>
+        <div class="field"><label for="s-pass">Password</label>
+          <input type="text" id="s-pass" placeholder="open network" autocomplete="off"></div>
+      </div>
+      <label class="check"><input type="checkbox" id="s-uplink"> Reach the real internet through this computer</label>
+    </div>
+    <div class="group">
+      <h4>Satellites</h4>
+      <p class="why">A GPS receiver that reports this position.</p>
+      <div class="field"><label for="s-gps">Latitude,longitude</label>
+        <input type="text" id="s-gps" placeholder="none" autocomplete="off"></div>
+    </div>
+    <div class="group">
+      <h4>Running</h4>
+      <label class="check"><input type="checkbox" id="s-reboot"> Restart after a panic, as the board does</label>
+      <label class="check"><input type="checkbox" id="s-icount"> Count the guest's time in instructions (Bluetooth needs it)</label>
+    </div>
+    <div class="row">
+      <button class="btn text rippleHost" onclick="closeSettings()">Cancel</button>
+      <button class="btn filled rippleHost" onclick="saveSettings()">Save</button>
+    </div>
+  </div>
+</div>
+
 <div class="dialog" id="rmdialog">
   <div class="card">
     <h2>Remove device?</h2>
@@ -398,6 +451,8 @@ function render() {
           ? `<button class="btn filled" onclick="event.stopPropagation(); openRun('${d.name}')">Open</button>
              <button class="btn stop" onclick="event.stopPropagation(); stopRun('${d.name}')">■ Stop</button>`
           : `<button class="btn filled" onclick="event.stopPropagation(); start('${d.name}')">▶ Start</button>`}
+        <button class="btn text"
+                onclick="event.stopPropagation(); openSettings('${d.name}')">Settings</button>
         <button class="btn text" style="color:var(--error)"
                 onclick="event.stopPropagation(); askRemove('${d.name}')">Remove</button>
       </div>`;
@@ -414,8 +469,80 @@ function renderDetail() {
   $("d-spec").innerHTML = [
     ["board", d.board], ["mac", d.mac], ["firmware", d.firmware],
     ["storage", d.storage], ["created", d.created],
-  ].map(([k, v]) => `<tr><td>${k}</td><td>${v}</td></tr>`).join("");
+    ["settings", (d.settings || []).join(" ") || "none"],
+  ].map(([k, v]) => `<tr><td>${k}</td><td>${escapeHtml(String(v))}</td></tr>`).join("");
   $("d-face").src = `/api/skin/${d.board}.png`;
+}
+
+function escapeHtml(text) {
+  return text.replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;",
+                                          '"': "&quot;", "'": "&#39;" })[c]);
+}
+
+/* ================= settings (ADR 0145) ================= */
+// A device keeps what every run of it is told about the world around it. The
+// list is the run's own flags; the sheet reads them into fields and back.
+let settingsFor = null;
+function settingsMap(list) {
+  const m = {};
+  for (let i = 0; i < list.length; i++) {
+    const flag = list[i], next = list[i + 1];
+    if (next !== undefined && !next.startsWith("--")) { m[flag] = next; i++; }
+    else m[flag] = true;
+  }
+  return m;
+}
+function openSettings(name) {
+  const d = devices.find(x => x.name === name);
+  if (!d) return;
+  settingsFor = name;
+  const m = settingsMap(d.settings || []);
+  $("s-name").textContent = name;
+  $("s-air").value = m["--air"] || "";
+  $("s-at").value = m["--at"] || "";
+  $("s-ble").value = m["--ble-air"] || "";
+  // Only the T-Deck board models the Bluetooth controller.
+  $("s-ble-field").style.display = d.board === "tdeck" ? "" : "none";
+  $("s-ssid").value = (m["--wifi-ap"] || "").split(",")[0];
+  $("s-pass").value = m["--wifi-pass"] || "";
+  $("s-uplink").checked = !!m["--wifi-uplink"];
+  $("s-gps").value = m["--gps"] || "";
+  $("s-reboot").checked = !!m["--reboot"];
+  $("s-icount").checked = !!m["--icount"];
+  $("setsheet").classList.add("open");
+  $("s-air").focus();
+}
+function closeSettings() { $("setsheet").classList.remove("open"); settingsFor = null; }
+function settingsFromSheet() {
+  const out = [], val = id => $(id).value.trim();
+  if (val("s-air")) out.push("--air", val("s-air").toLowerCase());
+  if (val("s-at")) out.push("--at", val("s-at"));
+  if (val("s-ble") && $("s-ble-field").style.display !== "none")
+    out.push("--ble-air", val("s-ble").toLowerCase());
+  if (val("s-ssid")) {
+    out.push("--wifi-ap", val("s-ssid"));
+    if (val("s-pass")) out.push("--wifi-wpa2", "--wifi-pass", val("s-pass"));
+    if ($("s-uplink").checked) out.push("--wifi-uplink");
+  }
+  if (val("s-gps")) out.push("--gps", val("s-gps"));
+  if ($("s-reboot").checked) out.push("--reboot");
+  if ($("s-icount").checked) out.push("--icount");
+  return out;
+}
+async function saveSettings() {
+  if (!settingsFor) return;
+  const name = settingsFor;
+  try {
+    await api(`/api/devices/${encodeURIComponent(name)}/settings`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ settings: settingsFromSheet() }),
+    });
+    closeSettings();
+    await refresh();
+    const d = devices.find(x => x.name === name);
+    snack(d && d.running ? `Saved — ${name} uses them from its next start`
+                         : `Saved — ${name} starts with them`);
+  } catch (err) { snack(String(err.message || err)); }
 }
 
 /* ================= create / remove ================= */
@@ -794,6 +921,11 @@ document.addEventListener("keyup", e => {
   if ($("view-run").style.display !== "none" && e.key)
     send({ type: "hostkey", keysym: e.key, char: e.key, down: false });
   if (e.key === "Shift") shiftHeld = false;
+});
+
+document.addEventListener("keydown", e => {
+  if (e.key === "Escape" && $("setsheet").classList.contains("open")) closeSettings();
+  if (e.key === "Enter" && $("setsheet").classList.contains("open")) saveSettings();
 });
 
 /* ================= init ================= */
