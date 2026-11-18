@@ -8,6 +8,23 @@ second board, the original T-Deck, is brought up alongside the first -- not to
 become a framework, but because one board cannot tell you which parts of a
 design were general and which were that board's accidents.
 
+## Getting started
+
+Three commands make a new machine ready, from the repository's root
+(ADR 0147). On Windows they run in the build container; Docker Desktop has to
+be running.
+
+```
+docker build -t boardemul-build .devcontainer
+docker run --rm -v "%CD%":/work -w /work boardemul-build bash -lc tools/build_qemu.sh
+python tools/fetch_firmware.py
+```
+
+`fetch_firmware.py` takes each vendor image from the commit
+`firmware/MANIFEST.toml` pins it at, and keeps it only if its SHA-256
+matches. Then `python tools/doctor.py` says whether anything is missing and
+what fixes it, and `python -m emu.web` opens the front door.
+
 ## State
 
 LilyGO's unmodified **factory firmware** boots under QEMU, brings up PSRAM and
@@ -28,15 +45,8 @@ can scrub back through the run's frames.
 
 On Windows the page and the browser stay on Windows and each run moves into
 the build container, because the board models need Unix sockets and QEMU is
-built there as a Linux program (ADR 0140). Docker Desktop has to be running,
-with the image built and QEMU built into the tree:
-
-```
-docker build -t boardemul-build .devcontainer
-docker run --rm -v "%CD%":/work -w /work boardemul-build bash -lc tools/build_qemu.sh
-```
-
-`BOARDEMUL_IMAGE` names another image; `BOARDEMUL_RUN_IN=native` or
+built there as a Linux program (ADR 0140): Docker Desktop has to be running,
+with the image and QEMU built as above. `BOARDEMUL_IMAGE` names another image; `BOARDEMUL_RUN_IN=native` or
 `container` overrides the choice. The server serves only its own page and a
 run takes per-run settings from it, never a program or a path (ADR 0139).
 
