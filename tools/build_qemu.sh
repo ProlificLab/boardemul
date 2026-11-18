@@ -106,18 +106,12 @@ for f in esp_bus_bridge esp_gpio_block esp_spi_master esp_i2c_master esp_i2s_mas
     fi
 done
 
-# ADR 0013: this one touches CPUXtensaState, so it must be compiled as a
-# target-specific source and cannot sit in hw/misc with the others.
-cp "${REPO_ROOT}/qemu-patch/esp_coproc_enable.c" "${SRC}/hw/xtensa/esp_coproc_enable.c"
-XTENSA_MESON="${SRC}/hw/xtensa/meson.build"
-if ! grep -qF "esp_coproc_enable.c" "${XTENSA_MESON}"; then
-    LINE="xtensa_ss.add(when: 'CONFIG_XTENSA_ESP32S3', if_true: files('esp_coproc_enable.c'))"
-    # Inserted before the hw_arch aggregation rather than appended after it,
-    # because meson has already consumed the source set by that point.
-    awk -v line="$LINE" '/^hw_arch \+=/ && !seen { print line; seen=1 } { print }' \
-        "${XTENSA_MESON}" > "${XTENSA_MESON}.tmp"
-    mv "${XTENSA_MESON}.tmp" "${XTENSA_MESON}"
-fi
+# ADR 0013's esp_coproc_enable.c is no longer ours to install: QEMU resets
+# CPENABLE to silicon's value itself (ADR 0143). Take it back out of a tree
+# an older script installed it in, so that the tree shows only what this
+# script installs.
+rm -f "${SRC}/hw/xtensa/esp_coproc_enable.c"
+sed -i "/esp_coproc_enable\.c/d" "${SRC}/hw/xtensa/meson.build"
 
 # The carried patches: the only places we change QEMU's own logic rather than
 # adding to it. Each is reported upstream and recorded in an ADR; when one
