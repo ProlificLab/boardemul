@@ -51,7 +51,7 @@ def flags(radio: Sx1262) -> int:
 
 
 def listen(radio: Sx1262, watching: int = IRQ_RX_DONE) -> None:
-    window(radio, [SET_DIO_IRQ, 0x00, watching, 0, 0, 0, 0, 0, 0])
+    window(radio, [SET_DIO_IRQ, 0x00, watching, 0x00, watching, 0, 0, 0, 0])
     window(radio, [SET_BUFFER_BASE, 0x00, 0x00])
     window(radio, [SET_RX, 0xFF, 0xFF, 0xFF])
 
@@ -129,12 +129,15 @@ def test_the_line_follows_the_flags(pair) -> None:
     listen(receiver)
     assert receiver.line() == (0, 0), "the line should start low"
 
+    # Read once the receiver is in RX, which is when BUSY falls (8.3.1): it
+    # starts where this board reads it (ADR 0112).
+    at(receiver, 0.001)
     transmit(sender, b"knock")
     receiver.pump()
-    ends = int(sender.airtime(len(b"knock")) * 1e9)
+    ends = 1_000_000 + int(sender.airtime(len(b"knock")) * 1e9)
     assert receiver.line() == (0, ends), "the rise is due when the packet ends"
 
-    at(receiver, ends / 1e9)
+    receiver.now_ns = ends
     receiver.pump()
     assert receiver.line() == (1, 0)
     assert not nudges, "the controller was told; a second writer could only be late"
@@ -161,7 +164,7 @@ def test_transmitting_takes_the_ramp_and_the_packet(pair) -> None:
     bit, both on the guest's clock (13.1.4, ADR 0112). Told instantly, a host
     would key the radio again before the first packet had left."""
     sender, _, _ = pair
-    window(sender, [SET_DIO_IRQ, 0x00, IRQ_TX_DONE, 0, 0, 0, 0, 0, 0])
+    window(sender, [SET_DIO_IRQ, 0x00, IRQ_TX_DONE, 0x00, IRQ_TX_DONE, 0, 0, 0, 0])
     transmit(sender, b"out")
     done = RAMP_NS + int(sender.airtime(3) * 1e9)
     assert sender.line() == (0, done)
@@ -262,6 +265,10 @@ def test_a_transmitting_radio_is_deaf(pair) -> None:
     transmit(receiver, b"talking")
     transmit(sender, b"over me")
     receiver.pump()
+    # Judged once its preamble has gone by: until then a receiver that
+    # entered RX could still lock on (ADR 0141).
+    at(receiver, 1.0)
+    receiver.pump()
     assert receiver.heard == 0 and receiver.deaf == 1
 
 
@@ -296,7 +303,7 @@ def test_listening_before_talking_is_answered(pair) -> None:
     length is answered at once.
     """
     sender, _, _ = pair
-    window(sender, [SET_DIO_IRQ, 0x00, IRQ_CAD_DONE, 0, 0, 0, 0, 0, 0])
+    window(sender, [SET_DIO_IRQ, 0x00, IRQ_CAD_DONE, 0x00, IRQ_CAD_DONE, 0, 0, 0, 0])
     window(sender, [SET_CAD])
     assert sender.cad_sweeps == 1
     assert sender.irq & IRQ_CAD_DONE, "the sweep never reported finishing"
@@ -307,7 +314,7 @@ def test_a_sweep_lasts_its_symbols_and_half_a_symbol(pair) -> None:
     """6.1.5 and Table 13-72: four symbols at SF7 and 125 kHz, 1.024 ms
     each, then half a symbol to post-process."""
     sender, _, _ = pair
-    window(sender, [SET_DIO_IRQ, 0x00, IRQ_CAD_DONE, 0, 0, 0, 0, 0, 0])
+    window(sender, [SET_DIO_IRQ, 0x00, IRQ_CAD_DONE, 0x00, IRQ_CAD_DONE, 0, 0, 0, 0])
     window(sender, [SET_CAD_PARAMS, 0x02, 0x16, 0x0A, 0x00, 0, 0, 0])
     window(sender, [SET_CAD])
     done = int(4.5 * 1.024e-3 * 1e9)

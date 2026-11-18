@@ -67,7 +67,8 @@ def ends(start_ns: int, payload: bytes = b"hello") -> int:
 @pytest.fixture()
 def radio() -> Sx1262:
     radio = Sx1262(air=TimedAir())
-    window(radio, [SET_DIO_IRQ, 0x00, 0x03, 0, 0x03, 0, 0, 0, 0], 0)
+    # TxDone, RxDone, CadDone and CadDetected logged; the first two on DIO1.
+    window(radio, [SET_DIO_IRQ, 0x01, 0x83, 0x00, 0x03, 0, 0, 0, 0], 0)
     window(radio, [SET_PACKET_PARAMS, 0x00, 0x08, 0x00, 5, 0x01, 0x00], 0)
     return radio
 

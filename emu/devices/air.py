@@ -129,6 +129,14 @@ class AirMedium:
         """Whatever has arrived since the last look."""
         return [frame for _port, frame in self._drain()]
 
+    def poll_named(self) -> list[tuple[str, bytes]]:
+        """Whatever has arrived, each with the board that sent it: the port it
+        came from, as that board's file in the directory names it. Who sent a
+        frame is the air's to say, not the packet's: a relayed packet carries
+        another node's address (ADR 0141)."""
+        names = {port: name for name, port, _timed in self._listing()}
+        return [(names.get(port, f"port {port}"), frame) for port, frame in self._drain()]
+
     def _drain(self) -> list[tuple[int, bytes]]:
         """Every datagram waiting, with the port it came from. Marks are
         taken out and kept; frames are returned."""

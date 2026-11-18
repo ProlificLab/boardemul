@@ -82,6 +82,7 @@ def test_transmitting_reports_that_it_finished(radio: Sx1262) -> None:
     """Nothing goes out, but a host that sends waits for this flag and blocks
     for its whole timeout without it. With nothing to send it is raised once
     the PA has ramped, on the guest's clock (ADR 0112)."""
+    window(radio, bytes([0x08, 0x00, 0x01, 0x00, 0x01, 0, 0, 0, 0]))  # SetDioIrqParams
     window(radio, bytes([0x83, 0x00, 0x00, 0x00]))
     assert radio.mode == MODE_TX
     radio.now_ns = 1_000_000
@@ -90,6 +91,7 @@ def test_transmitting_reports_that_it_finished(radio: Sx1262) -> None:
 
 
 def test_clearing_the_flags_clears_them(radio: Sx1262) -> None:
+    window(radio, bytes([0x08, 0x00, 0x01, 0x00, 0x01, 0, 0, 0, 0]))
     window(radio, bytes([0x83, 0x00, 0x00, 0x00]))
     radio.now_ns = 1_000_000
     window(radio, bytes([0x02, 0xFF, 0xFF]))                # ClearIrqStatus
