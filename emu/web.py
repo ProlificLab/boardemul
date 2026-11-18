@@ -10,7 +10,9 @@ frames are served as PNGs and whose input goes into the run's own
 host key events, and the chord logic (ADR 0127's `TDeckTyping`) decides
 what they mean on the board.
 
-Bound to 127.0.0.1. This is a localhost tool, not a service.
+Bound to 127.0.0.1. This is a localhost tool, not a service, and it serves
+only its own page: other pages in the same browser are refused, and a run
+takes per-run settings from here, never a program or a path (ADR 0139).
 """
 
 from __future__ import annotations
@@ -34,6 +36,22 @@ from emu.skin import InputWriter, LETTER_KEYS, KEYSYMS, TDeckTyping  # noqa: E40
 
 WEB_DIR = Path(__file__).resolve().parent / "web"
 UPLOADS = ".uploads"
+# The most a firmware upload may carry: four times the largest flash these
+# boards have (ADR 0139).
+UPLOAD_LIMIT = 64 * 1024 * 1024
+
+# The per-run settings the browser may pass to `start`, and whether each
+# takes a value (ADR 0139). Nothing here names a file, a directory or a
+# program; those stay on the command line of whoever types them.
+RUN_FLAGS = {
+    "--wifi-ap": True, "--wifi-wpa2": False, "--wifi-pass": True,
+    "--wifi-uplink": False, "--gps": True, "--at": True, "--antenna": True,
+    "--environment": True, "--obstruction": True, "--icount": False,
+    "--reboot": False,
+}
+
+# What a request's Host may name, at the server's own port (ADR 0139).
+LOOPBACK = ("127.0.0.1", "localhost", "[::1]")
 
 # How long a frame request waits for a redraw before answering "not yet".
 # A test turns this down so a quiet long-poll is fast to assert on.
@@ -138,6 +156,35 @@ class ServerState:
 
 class Conflict(Exception):
     pass
+
+
+class Refused(Exception):
+    """A request this server will not serve, and the status that says why."""
+
+    def __init__(self, status: int, message: str):
+        super().__init__(message)
+        self.status = status
+
+
+def run_args(args) -> tuple[str, ...]:
+    """The browser's run arguments, held to RUN_FLAGS (ADR 0139)."""
+    if not isinstance(args, list):
+        raise Refused(400, "args must be a list")
+    out: list[str] = []
+    i = 0
+    while i < len(args):
+        flag = args[i]
+        if not isinstance(flag, str) or flag not in RUN_FLAGS:
+            raise Refused(400, f"{flag!r} is not a setting a run takes from here")
+        out.append(flag)
+        i += 1
+        if RUN_FLAGS[flag]:
+            value = args[i] if i < len(args) else None
+            if not isinstance(value, str) or value.startswith("--"):
+                raise Refused(400, f"{flag} needs a value")
+            out.append(value)
+            i += 1
+    return tuple(out)
 
 
 class NotFound(Exception):
@@ -275,7 +322,29 @@ class Handler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length") or 0)
         if not length:
             return {}
+        # Not a type a page elsewhere can send without asking first, and
+        # this server grants no such asking (ADR 0139).
+        if self._content_type() != "application/json":
+            raise Refused(415, "a body must be application/json")
         return json.loads(self.rfile.read(length))
+
+    def _content_type(self) -> str:
+        return (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+
+    def _guard(self, changes: bool) -> None:
+        """Serve this server's own page and programs, nothing else (ADR 0139).
+
+        Host must name the server, so a rebound name reads nothing. A
+        request that changes something and carries an Origin must carry
+        this server's: browsers send one on every cross-origin POST and
+        DELETE, and a program sends none."""
+        host = (self.headers.get("Host") or "").lower()
+        if host not in self.server.hosts:
+            raise Refused(403, f"not this server: Host {host!r}")
+        origin = self.headers.get("Origin")
+        if changes and origin is not None and \
+                origin.lower() not in {f"http://{h}" for h in self.server.hosts}:
+            raise Refused(403, f"not this server's page: Origin {origin!r}")
 
     def _segments(self) -> list[str]:
         return [urllib.parse.unquote(s) for s in self.path.split("?")[0].split("/")
@@ -290,6 +359,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         try:
+            self._guard(changes=False)
             segs = self._segments()
             if not segs:
                 return self._file(WEB_DIR / "index.html", "text/html; charset=utf-8")
@@ -358,6 +428,8 @@ class Handler(BaseHTTPRequestHandler):
                     except (OSError, ValueError):
                         return self._json({})
             return self._json({"error": "not found"}, 404)
+        except Refused as exc:
+            return self._json({"error": str(exc)}, exc.status)
         except (NotFound, device_folder.DeviceError) as exc:
             return self._json({"error": str(exc)}, 404)
         except Conflict as exc:
@@ -367,6 +439,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         try:
+            self._guard(changes=True)
             segs = self._segments()
             if segs[:2] == ["api", "firmware"]:
                 return self._upload()
@@ -375,7 +448,7 @@ class Handler(BaseHTTPRequestHandler):
                     return self._create()
                 name = segs[2]
                 if len(segs) == 4 and segs[3] == "start":
-                    extra = tuple(self._body().get("args", []))
+                    extra = run_args(self._body().get("args", []))
                     result = self.server.state.start(name, extra=extra)
                     return self._json(result)
                 if len(segs) == 4 and segs[3] == "stop":
@@ -387,6 +460,8 @@ class Handler(BaseHTTPRequestHandler):
             if segs[:2] == ["api", "runs"] and len(segs) == 4 and segs[3] == "input":
                 return self._input(segs[2])
             return self._json({"error": "not found"}, 404)
+        except Refused as exc:
+            return self._json({"error": str(exc)}, exc.status)
         except (NotFound, device_folder.DeviceError) as exc:
             return self._json({"error": str(exc)}, 404)
         except Conflict as exc:
@@ -396,11 +471,14 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_DELETE(self):
         try:
+            self._guard(changes=True)
             segs = self._segments()
             if segs[:2] == ["api", "devices"] and len(segs) == 3:
                 self._remove(segs[2])
                 return self._json({"removed": segs[2]})
             return self._json({"error": "not found"}, 404)
+        except Refused as exc:
+            return self._json({"error": str(exc)}, exc.status)
         except Exception as exc:
             return self._json({"error": str(exc)}, 500)
 
@@ -430,9 +508,13 @@ class Handler(BaseHTTPRequestHandler):
     def _upload(self) -> None:
         name = self._query().get("name", "firmware.bin")
         name = Path(name).name or "firmware.bin"
+        if self._content_type() != "application/octet-stream":
+            raise Refused(415, "a firmware upload must be application/octet-stream")
         length = int(self.headers.get("Content-Length") or 0)
         if not length:
             return self._json({"error": "empty upload"}, 400)
+        if length > UPLOAD_LIMIT:
+            raise Refused(413, f"an upload is at most {UPLOAD_LIMIT >> 20} MiB")
         uploads = self.server.state.devices / UPLOADS
         uploads.mkdir(parents=True, exist_ok=True)
         path = uploads / f"{int(time.time())}-{name}"
@@ -515,16 +597,25 @@ class Handler(BaseHTTPRequestHandler):
 class WebServer(ThreadingHTTPServer):
     daemon_threads = True
 
-    def __init__(self, address, state: ServerState):
+    def __init__(self, address, state: ServerState, names: tuple[str, ...] = ()):
         super().__init__(address, Handler)
         self.state = state
+        port = self.server_address[1]
+        # What a request's Host may say, and so its Origin (ADR 0139): the
+        # loopback names at this port, and any name the server was told it
+        # is reached by, as `host` or `host:port`.
+        self.hosts = {f"{name}:{port}" for name in LOOPBACK}
+        for name in names:
+            name = name.lower()
+            self.hosts.add(name if name.rsplit(":", 1)[-1].isdigit() else f"{name}:{port}")
 
 
-def make_server(devices: Path, port: int = 0) -> WebServer:
+def make_server(devices: Path, port: int = 0,
+                names: tuple[str, ...] = ()) -> WebServer:
     """The server, bound and ready — `port 0` picks a free one, which is
     what tests use."""
     state = ServerState(devices)
-    return WebServer(("127.0.0.1", port), state)
+    return WebServer(("127.0.0.1", port), state, names)
 
 
 def main(argv: list[str] | None = None) -> int:

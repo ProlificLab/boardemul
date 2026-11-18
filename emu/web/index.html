@@ -438,7 +438,8 @@ function chooseFile(files) {
 async function create() {
   try {
     const up = await fetch(`/api/firmware?name=${encodeURIComponent(sheetFile.name)}`,
-                           { method: "POST", body: sheetFile });
+                           { method: "POST", body: sheetFile,
+                             headers: { "Content-Type": "application/octet-stream" } });
     if (!up.ok) throw new Error((await up.json()).error);
     const made = await api("/api/devices", {
       method: "POST",

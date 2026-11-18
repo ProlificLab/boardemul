@@ -40,6 +40,7 @@ def server(tmp_path, monkeypatch):
     started = []
     monkeypatch.setattr(device_folder.RunHandle, "start",
                         lambda self: started.append(self.device.name))
+    monkeypatch.setattr(device_folder.RunHandle, "alive", property(lambda self: True))
 
     srv = web.make_server(devices, 0)
     thread = threading.Thread(target=srv.serve_forever, daemon=True)
@@ -52,15 +53,15 @@ def server(tmp_path, monkeypatch):
 
 
 def call(client: http.client.HTTPConnection, method: str, path: str,
-         body: bytes | dict | None = None):
-    headers = {}
+         body: bytes | dict | None = None, headers: dict | None = None):
+    headers = dict(headers or {})
     payload = b""
     if isinstance(body, dict):
         payload = json.dumps(body).encode()
-        headers["Content-Type"] = "application/json"
+        headers.setdefault("Content-Type", "application/json")
     elif body is not None:
         payload = body
-        headers["Content-Type"] = "application/octet-stream"
+        headers.setdefault("Content-Type", "application/octet-stream")
     client.request(method, path, body=payload, headers=headers)
     res = client.getresponse()
     data = res.read()
@@ -243,3 +244,100 @@ def test_the_geometry_names_every_cap_and_the_panel(server):
     assert len(geo["keys"]) == 35
     assert geo["trackball"]["r"] > 0             # the T-Deck has one
     assert geo["screen"]["w"] == 320 and geo["screen"]["h"] == 240
+
+
+# -- only its own page (ADR 0139) -------------------------------------------
+
+
+def _pocket(client, devices):
+    call(client, "POST", "/api/devices",
+         {"name": "pocket", "board": "tdeck-max", "firmware": _up(client, devices)})
+
+
+def _port(client) -> int:
+    return client.port
+
+
+def test_a_page_from_elsewhere_cannot_start_a_device(server):
+    """A cross-origin POST carries its Origin; the server refuses it."""
+    client, devices, started = server
+    _pocket(client, devices)
+    status, body, _h = call(client, "POST", "/api/devices/pocket/start",
+                            headers={"Origin": "https://example.com"})
+    assert status == 403 and started == []
+
+
+def test_the_servers_own_page_may(server):
+    client, devices, started = server
+    _pocket(client, devices)
+    for origin in (f"http://127.0.0.1:{_port(client)}", f"http://localhost:{_port(client)}"):
+        status, _b, _h = call(client, "POST", "/api/devices/pocket/start",
+                              headers={"Origin": origin})
+        assert status == 200, origin
+    assert started == ["pocket"]          # the second start opened the first
+
+
+def test_a_body_that_does_not_say_json_is_refused(server):
+    """What a no-cors page can send: text/plain. It is not taken as JSON."""
+    client, devices, started = server
+    _pocket(client, devices)
+    status, _b, _h = call(client, "POST", "/api/devices", json.dumps(
+        {"name": "other", "board": "tdeck-max", "firmware": "x"}).encode(),
+        headers={"Content-Type": "text/plain"})
+    assert status == 415
+    assert not (devices / "other").exists()
+
+
+def test_an_upload_must_say_what_it_is(server):
+    client, devices, _s = server
+    status, _b, _h = call(client, "POST", "/api/firmware?name=x.exe", b"MZ" * 64,
+                          headers={"Content-Type": "text/plain"})
+    assert status == 415
+    assert not (devices / ".uploads").exists()
+
+
+def test_a_rebound_host_reads_nothing(server):
+    """DNS rebinding keeps the attacker's name in Host."""
+    client, _d, _s = server
+    status, _b, _h = call(client, "GET", "/api/devices",
+                          headers={"Host": f"evil.example:{_port(client)}"})
+    assert status == 403
+
+
+def test_a_name_the_server_was_told_is_accepted(tmp_path):
+    srv = web.make_server(tmp_path / "devices", 0, names=("deck.local", "box:9000"))
+    try:
+        port = srv.server_address[1]
+        assert f"deck.local:{port}" in srv.hosts and "box:9000" in srv.hosts
+        assert f"localhost:{port}" in srv.hosts
+    finally:
+        srv.server_close()
+
+
+@pytest.mark.parametrize("args", [
+    ["--qemu", "C:/Users/x/evil.exe"],
+    ["--outdir", "/tmp/elsewhere"],
+    ["--overlay", "0x0=/etc/passwd"],
+    ["--air", "/tmp/air"],
+    ["--wifi-ap", "--qemu"],
+    ["--wifi-ap"],
+    ["--qemu=/bin/sh"],
+    "--icount",
+])
+def test_start_refuses_anything_but_run_settings(server, args):
+    client, devices, started = server
+    _pocket(client, devices)
+    status, _b, _h = call(client, "POST", "/api/devices/pocket/start", {"args": args})
+    assert status == 400 and started == []
+
+
+def test_start_passes_the_run_settings_through(server, monkeypatch):
+    client, devices, _s = server
+    _pocket(client, devices)
+    seen = []
+    monkeypatch.setattr(device_folder.RunHandle, "start",
+                        lambda self: seen.append(self.extra))
+    args = ["--wifi-ap", "deck,100,1", "--wifi-wpa2", "--wifi-pass", "secret123",
+            "--gps", "48.85,2.35", "--reboot"]
+    status, _b, _h = call(client, "POST", "/api/devices/pocket/start", {"args": args})
+    assert status == 200 and seen == [tuple(args)]
