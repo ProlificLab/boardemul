@@ -156,3 +156,4 @@ superseded ADR is marked superseded and points forward.
 | [0148](0148-the-max-carries-the-chips-sound-and-bluetooth.md) | The Max board carries the chip's I2S controllers and Bluetooth core | Accepted (follows 0137) |
 | [0149](0149-a-device-keeps-snapshots-and-its-card-is-yours.md) | A device keeps snapshots of its storage, and its card is yours | Accepted (adds to 0133) |
 | [0150](0150-a-firmware-brings-its-filesystem.md) | A firmware brings its filesystem, as its installer would | Accepted (adds to 0021, 0147) |
+| [0151](0151-the-screen-shows-its-backlight.md) | The T-Deck's screen shows its backlight | Accepted (takes up 0053's undimmed frames) |
