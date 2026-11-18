@@ -146,3 +146,4 @@ superseded ADR is marked superseded and points forward.
 | [0138](0138-qemu-moves-to-the-tag-that-carries-nine-of-our-fixes.md) | QEMU moves to the tag that carries nine of our fixes | Accepted (ends nine carried patches) |
 | [0139](0139-the-web-server-answers-only-its-own-page.md) | The web server answers only its own page | Accepted (amends 0135) |
 | [0140](0140-a-run-starts-in-the-build-container-where-it-cannot-start-natively.md) | A run starts in the build container where it cannot start natively | Accepted (amends 0133, 0134, 0135) |
+| [0141](0141-the-radio-says-a-packet-is-arriving-and-a-sweep-leaves-rx.md) | The radio says a packet is arriving, and a sweep leaves RX | Accepted (closes 0111's CAD exception; amends 0113) |
