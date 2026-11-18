@@ -35,26 +35,31 @@ def main(argv: list[str] | None = None) -> int:
                     help="where to write the merged flash image "
                          "(default: firmware/restart_probe.bin)")
     args = ap.parse_args(argv)
+    return build_probe(HERE, args.out)
 
-    subprocess.run([sys.executable, "-m", "platformio", "run", "-d", str(HERE)], check=True)
+
+def build_probe(here: Path, out: Path) -> int:
+    """Build the PlatformIO project in `here` and merge it into one flash
+    image at `out`. Shared with the other probes (ADR 0142)."""
+    subprocess.run([sys.executable, "-m", "platformio", "run", "-d", str(here)], check=True)
 
     pio = Path(os.environ.get("PLATFORMIO_CORE_DIR", Path.home() / ".platformio"))
     esptool = pio / "packages" / "tool-esptoolpy" / "esptool.py"
     boot_app0 = (pio / "packages" / "framework-arduinoespressif32" / "tools"
                  / "partitions" / "boot_app0.bin")
-    build = HERE / ".pio" / "build" / "probe"
+    build = here / ".pio" / "build" / "probe"
     for needed in (esptool, boot_app0):
         if not needed.is_file():
             raise SystemExit(f"missing {needed}; is PlatformIO's espressif32 platform installed?")
 
-    args.out.parent.mkdir(parents=True, exist_ok=True)
+    out.parent.mkdir(parents=True, exist_ok=True)
     subprocess.run([sys.executable, str(esptool), "--chip", "esp32s3", "merge_bin",
-                    "-o", str(args.out), "--flash_mode", "dio", "--flash_size", "16MB",
+                    "-o", str(out), "--flash_mode", "dio", "--flash_size", "16MB",
                     "0x0", str(build / "bootloader.bin"),
                     "0x8000", str(build / "partitions.bin"),
                     "0xe000", str(boot_app0),
                     "0x10000", str(build / "firmware.bin")], check=True)
-    print(f"wrote {args.out}")
+    print(f"wrote {out}")
     return 0
 
 
