@@ -24,7 +24,7 @@ from emu.serial_link import SerialServer
 from emu.devices.epaper import EPaperPanel
 from emu.devices.i2c_devices import CST328, TCA8418, tdeck_max_devices
 from emu import sdimage
-from emu.devices.air import AirMedium, keep_time
+from emu.devices.air import HOST as AIR_LOOPBACK, AirMedium, air_host, keep_time
 from emu.devices.gps import UBloxM10
 from emu.devices.ledc import Ledc
 from emu.devices.modem import A7682E
@@ -102,6 +102,12 @@ SOC_DEVICES: list[str] = []
 # scan and find nothing, correctly; with one, the launcher's scan answers.
 WIFI_MAC_BASE = 0x60033000
 IRQ_WIFI_MAC = 0            # ETS_WIFI_MAC_INTR_SOURCE
+# The chip's two I2S controllers and its Bluetooth core, wired as the T-Deck
+# wires them, since they are the ESP32-S3's and not the board's (ADR 0148).
+I2S0_BASE, GDMA_PERIPH_I2S0 = 0x6000F000, 3
+I2S1_BASE, GDMA_PERIPH_I2S1 = 0x6002D000, 4
+BLE_CORE_BASE = 0x60031000
+IRQ_RWBLE = 8               # ETS_RWBLE_INTR_SOURCE
 
 # Windows nothing models. Claiming them changes no behaviour on its own -- reads
 # still return what was last written -- but it stops read-modify-write being
@@ -112,7 +118,6 @@ IRQ_WIFI_MAC = 0            # ETS_WIFI_MAC_INTR_SOURCE
 # gates in PhyGates answer the waits that stall it otherwise.
 UNMODELLED = {
     "ledc": 0x60019000,
-    "i2s0": 0x6002D000,
     "lcd_cam": 0x60041000,
     "uhci": 0x60014000,
     "pcnt": 0x60017000,
@@ -289,21 +294,20 @@ def build(outdir: Path, air: str | None = None, ble_air: str | None = None,
           air_boards: int = 0, air_quantum_ns: int = 1_000_000,
           audio: bool = False, mic: str | None = None,
           air_name: str | None = None) -> Board:
-    """`ble_air` is accepted and does nothing here: this board has a radio and
-    the T-Deck's WiFi MAC (ADR 0137), but no Bluetooth controller modelled, so
-    there is no part for it to reach. Every board takes the same arguments on
-    purpose -- when they did not, the caller's `except TypeError` quietly
-    dropped this board back to a build with no air at all, and the radio
-    options did nothing for a release (ADR 0052). Being ignored is said out
-    loud below for the same reason.
+    """Every board takes the same arguments on purpose -- when they did
+    not, the caller's `except TypeError` quietly dropped this board back to a
+    build with no air at all, and the radio options did nothing for a release
+    (ADR 0052). The chip's WiFi MAC, I2S controllers and Bluetooth core are
+    the T-Deck's devices (ADRs 0137, 0148), so this board takes all of them.
     """
     outdir = Path(outdir)
-    if ble_air:
-        print(f"ble-air : {ble_air} ignored -- this board has no Bluetooth "
-              "controller modelled")
-    if audio or mic:
-        # Its I2S is a claimed window, not a controller (ADRs 0008, 0146).
-        print("audio   : ignored -- this board has no I2S controller modelled")
+    # Sound out and in (ADR 0146), on the chip's controllers (ADR 0148).
+    sound = ""
+    if audio:
+        (outdir / "audio").mkdir(parents=True, exist_ok=True)
+        sound += ",speaker={}".format((outdir / "audio").as_posix() + "/{name}")
+    if mic:
+        sound += f",mic={Path(mic).resolve().as_posix()}"
     panel = EPaperPanel(outdir / "frames",
                         quarter_turns=int(os.environ.get("BOARDEMUL_ROTATE", "0")))
     gpio = GpioClient(outdir / "gpio.sock")
@@ -375,6 +379,15 @@ def build(outdir: Path, air: str | None = None, ble_air: str | None = None,
         f"esp-wifi-mac,base=0x{WIFI_MAC_BASE:x},irq={IRQ_WIFI_MAC}"
         + (f",beacon-ms={min(wifi_ap[1], 5)},ap-channel={wifi_ap[2] or 1}"
            f",frames={outdir / 'wifi.sock'}" if wifi_ap else ""),
+        # The chip's I2S controllers and Bluetooth core (ADR 0148).
+        f"esp-i2s-master,name=i2s0,base=0x{I2S0_BASE:x},"
+        f"periph={GDMA_PERIPH_I2S0}" + sound.format(name="i2s0"),
+        f"esp-i2s-master,name=i2s1,base=0x{I2S1_BASE:x},"
+        f"periph={GDMA_PERIPH_I2S1}" + sound.format(name="i2s1"),
+        f"esp-ble-core,base=0x{BLE_CORE_BASE:x},irq={IRQ_RWBLE}"
+        + (f",air={ble_air},airname={air_name or outdir.name}" if ble_air else "")
+        + (f",airhost={air_host()}" if ble_air and air_host() != AIR_LOOPBACK
+           else ""),
     ]
 
     frames = None

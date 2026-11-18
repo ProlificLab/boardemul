@@ -39,12 +39,13 @@ def _done(uart: str, frames: list) -> bool:
     return "probe: done" in uart
 
 
-@pytest.fixture(scope="module")
-def probed(tmp_path_factory) -> tuple[Run, Path]:
+@pytest.fixture(scope="module", params=["tdeck", "tdeck-max"])
+def probed(request, tmp_path_factory) -> tuple[Run, Path]:
+    """On both boards: the controllers are the chip's (ADR 0148)."""
     work = tmp_path_factory.mktemp("audio")
     tone = work / "tone.wav"
     write_tone(tone, 440.0, 5.0)
-    run = run_emulator(work / "run", firmware=FIRMWARE_AUDIO_PROBE, board="tdeck",
+    run = run_emulator(work / "run", firmware=FIRMWARE_AUDIO_PROBE, board=request.param,
                        timeout=120, extra=("--audio", "--mic", str(tone)),
                        until=_done)
     return run, work / "run"

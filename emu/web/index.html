@@ -510,8 +510,6 @@ function openSettings(name) {
   $("s-air").value = m["--air"] || "";
   $("s-at").value = m["--at"] || "";
   $("s-ble").value = m["--ble-air"] || "";
-  // Only the T-Deck board models the Bluetooth controller.
-  $("s-ble-field").style.display = d.board === "tdeck" ? "" : "none";
   $("s-ssid").value = (m["--wifi-ap"] || "").split(",")[0];
   $("s-pass").value = m["--wifi-pass"] || "";
   $("s-uplink").checked = !!m["--wifi-uplink"];
@@ -519,8 +517,6 @@ function openSettings(name) {
   $("s-reboot").checked = !!m["--reboot"];
   $("s-icount").checked = !!m["--icount"];
   $("s-audio").checked = !!m["--audio"];
-  // Only the T-Deck board models the I2S controllers (ADR 0146).
-  $("s-audio-field").style.display = d.board === "tdeck" ? "" : "none";
   $("setsheet").classList.add("open");
   $("s-air").focus();
 }
@@ -529,8 +525,7 @@ function settingsFromSheet() {
   const out = [], val = id => $(id).value.trim();
   if (val("s-air")) out.push("--air", val("s-air").toLowerCase());
   if (val("s-at")) out.push("--at", val("s-at"));
-  if (val("s-ble") && $("s-ble-field").style.display !== "none")
-    out.push("--ble-air", val("s-ble").toLowerCase());
+  if (val("s-ble")) out.push("--ble-air", val("s-ble").toLowerCase());
   if (val("s-ssid")) {
     out.push("--wifi-ap", val("s-ssid"));
     if (val("s-pass")) out.push("--wifi-wpa2", "--wifi-pass", val("s-pass"));
@@ -539,8 +534,7 @@ function settingsFromSheet() {
   if (val("s-gps")) out.push("--gps", val("s-gps"));
   if ($("s-reboot").checked) out.push("--reboot");
   if ($("s-icount").checked) out.push("--icount");
-  if ($("s-audio").checked && $("s-audio-field").style.display !== "none")
-    out.push("--audio");
+  if ($("s-audio").checked) out.push("--audio");
   return out;
 }
 async function saveSettings() {
