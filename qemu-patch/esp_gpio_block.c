@@ -63,6 +63,10 @@ OBJECT_DECLARE_SIMPLE_TYPE(EspGpioBlock, ESP_GPIO_BLOCK)
 #define R_PCPU_INT1      0x68
 #define R_PCPU_NMI_INT1  0x6C
 #define R_PIN0           0x74
+/* GPIO_FUNCn_OUT_SEL_CFG_REG: which signal drives pin n, in bits 8..0
+ * (gpio_reg.h; SIG_GPIO_OUT_IDX, 256, is the pin's own output register). */
+#define R_FUNC0_OUT_SEL  0x554
+#define OUT_SEL_MASK     0x1FF
 
 /* GPIO_PINn: INT_TYPE at bits 9:7, INT_ENA at bits 17:13. Bit 0 of INT_ENA is
  * the PRO-CPU interrupt; the rest are NMI and APP CPU. */
@@ -137,7 +141,21 @@ struct EspGpioBlock {
     qemu_irq irq_line;
     int irq_level;
     int fd;
+
+    /* ADR 0151: pins a board asked to hear about, and where to tell it. */
+    char *report_path;
+    uint64_t report_pins;
+    int report_fd;
 };
+
+/* One report: a pin's level and the signal routed to it, at a guest time. */
+typedef struct QEMU_PACKED EspGpioReport {
+    uint8_t pin;
+    uint8_t level;
+    uint16_t out_sel;
+    uint32_t reserved;
+    uint64_t guest_ns;
+} EspGpioReport;
 
 static EspGpioBlock *the_block;   /* set at realize; see esp_gpio_pin_level */
 
@@ -210,6 +228,28 @@ static void gpio_reset(void *opaque)
     gpio_update_irq(s);
 }
 
+/* Tell the board what a reported pin is doing (ADR 0151). A stream, not
+ * datagrams: Linux queues ten datagrams on a Unix socket by default, and one
+ * change of brightness is thirty edges inside a few microseconds. The stream's
+ * buffer holds thousands; a record that still cannot go is dropped. */
+static void gpio_report(EspGpioBlock *s, unsigned pin, int level)
+{
+    EspGpioReport msg = {
+        .pin = pin,
+        .level = level,
+        .out_sel = s->regs[(R_FUNC0_OUT_SEL + 4 * pin) / 4] & OUT_SEL_MASK,
+        .guest_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL),
+    };
+
+    if (s->report_fd < 0 || pin >= GPIO_PIN_COUNT ||
+        !(s->report_pins & (1ULL << pin))) {
+        return;
+    }
+    if (send(s->report_fd, &msg, sizeof(msg), MSG_DONTWAIT | MSG_NOSIGNAL) < 0) {
+        /* The board has gone, or is that far behind. */
+    }
+}
+
 static void gpio_latch(EspGpioBlock *s, unsigned pin, int before, int after)
 {
     uint32_t type = (s->pin_cfg[pin] >> PIN_INT_TYPE_SHIFT) & PIN_INT_TYPE_MASK;
@@ -241,6 +281,7 @@ static void gpio_levels_changed(EspGpioBlock *s, uint64_t before)
             continue;
         }
         gpio_latch(s, pin, (before >> pin) & 1, (after >> pin) & 1);
+        gpio_report(s, pin, (after >> pin) & 1);
         for (unsigned w = 0; w < s->watch_count; w++) {
             if (s->watches[w].pin == pin) {
                 s->watches[w].fn(s->watches[w].opaque, pin, (after >> pin) & 1);
@@ -351,6 +392,11 @@ static void gpio_write(void *opaque, hwaddr offset, uint64_t val, unsigned size)
     default:
         if (reg / 4 < GPIO_REG_COUNT) {
             s->regs[reg / 4] = value;
+        }
+        if (reg >= R_FUNC0_OUT_SEL && reg < R_FUNC0_OUT_SEL + GPIO_PIN_COUNT * 4) {
+            /* A pin given to another signal, or back to its own output. */
+            unsigned pin = (reg - R_FUNC0_OUT_SEL) / 4;
+            gpio_report(s, pin, (gpio_levels(s) >> pin) & 1);
         }
         return;
     }
@@ -521,6 +567,30 @@ static void gpio_realize(DeviceState *dev, Error **errp)
         qemu_set_fd_handler(s->fd, gpio_host_readable, NULL, s);
     }
 
+    if (s->report_path && s->report_path[0]) {
+        struct sockaddr_un to;
+
+        if (strlen(s->report_path) >= sizeof(to.sun_path)) {
+            error_setg(errp, "esp-gpio-block: report path too long");
+            return;
+        }
+        /* A socket the board listens on before QEMU starts (ADR 0151). */
+        s->report_fd = socket(AF_UNIX, SOCK_STREAM, 0);
+        memset(&to, 0, sizeof(to));
+        to.sun_family = AF_UNIX;
+        pstrcpy(to.sun_path, sizeof(to.sun_path), s->report_path);
+        if (s->report_fd < 0 ||
+            connect(s->report_fd, (struct sockaddr *)&to, sizeof(to)) < 0) {
+            error_setg_errno(errp, errno, "esp-gpio-block: report to %s",
+                             s->report_path);
+            if (s->report_fd >= 0) {
+                close(s->report_fd);
+                s->report_fd = -1;
+            }
+            return;
+        }
+    }
+
     memory_region_init_io(&s->iomem_lo, OBJECT(s), &gpio_ops, s,
                           "esp.gpio.lo", R_STRAP);
     memory_region_add_subregion_overlap(get_system_memory(), s->base,
@@ -538,6 +608,9 @@ static Property gpio_props[] = {
     DEFINE_PROP_UINT64("base", EspGpioBlock, base, 0x60004000),
     DEFINE_PROP_INT32("priority", EspGpioBlock, priority, 100),
     DEFINE_PROP_INT32("irq", EspGpioBlock, irq_source, -1),
+    /* ADR 0151: a socket to tell, and the pins to tell it about. */
+    DEFINE_PROP_STRING("report", EspGpioBlock, report_path),
+    DEFINE_PROP_UINT64("report_pins", EspGpioBlock, report_pins, 0),
     DEFINE_PROP_END_OF_LIST(),
 };
 
@@ -548,6 +621,7 @@ static void gpio_init(Object *obj)
     s->intc_type = g_strdup("misc.esp32s3.intmatrix");
     s->irq_level = -1;
     s->fd = -1;
+    s->report_fd = -1;
 }
 
 static void gpio_class_init(ObjectClass *klass, void *data)
