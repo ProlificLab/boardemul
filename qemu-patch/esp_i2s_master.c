@@ -11,11 +11,11 @@
  * The fork already models GDMA: it walks descriptors, writes guest memory and
  * raises the interrupts. So this model is small. It keeps the I2S registers so
  * read-modify-write behaves (ADR 0008), watches I2S_RX_CONF for RX_START, and
- * then hands the DMA engine a buffer of silence whenever the next descriptor
- * in the ring belongs to the hardware. Silence is the honest sample value:
- * there is no audio into this emulator, and what the firmware waits for is the
- * transfer, not sound. The transfer still takes as long as the sample clock
- * the guest set says it does, in both directions (ADR 0119).
+ * then hands the DMA engine a buffer whenever the next descriptor in the ring
+ * belongs to the hardware: silence, or a WAV file given as the microphone
+ * (ADR 0146). What a transmit stream plays can be written to a WAV file. The
+ * transfer takes as long as the sample clock the guest set says it does, in
+ * both directions (ADR 0119).
  *
  * Every register number and bit position here comes from Espressif's headers
  * and the ESP32-S3 technical reference manual. An earlier attempt inferred them
@@ -63,6 +63,10 @@ OBJECT_DECLARE_SIMPLE_TYPE(EspI2sMaster, ESP_I2S_MASTER)
 #define OUT_LINK_START  (1u << 21)
 #define LINK_ADDR       0x000FFFFF
 
+/* GDMA_IN_CONF1's CHECK_OWNER, bit 12: whether the channel heeds a
+ * descriptor's owner bit at all. */
+#define GDMA_CHECK_OWNER (1u << 12)
+
 /* GDMA_PERI_IN_SEL is six bits. */
 #define PERI_SEL_MASK   0x3F
 
@@ -86,6 +90,7 @@ static const I2sDirection I2S_RX = { "receive", 0x20, 0x28, 0x30, 0x38, 0x50 };
 static const I2sDirection I2S_TX = { "transmit", 0x24, 0x2C, 0x34, 0x3C, 0x54 };
 
 #define CONF_SLAVE_MOD          (1u << 3)
+#define CONF_UPDATE             (1u << 8)
 #define CONF_24_FILL_EN         (1u << 16)
 #define CONF_TDM_EN             (1u << 19)
 #define CONF_PDM_EN             (1u << 20)
@@ -114,6 +119,18 @@ static const double I2S_SOURCE_HZ[3] = { 40e6, 240e6, 160e6 };
 #define TX_MAX_DESCRIPTORS 64
 #define TX_MAX_TRANSFER (256 * 1024)
 
+/* What a stream carries, as its registers say (ADR 0146): whole hertz,
+ * enabled slots, and each slot's width in bits and in bytes. */
+typedef struct I2sFormat {
+    unsigned rate_hz;
+    unsigned channels;
+    unsigned bits;
+    unsigned bytes;
+} I2sFormat;
+
+/* A WAV header is 44 bytes in the plain PCM form written here. */
+#define WAV_HEADER 44
+
 struct EspI2sMaster {
     DeviceState parent_obj;
 
@@ -141,6 +158,23 @@ struct EspI2sMaster {
     uint64_t bytes;
     bool complained;
     const char *idle_reason;
+    const char *rx_idle_reason;
+
+    /* ADR 0146: where played streams are written, and the file being
+     * written; a WAV file the microphone hears, read once at realize. */
+    char *speaker;
+    char *mic;
+    I2sFormat tx_fmt;
+    I2sFormat rx_fmt;
+    FILE *wav;
+    uint32_t wav_bytes;
+    unsigned wav_count;
+    bool wav_refused;
+    int32_t *mic_data;          /* left-justified samples, frame by frame */
+    uint32_t mic_frames;
+    unsigned mic_channels;
+    unsigned mic_rate;
+    uint64_t rx_frames;         /* frames this receive stream has heard */
 };
 
 /* Find a channel bound to this block in the given direction and running.
@@ -187,7 +221,10 @@ static bool i2s_find_channel(EspI2sMaster *s, int dir, bool *armed,
  * an end does not terminate. A stream moves one buffer per period and the owner
  * bit is the handshake -- the engine clears it, the driver sets it again once
  * it has dealt with the buffer. Refusing one the CPU still owns is what the
- * hardware does and what stops a buffer being handled twice.
+ * hardware does and what stops a buffer being handled twice -- when the
+ * channel asks it to. GDMA_IN_CONF1's CHECK_OWNER says whether it does, and a
+ * channel that has not set it fills each buffer whatever its owner bit says
+ * (TRM, GDMA; ADR 0146). ESP-IDF 4.4's I2S driver leaves it clear.
  *
  * Receiving, the interesting number is `size`, the room available. Transmitting
  * it is `length`, the bytes the driver actually put there.
@@ -197,8 +234,8 @@ static bool i2s_find_channel(EspI2sMaster *s, int dir, bool *armed,
  * there. Receiving, the engine's own comment is that it only raises a status
  * bit and does not stop anything, because the ring keeps turning.
  */
-static bool i2s_descriptor(uint32_t at, bool receiving, uint32_t *bytes,
-                           uint32_t *next, bool *eof)
+static bool i2s_descriptor(uint32_t at, bool receiving, bool check_owner,
+                           uint32_t *bytes, uint32_t *next, bool *eof)
 {
     uint8_t raw[DESC_BYTES];
 
@@ -210,7 +247,7 @@ static bool i2s_descriptor(uint32_t at, bool receiving, uint32_t *bytes,
     uint32_t want = receiving ? (config & 0xFFF) : ((config >> 12) & 0xFFF);
     bool owner = (config >> 31) & 1;
 
-    if (!owner || want == 0 || want > DESC_MAX_SIZE) {
+    if ((check_owner && !owner) || want == 0 || want > DESC_MAX_SIZE) {
         return false;
     }
     *bytes = want;
@@ -234,7 +271,8 @@ static void i2s_aim(EspI2sMaster *s, int dir, uint32_t chan, uint32_t cursor)
  * The counting fields hold their value less one, as ESP-IDF's i2s_ll.h
  * writes them. */
 static double i2s_byte_rate(EspI2sMaster *s, const I2sDirection *d,
-                            const char **why, char *how, size_t how_len)
+                            const char **why, char *how, size_t how_len,
+                            I2sFormat *fmt)
 {
     uint32_t conf = s->regs[d->conf / 4];
     uint32_t conf1 = s->regs[d->conf1 / 4];
@@ -285,16 +323,21 @@ static double i2s_byte_rate(EspI2sMaster *s, const I2sDirection *d,
     }
     snprintf(how, how_len, "%.0f Hz, %u channel(s) of %u bit(s)",
              ws, channels, bits);
+    fmt->rate_hz = (unsigned)(ws + 0.5);
+    fmt->channels = channels;
+    fmt->bits = bits;
+    fmt->bytes = bytes;
     return ws * channels * bytes;
 }
 
 /* The rate for a direction, saying once per stream what it is or why it is
  * not known. */
-static double i2s_rate(EspI2sMaster *s, const I2sDirection *d, bool *said)
+static double i2s_rate(EspI2sMaster *s, const I2sDirection *d, bool *said,
+                       I2sFormat *fmt)
 {
     const char *why = NULL;
     char how[64] = "";
-    double rate = i2s_byte_rate(s, d, &why, how, sizeof(how));
+    double rate = i2s_byte_rate(s, d, &why, how, sizeof(how), fmt);
 
     if (!*said) {
         *said = true;
@@ -316,6 +359,196 @@ static int64_t i2s_clocked_ns(uint32_t bytes, double rate)
     return (int64_t)(bytes * 1e9 / rate);
 }
 
+static void i2s_rx_idle(EspI2sMaster *s, const char *reason, uint32_t chan);
+
+/* -- ADR 0146: sound out and in ---------------------------------------- */
+
+/* Write the header for `data` bytes of this format at the file's start, and
+ * go back to its end: the file is a valid WAV after every buffer. */
+static void i2s_wav_header(FILE *f, const I2sFormat *fmt, uint32_t data)
+{
+    uint8_t h[WAV_HEADER];
+    uint32_t block = fmt->channels * fmt->bytes;
+
+    memcpy(h, "RIFF", 4);
+    stl_le_p(h + 4, 36 + data);
+    memcpy(h + 8, "WAVEfmt ", 8);
+    stl_le_p(h + 16, 16);
+    stw_le_p(h + 20, 1);                        /* PCM */
+    stw_le_p(h + 22, fmt->channels);
+    stl_le_p(h + 24, fmt->rate_hz);
+    stl_le_p(h + 28, fmt->rate_hz * block);
+    stw_le_p(h + 32, block);
+    stw_le_p(h + 34, fmt->bytes * 8);
+    memcpy(h + 36, "data", 4);
+    stl_le_p(h + 40, data);
+    if (fseek(f, 0, SEEK_SET) == 0) {
+        fwrite(h, 1, sizeof(h), f);
+    }
+    fseek(f, 0, SEEK_END);
+}
+
+/* A played buffer, onto the end of this stream's file; the first one of a
+ * stream opens the next file. 8-bit WAV is unsigned where I2S is signed. */
+static void i2s_speaker_write(EspI2sMaster *s, uint8_t *played, uint32_t total)
+{
+    if (!s->speaker || !s->speaker[0] || s->wav_refused) {
+        return;
+    }
+    if (!s->wav) {
+        g_autofree char *path = g_strdup_printf("%s-%u.wav", s->speaker,
+                                                ++s->wav_count);
+        s->wav = fopen(path, "wb+");
+        if (!s->wav) {
+            warn_report("%s: cannot write %s: %s", s->name ? s->name : "i2s",
+                        path, strerror(errno));
+            s->wav_refused = true;
+            return;
+        }
+        s->wav_bytes = 0;
+        i2s_wav_header(s->wav, &s->tx_fmt, 0);
+        info_report("%s: what it plays goes to %s (%u Hz, %u channel(s) of "
+                    "%u bit(s))", s->name ? s->name : "i2s", path,
+                    s->tx_fmt.rate_hz, s->tx_fmt.channels, s->tx_fmt.bytes * 8);
+    }
+    if (s->tx_fmt.bytes == 1) {
+        for (uint32_t i = 0; i < total; i++) {
+            played[i] ^= 0x80;
+        }
+    }
+    if (fwrite(played, 1, total, s->wav) == total) {
+        s->wav_bytes += total;
+        i2s_wav_header(s->wav, &s->tx_fmt, s->wav_bytes);
+        fflush(s->wav);
+    }
+}
+
+static void i2s_speaker_close(EspI2sMaster *s)
+{
+    if (s->wav) {
+        fclose(s->wav);
+        s->wav = NULL;
+    }
+}
+
+/* Read a PCM WAV file into left-justified 32-bit samples. */
+static bool i2s_mic_load(EspI2sMaster *s, Error **errp)
+{
+    g_autofree gchar *data = NULL;
+    gsize n = 0;
+    GError *err = NULL;
+    const uint8_t *d;
+    const uint8_t *samples = NULL;
+    uint32_t sample_bytes = 0;
+    unsigned format = 0, channels = 0, rate = 0, bits = 0;
+
+    if (!g_file_get_contents(s->mic, &data, &n, &err)) {
+        error_setg(errp, "esp-i2s-master: cannot read mic %s: %s", s->mic,
+                   err->message);
+        g_error_free(err);
+        return false;
+    }
+    d = (const uint8_t *)data;
+    if (n < 12 || memcmp(d, "RIFF", 4) || memcmp(d + 8, "WAVE", 4)) {
+        error_setg(errp, "esp-i2s-master: %s is not a WAV file", s->mic);
+        return false;
+    }
+    for (gsize at = 12; at + 8 <= n;) {
+        uint32_t size = ldl_le_p(d + at + 4);
+        const uint8_t *body = d + at + 8;
+        if (size > n - at - 8) {
+            size = n - at - 8;
+        }
+        if (!memcmp(d + at, "fmt ", 4) && size >= 16) {
+            format = lduw_le_p(body);
+            channels = lduw_le_p(body + 2);
+            rate = ldl_le_p(body + 4);
+            bits = lduw_le_p(body + 14);
+            if (format == 0xFFFE && size >= 26) {
+                format = lduw_le_p(body + 24);  /* the sub-format's first word */
+            }
+        } else if (!memcmp(d + at, "data", 4)) {
+            samples = body;
+            sample_bytes = size;
+        }
+        at += 8 + size + (size & 1);
+    }
+    if (format != 1 || !channels || !rate || !samples ||
+        (bits != 8 && bits != 16 && bits != 24 && bits != 32)) {
+        error_setg(errp, "esp-i2s-master: %s is not PCM of 8, 16, 24 or 32 "
+                   "bits (format %u, %u bit(s))", s->mic, format, bits);
+        return false;
+    }
+
+    unsigned width = bits / 8;
+    s->mic_channels = channels;
+    s->mic_rate = rate;
+    s->mic_frames = sample_bytes / (width * channels);
+    s->mic_data = g_new0(int32_t, (size_t)s->mic_frames * channels);
+    for (uint32_t i = 0; i < s->mic_frames * channels; i++) {
+        const uint8_t *p = samples + (size_t)i * width;
+        int32_t v;
+        switch (width) {
+        case 1:
+            v = (int32_t)((uint32_t)(p[0] ^ 0x80) << 24);
+            break;
+        case 2:
+            v = (int32_t)((uint32_t)lduw_le_p(p) << 16);
+            break;
+        case 3:
+            v = (int32_t)(((uint32_t)p[0] << 8) | ((uint32_t)p[1] << 16) |
+                          ((uint32_t)p[2] << 24));
+            break;
+        default:
+            v = (int32_t)ldl_le_p(p);
+            break;
+        }
+        s->mic_data[i] = v;
+    }
+    info_report("esp-i2s-master(%s): the microphone hears %s, %u Hz, %u "
+                "channel(s), %.1f s", s->name ? s->name : "i2s", s->mic, rate,
+                channels, (double)s->mic_frames / rate);
+    return true;
+}
+
+/* Fill a receive buffer from the microphone's file, converted to the
+ * stream's format: the nearest earlier sample, slots repeating the file's
+ * channels, and each slot's width (ADR 0146). Past the file's end, silence. */
+static void i2s_mic_fill(EspI2sMaster *s, uint8_t *buf, uint32_t bytes)
+{
+    const I2sFormat *f = &s->rx_fmt;
+    uint32_t frame_bytes = f->channels * f->bytes;
+
+    if (!s->mic_data || !frame_bytes || !f->rate_hz) {
+        return;
+    }
+    for (uint32_t at = 0; at + frame_bytes <= bytes; at += frame_bytes) {
+        uint64_t src = s->rx_frames * s->mic_rate / f->rate_hz;
+        s->rx_frames++;
+        for (unsigned c = 0; c < f->channels; c++) {
+            int32_t v = src < s->mic_frames
+                ? s->mic_data[src * s->mic_channels + c % s->mic_channels] : 0;
+            uint8_t *p = buf + at + c * f->bytes;
+            switch (f->bytes) {
+            case 1:
+                p[0] = (uint8_t)((uint32_t)v >> 24);
+                break;
+            case 2:
+                stw_le_p(p, (uint16_t)((uint32_t)v >> 16));
+                break;
+            case 3:
+                p[0] = (uint8_t)((uint32_t)v >> 8);
+                p[1] = (uint8_t)((uint32_t)v >> 16);
+                p[2] = (uint8_t)((uint32_t)v >> 24);
+                break;
+            default:
+                stl_le_p(p, (uint32_t)v);
+                break;
+            }
+        }
+    }
+}
+
 /* Fill the receive descriptor being clocked once it is full. Returns when it
  * will be, if that is still to come, or 0 to be looked at on the next poll. */
 static int64_t i2s_receive(EspI2sMaster *s, int64_t now)
@@ -327,22 +560,38 @@ static int64_t i2s_receive(EspI2sMaster *s, int64_t now)
         s->rx_armed = false;
         s->rx_start = 0;
         s->rx_said = false;
+        s->rx_frames = 0;           /* the next capture hears the file anew */
+        i2s_rx_idle(s, "stopped: RX_START clear", 0);
         return 0;
     }
     if (!i2s_find_channel(s, ESP_GDMA_IN_IDX, &s->rx_armed, &s->rx_cursor,
                           &chan)) {
         s->rx_start = 0;
+        for (uint32_t i = 0; i < ESP32S3_GDMA_CHANNEL_COUNT; i++) {
+            if ((esp_gdma_read_chan_register(s->gdma, ESP_GDMA_IN_IDX, i,
+                                             GDMA_PERI_SEL_REG) & PERI_SEL_MASK)
+                == s->periph) {
+                i2s_rx_idle(s, "waiting: its channel was never started", i);
+                return 0;
+            }
+        }
+        i2s_rx_idle(s, "waiting: no GDMA channel bound to this block", 0);
         return 0;
     }
-    if (!i2s_descriptor(s->rx_cursor, true, &bytes, &next, &eof)) {
+    bool check_owner = esp_gdma_read_chan_register(s->gdma, ESP_GDMA_IN_IDX,
+                                                   chan, GDMA_CONF1_REG)
+                       & GDMA_CHECK_OWNER;
+    if (!i2s_descriptor(s->rx_cursor, true, check_owner, &bytes, &next, &eof)) {
         /* The CPU still owns it. On real hardware that is an overrun and the
          * receiver stalls, which is what happens here too; what it would
          * have heard meanwhile is lost, not made up later. */
         s->rx_start = 0;
+        i2s_rx_idle(s, "waiting: the CPU owns the next descriptor", chan);
         return 0;
     }
+    i2s_rx_idle(s, "running", chan);
 
-    double rate = i2s_rate(s, &I2S_RX, &s->rx_said);
+    double rate = i2s_rate(s, &I2S_RX, &s->rx_said, &s->rx_fmt);
     if (rate > 0) {
         if (!s->rx_start) {
             s->rx_start = now;
@@ -356,9 +605,12 @@ static int64_t i2s_receive(EspI2sMaster *s, int64_t now)
 
     i2s_aim(s, ESP_GDMA_IN_IDX, chan, s->rx_cursor);
 
-    /* Silence is the honest sample value: there is no audio into this
-     * emulator, and what the firmware waits for is the transfer. */
+    /* Silence, unless a WAV file is the microphone and the stream's rate is
+     * known (ADR 0146): what the firmware waits for is the transfer. */
     g_autofree uint8_t *silence = g_malloc0(bytes);
+    if (rate > 0) {
+        i2s_mic_fill(s, silence, bytes);
+    }
     if (!esp_gdma_write_channel(s->gdma, chan, silence, bytes)) {
         if (!s->complained) {
             s->complained = true;
@@ -443,6 +695,30 @@ static void i2s_idle(EspI2sMaster *s, const char *reason)
                 reason, s->regs[R_TX_CONF / 4]);
 }
 
+/* The same hatch for the receive side: a capture that never fills blocks the
+ * firmware in i2s_read, and the ways that happens look identical from the
+ * guest. */
+static void i2s_rx_idle(EspI2sMaster *s, const char *reason, uint32_t chan)
+{
+    static int enabled = -1;
+
+    if (enabled < 0) {
+        enabled = getenv("BOARDEMUL_I2S_TRACE") != NULL;
+    }
+    if (!enabled || s->rx_idle_reason == reason) {
+        return;
+    }
+    s->rx_idle_reason = reason;
+    uint64_t sel = esp_gdma_read_chan_register(s->gdma, ESP_GDMA_IN_IDX, chan,
+                                               GDMA_PERI_SEL_REG);
+    uint64_t link = esp_gdma_read_chan_register(s->gdma, ESP_GDMA_IN_IDX, chan,
+                                                GDMA_LINK_REG);
+    warn_report("%s: receive %s (rx_conf=0x%08x, in ch%u sel=0x%llx "
+                "link=0x%llx)", s->name ? s->name : "i2s", reason,
+                s->regs[R_RX_CONF / 4], chan, (unsigned long long)sel,
+                (unsigned long long)link);
+}
+
 /* Take the queued transmit list once its bytes have been clocked out. Returns
  * when they will have been, if that is still to come, or 0 to be looked at on
  * the next poll. */
@@ -456,6 +732,7 @@ static int64_t i2s_transmit(EspI2sMaster *s, int64_t now)
         s->tx_armed = false;
         s->tx_start = s->tx_end = 0;
         s->tx_said = false;
+        i2s_speaker_close(s);       /* the next stream is the next file */
         i2s_idle(s, "stopped: TX_START clear");
         return 0;
     }
@@ -470,7 +747,7 @@ static int64_t i2s_transmit(EspI2sMaster *s, int64_t now)
     }
     i2s_idle(s, "running");
 
-    double rate = i2s_rate(s, &I2S_TX, &s->tx_said);
+    double rate = i2s_rate(s, &I2S_TX, &s->tx_said, &s->tx_fmt);
     if (rate > 0) {
         /* A list starts clocking when the last one finished, or when it was
          * found if the transmitter had run dry -- that gap is not made up. */
@@ -487,8 +764,8 @@ static int64_t i2s_transmit(EspI2sMaster *s, int64_t now)
 
     i2s_aim(s, ESP_GDMA_OUT_IDX, chan, s->tx_head);
 
-    /* The samples are read and dropped: there is nowhere for audio to go, and
-     * the firmware waits for the transfer to finish, not for a sound. */
+    /* The samples are what the speaker plays: written to the stream's WAV
+     * file when asked for and the rate is known (ADR 0146), else dropped. */
     g_autofree uint8_t *played = g_malloc(total);
     if (!esp_gdma_read_channel(s->gdma, chan, played, total)) {
         if (!s->complained) {
@@ -508,6 +785,9 @@ static int64_t i2s_transmit(EspI2sMaster *s, int64_t now)
      * Follow the ring instead and keep going while TX_START is set, which is
      * what the receive side already does. The owner bits are the handshake: a
      * buffer the CPU has not refilled is simply not ours yet. */
+    if (rate > 0) {
+        i2s_speaker_write(s, played, total);
+    }
     if (after) {
         s->tx_head = DRAM_TOP_BITS | (after & LINK_ADDR);
     } else {
@@ -588,7 +868,15 @@ static void i2s_write(void *opaque, hwaddr addr, uint64_t value, unsigned size)
     /* Stored rather than decoded (ADR 0008): returning zero for a register the
      * driver has just written breaks its read-modify-write, and this block is
      * full of them. The start bits and each direction's clock and frame
-     * are read back, to pace the streams (ADR 0119). */
+     * are read back, to pace the streams (ADR 0119).
+     *
+     * Except RX_UPDATE and TX_UPDATE, bit 8 of each CONF register, which the
+     * TRM marks self-clearing: hardware clears it once the configuration has
+     * crossed into the I2S clock domain, and ESP-IDF 4.4's i2s_hal_start_rx
+     * spins until it has. Here the crossing is immediate (ADR 0146). */
+    if (addr == R_RX_CONF || addr == R_TX_CONF) {
+        value &= ~CONF_UPDATE;
+    }
     s->regs[(addr / 4) % I2S_REG_COUNT] = (uint32_t)value;
 }
 
@@ -617,6 +905,9 @@ static void i2s_realize(DeviceState *dev, Error **errp)
         return;
     }
     s->gdma = ESP_GDMA(found);
+    if (s->mic && s->mic[0] && !i2s_mic_load(s, errp)) {
+        return;
+    }
 
     memory_region_init_io(&s->iomem, OBJECT(s), &i2s_ops, s,
                           s->name ? s->name : "esp.i2s", 0x1000);
@@ -633,6 +924,10 @@ static Property i2s_props[] = {
      * The board says which rather than this file assuming. */
     DEFINE_PROP_UINT32("periph", EspI2sMaster, periph, GDMA_I2S1),
     DEFINE_PROP_STRING("name", EspI2sMaster, name),
+    /* ADR 0146: a path prefix for the WAV files played streams go to, and a
+     * WAV file the microphone hears. */
+    DEFINE_PROP_STRING("speaker", EspI2sMaster, speaker),
+    DEFINE_PROP_STRING("mic", EspI2sMaster, mic),
     DEFINE_PROP_END_OF_LIST(),
 };
 
