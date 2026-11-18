@@ -135,7 +135,10 @@ def main(argv: list[str] | None = None) -> int:
                         choices=("tdeck-max", "tdeck"))
     create.add_argument("--mac", default="02:54:44:4D:00:01")
     create.add_argument("--psram", type=int, default=8)
-    create.add_argument("--psram-octal", action="store_true")
+    create.add_argument("--psram-octal", action="store_true",
+                        help="always present PSRAM as octal; without it each "
+                             "boot takes the line mode of the image's own "
+                             "PSRAM driver (ADR 0144)")
     create.add_argument("--overlay", action="append", default=[],
                         metavar="OFFSET=FILE")
     create.set_defaults(fn=cmd_create)

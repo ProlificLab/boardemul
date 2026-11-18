@@ -58,7 +58,7 @@ class Device:
     firmware_sha256: str
     mac: str
     psram_mb: int
-    psram_octal: bool
+    psram_octal: bool             # forced octal; False takes the image's mode (ADR 0144)
     created: str
     overlays: tuple[str, ...] = ()
 

@@ -131,6 +131,35 @@ def build_images(firmware: Path, outdir: Path, mac: str, overlays: list[str] = (
     return outdir / "flash.bin", outdir / "efuse.bin"
 
 
+# The log tags of ESP-IDF's two ESP32-S3 PSRAM drivers, which a build links
+# one of (ADR 0144). IDF 4.4 tags them "opi psram" and "psram", IDF 5
+# "octal_psram" and "quad_psram". "psram" counts only as a whole string, so
+# that the octal driver's own tag is not read as the quad one.
+OCTAL_PSRAM_TAGS = (b"opi psram\x00", b"octal_psram\x00")
+QUAD_PSRAM_TAGS = (b"\x00psram\x00", b"quad_psram\x00")
+
+
+def image_psram_mode(image: bytes) -> str | None:
+    """"octal" or "quad" if the image carries that PSRAM driver alone, else
+    None: no driver's tag, or both (ADR 0144)."""
+    octal = any(tag in image for tag in OCTAL_PSRAM_TAGS)
+    quad = any(tag in image for tag in QUAD_PSRAM_TAGS)
+    if octal == quad:
+        return None
+    return "octal" if octal else "quad"
+
+
+def choose_psram_mode(forced: str | None, image: Path | None) -> tuple[bool, str]:
+    """Whether to present PSRAM as octal, and why: what a person forced, else
+    the image's own driver, else ADR 0007's quad."""
+    if forced:
+        return forced == "octal", f"{forced}, as asked"
+    found = image_psram_mode(image.read_bytes()) if image and image.is_file() else None
+    if found:
+        return found == "octal", f"{found}, the image's driver"
+    return False, "quad, the default: the image names no single PSRAM driver"
+
+
 def build_argv(qemu: Path, flash: Path, efuse: Path, uart: Path,
                qemu_log: Path, traced: bool, psram_mb: int,
                psram_octal: bool = False, seed: int = RNG_SEED,
@@ -269,12 +298,16 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT_SECONDS)
     ap.add_argument("--stall", type=float, default=DEFAULT_STALL_SECONDS)
     ap.add_argument("--psram", type=int, default=None, help="PSRAM size in MB")
-    # The board really has octal PSRAM, but the fork's SPI1 model does not
-    # clock octal DDR the way IDF 4.4.6 drives it, so detection reads back all
-    # zeros. Presented as quad, the same firmware enables PSRAM and runs.
-    ap.add_argument("--psram-octal", action="store_true",
-                    help="present PSRAM in octal line mode (matches the real "
-                         "board, but detection fails under this QEMU fork)")
+    # Each image enumerates its PSRAM only in the line mode of the driver it
+    # was built with, so by default the mode is read off the image (ADRs
+    # 0007, 0144). These force one.
+    psram_mode = ap.add_mutually_exclusive_group()
+    psram_mode.add_argument("--psram-octal", action="store_true",
+                            help="present PSRAM in octal line mode, whatever "
+                                 "driver the image carries")
+    psram_mode.add_argument("--psram-quad", action="store_true",
+                            help="present PSRAM in quad line mode, whatever "
+                                 "driver the image carries")
     ap.add_argument("--mac", default=None)
     ap.add_argument("--overlay", action="append", default=[], metavar="OFFSET=FILE",
                     help="splice a vendor filesystem image into the flash (ADR "
@@ -364,7 +397,6 @@ def main(argv: list[str] | None = None) -> int:
         board_name = args.board or device.board
         mac = args.mac or device.mac
         psram_mb = args.psram if args.psram is not None else device.psram_mb
-        psram_octal = args.psram_octal or device.psram_octal
         tag = args.tag or device.name
         flash, efuse = device.flash, device.efuse
     else:
@@ -373,7 +405,6 @@ def main(argv: list[str] | None = None) -> int:
         board_name = args.board or "tdeck-max"
         mac = args.mac or mkflash.DEFAULT_MAC
         psram_mb = args.psram if args.psram is not None else 8
-        psram_octal = args.psram_octal
         tag = args.tag or args.firmware.stem
     if args.trace:
         tag += "-traced"
@@ -384,6 +415,11 @@ def main(argv: list[str] | None = None) -> int:
         flash, efuse = build_images(args.firmware,
                                     args.builddir / args.firmware.stem,
                                     mac, args.overlay)
+    # A device created with --psram-octal keeps forcing it; created without,
+    # it takes the image's mode like a bare run (ADR 0144).
+    forced = ("octal" if args.psram_octal else "quad" if args.psram_quad
+              else "octal" if device is not None and device.psram_octal else None)
+    psram_octal, psram_why = choose_psram_mode(forced, flash)
 
     uart = args.outdir / f"{tag}.uart.log"
     usb = args.outdir / f"{tag}.usb.log"
@@ -528,6 +564,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"\nqemu    : {qemu}")
     print(f"trace   : {'on (slow)' if args.trace else 'off'}")
     print(f"bus     : {'on' if server else 'off'}")
+    print(f"psram   : {psram_mb} MB, {psram_why}")
     if access_point:
         print(f"wifi-ap : {access_point[0]!r} every {access_point[1]} ms on "
               f"channel {access_point[2]}"
