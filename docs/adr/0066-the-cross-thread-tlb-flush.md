@@ -4,6 +4,8 @@
 ADR 0041's decision is not reversed here: one translation thread stays the
 default, for its own reasons.
 
+**Upstream, 2026-11-18:** Landed upstream unchanged (1bfac25a) in `esp-develop-9.2.2-20261109`; the patch is dropped (ADR 0138). The QEMU-core report (gitlab qemu-project/qemu#4633) stands.
+
 ## Context
 
 ADR 0041 characterised a crash and could not fix it. What it established:

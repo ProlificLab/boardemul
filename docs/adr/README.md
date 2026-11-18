@@ -22,13 +22,13 @@ superseded ADR is marked superseded and points forward.
 | [0014](0014-what-counts-as-a-frame.md) | Decide what a frame is, for a display that does not have any | Accepted |
 | [0015](0015-i2s-left-unmodelled.md) | Leave I2S unmodelled, and record why the obvious route fails | Superseded by 0016 |
 | [0016](0016-i2s-receive-path.md) | Model the I2S receive path, from the reference manual | Accepted |
-| [0017](0017-carry-one-qemu-patch.md) | Carry one patch to QEMU's own logic, and send it upstream | Accepted |
+| [0017](0017-carry-one-qemu-patch.md) | Carry one patch to QEMU's own logic, and send it upstream | Accepted (upstream since 0138) |
 | [0018](0018-radio-left-unmodelled.md) | Leave the radio unmodelled, and record how far the trail goes | Superseded by 0019 |
 | [0019](0019-radio-bring-up-gates.md) | Answer the radio's four bring-up waits, each read off its own loop | Accepted |
 | [0020](0020-interactive-vendor-firmware.md) | The vendor interface takes input; the last two walls were an ADC and a pin level | Accepted |
 | [0021](0021-vendor-filesystem-image.md) | Assemble the flash with the vendor's filesystem image where the vendor's installer puts it | Accepted |
-| [0022](0022-spi1-dummy-cycles-by-line-count.md) | Convert SPI1 dummy cycles with the read mode's line count | Accepted |
-| [0023](0023-bluetooth-clock-registers.md) | Keep the two Bluetooth clock registers the controller checks | Accepted |
+| [0022](0022-spi1-dummy-cycles-by-line-count.md) | Convert SPI1 dummy cycles with the read mode's line count | Accepted (upstream since 0138) |
+| [0023](0023-bluetooth-clock-registers.md) | Keep the two Bluetooth clock registers the controller checks | Accepted (upstream since 0138) |
 | [0024](0024-bluetooth-bring-up.md) | Bluetooth bring-up: what the controller checked, and what answered it | Accepted |
 | [0025](0025-ble-core-timers-in-c.md) | The link-layer core's clock and timers run in C, on QEMU's clock | Accepted |
 | [0026](0026-trackball-at-rest.md) | The trackball rests released | Accepted |
@@ -71,7 +71,7 @@ superseded ADR is marked superseded and points forward.
 | [0063](0063-the-station-associates.md) | The station associates | Accepted |
 | [0064](0064-the-access-point-moves-to-python.md) | The access point moves to Python, behind a frame channel | Accepted (its blocker removed by 0066) |
 | [0065](0065-aes-by-hand.md) | AES by hand, and what can be proved about it | Accepted |
-| [0066](0066-the-cross-thread-tlb-flush.md) | The cross-thread TLB flush | Accepted (fixes the defect 0041 works around) |
+| [0066](0066-the-cross-thread-tlb-flush.md) | The cross-thread TLB flush | Accepted (fixes the defect 0041 works around; upstream since 0138) |
 | [0067](0067-a-frame-the-peer-starts.md) | A frame the peer starts, and a radio that loses it | Accepted |
 | [0068](0068-a-frame-the-station-is-waiting-for.md) | A frame the station is waiting for | Accepted |
 | [0069](0069-the-transmit-frame-is-dma-descriptor.md) | The transmitted frame is where the DMA descriptor points | Accepted |
@@ -88,7 +88,7 @@ superseded ADR is marked superseded and points forward.
 | [0080](0080-message-three-fails-mic-verification-in-the-firmware.md) | Message three fails MIC verification in the firmware | Accepted (its RX-delivery suspicion disproved by 0081) |
 | [0081](0081-message-three-mic-dump.md) | The message-three MIC buffers, dumped: a clean frame, a wrong MIC | Accepted |
 | [0082](0082-the-firmware-miscomputes-the-mic.md) | The firmware miscomputes the MIC: a SHA-accelerator emulation defect | Accepted |
-| [0083](0083-the-gdma-could-not-reach-psram.md) | The GDMA could not reach PSRAM, so DMA SHA over a received frame failed | Accepted (fixes the defect 0082 located) |
+| [0083](0083-the-gdma-could-not-reach-psram.md) | The GDMA could not reach PSRAM, so DMA SHA over a received frame failed | Accepted (fixes the defect 0082 located; upstream since 0138) |
 | [0084](0084-a-station-that-gets-an-ip.md) | A station that gets an IP: identity CCMP, ARP and DHCP in the peer | Accepted |
 | [0085](0085-the-station-resolves-names-and-gets-the-time.md) | The station resolves names and gets the time: DNS and NTP in the peer | Accepted |
 | [0086](0086-answer-mdns-to-see-what-comes-next.md) | Answer mDNS, to see what the app reaches for next | Accepted |
@@ -106,11 +106,11 @@ superseded ADR is marked superseded and points forward.
 | [0098](0098-each-board-has-its-own-randomness.md) | Each board has its own randomness | Accepted (amends 0004's seed) |
 | [0099](0099-a-board-that-panics-may-reboot.md) | A board that panics may reboot, as silicon does | Accepted (decision 3 extended by 0114) |
 | [0100](0100-the-usb-serial-port.md) | The USB serial port, with a host on the other end | Accepted |
-| [0101](0101-the-interrupt-matrix-remembers-its-inputs.md) | The interrupt matrix remembers its inputs | Accepted (carried patch) |
+| [0101](0101-the-interrupt-matrix-remembers-its-inputs.md) | The interrupt matrix remembers its inputs | Accepted (carried patch; upstream since 0138) |
 | [0102](0102-the-max-radio-is-on-select-three.md) | The Max's radio is on chip select 3 | Accepted (corrects 0043; decision 2 superseded by 0111) |
 | [0103](0103-the-max-fuel-gauge-is-provisioned.md) | The Max's fuel gauge is provisioned, as its driver expects | Accepted |
 | [0104](0104-the-parts-can-read-the-guests-clock.md) | The board's parts can read the guest's clock | Accepted |
-| [0105](0105-the-max-serial-parts.md) | The Max's serial parts: a modem and a u-blox receiver | Accepted (carried patch) |
+| [0105](0105-the-max-serial-parts.md) | The Max's serial parts: a modem and a u-blox receiver | Accepted (carried patch; upstream since 0138) |
 | [0106](0106-what-the-census-found-harmless.md) | What the hardware census found harmless, and what it left open | Accepted |
 | [0107](0107-a-skipped-event-is-decided-on-the-kick.md) | A skipped Bluetooth event is decided on the kick | Accepted (refines 0025) |
 | [0108](0108-the-sensor-hub-boots-its-firmware.md) | The Max's sensor hub boots the firmware it is given | Accepted (closes 0106 item 5) |
@@ -127,8 +127,8 @@ superseded ADR is marked superseded and points forward.
 | [0119](0119-audio-runs-at-its-sample-rate.md) | Audio runs at its sample rate | Accepted (refines 0016 decision 2) |
 | [0120](0120-an-spi-transfer-takes-its-bus-time.md) | An SPI transfer takes its bus time | Accepted (refines 0032) |
 | [0121](0121-an-i2c-transaction-takes-its-bus-time.md) | An I2C transaction takes its bus time | Accepted (refines 0011) |
-| [0122](0122-a-serial-line-keeps-no-backlog.md) | A serial line keeps no backlog | Accepted (carried patch; found by 0120/0121) |
-| [0123](0123-one-core-resets-the-other-and-holds-it.md) | One core resets the other, and holds it | Accepted (withdraws 0114's banner-only exception; decision 4 amended) |
+| [0122](0122-a-serial-line-keeps-no-backlog.md) | A serial line keeps no backlog | Accepted (carried patch; found by 0120/0121; upstream since 0138) |
+| [0123](0123-one-core-resets-the-other-and-holds-it.md) | One core resets the other, and holds it | Accepted (withdraws 0114's banner-only exception; decision 4 amended; upstream since 0138) |
 | [0124](0124-the-max-test-reboots-from-the-same-panic.md) | The Max's test reboots from the same panic | Accepted (extends 0114 to test_max_parts) |
 | [0125](0125-every-single-boot-test-reboots-from-the-same-panic.md) | Every single-board boot test reboots from the same panic | Accepted (extends 0114 and 0124) |
 | [0126](0126-the-t-deck-skin-is-drawn-from-lilygos-own-sources.md) | The T-Deck skin is drawn from LilyGO's own sources | Accepted |

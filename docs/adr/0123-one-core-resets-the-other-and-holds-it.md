@@ -16,6 +16,8 @@ FreeRTOS. The thread-per-core arm passed without it, and the `-no-reboot`
 check passes either way by design, so those two guard the patch's other paths
 rather than the defect.
 
+**Upstream, 2026-11-18:** Landed upstream reworked (39341cc5) in `esp-develop-9.2.2-20261109`: a held core is released 20 ms of virtual time after the reset rather than at the next stall report, which this ADR had rejected as a guess about the host. The patch is dropped (ADR 0138). On it the restart probe runs its whole plan with one ROM banner per restart, in all three of its runs (2026-11-18).
+
 ## Context
 
 ADR 0114 saw the T-Deck boot test's canary reboots print the ROM's banner

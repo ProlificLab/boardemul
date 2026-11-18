@@ -2,6 +2,8 @@
 
 **Status:** Accepted — 2026-09-02. Closes the defect ADR 0021 left open.
 
+**Upstream, 2026-11-18:** Espressif fixed this in its own form (a1972ef0), in `esp-develop-9.2.2-20261109`; the patch is dropped (ADR 0138). Upstream rounds down where this patch rounded up, when cycles times lines is not a multiple of eight; every case checked below gives the same bytes.
+
 ## Context
 
 Meshtastic could not use its filesystem: `esp_littlefs` reported `Corrupted

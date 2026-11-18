@@ -3,6 +3,8 @@
 **Status:** Accepted — 2026-10-01. Its QEMU change is a carried patch, so ADR
 0017 applies to it.
 
+**Upstream, 2026-11-18:** Its QEMU change, UART2's chardev, landed upstream unchanged (d221471a) in `esp-develop-9.2.2-20261109`; the patch is dropped (ADR 0138).
+
 ## Context
 
 The T-Deck Max's factory demo, heard through its USB port (ADR 0100), gave up

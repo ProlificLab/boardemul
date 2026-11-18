@@ -3,6 +3,8 @@
 **Status:** Accepted — 2026-09-02. Third carried patch; ADR 0022 had called its
 patch the last one.
 
+**Upstream, 2026-11-18:** Landed upstream (653451e0) in `esp-develop-9.2.2-20261109`, with a FRAC reset value of 0x02001001 where this patch had 0x02001000; the SDK's `system_reg.h` agrees with upstream. The patch is dropped (ADR 0138).
+
 ## Context
 
 With storage working (ADR 0022), Meshtastic runs for about 40 seconds and then

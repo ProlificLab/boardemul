@@ -3,6 +3,8 @@
 **Status:** Accepted — 2026-10-01. Found while bringing up the USB serial port
 (ADR 0100). This is a carried patch to QEMU's own code, so ADR 0017 applies.
 
+**Upstream, 2026-11-18:** Landed upstream reworked (175bab5f, 2bbd6efa) in `esp-develop-9.2.2-20261109`, with the same design. One difference: a peripheral reset of the matrix now clears its input levels, which this patch kept. The patch is dropped (ADR 0138), which follows that difference up.
+
 ## Context
 
 With the USB serial port modelled, WireScan still printed nothing of its own.

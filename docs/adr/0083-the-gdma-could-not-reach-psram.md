@@ -3,6 +3,8 @@
 **Status:** Accepted — 2026-09-17. The fix for the defect ADR 0082 located. A
 carried QEMU patch under ADR 0017.
 
+**Upstream, 2026-11-18:** Landed upstream reworked (ace0323b) in `esp-develop-9.2.2-20261109`: the GDMA reaches internal RAM and the data cache's window, and nothing else, so the reach into MMIO listed as a cost below is gone. The patch is dropped (ADR 0138).
+
 ## Context
 
 ADR 0082 proved the firmware miscomputes message three's MIC over correct

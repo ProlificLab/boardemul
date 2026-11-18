@@ -2,6 +2,8 @@
 
 **Status:** Accepted — 2026-09-01
 
+**Upstream, 2026-11-18:** Its patch, `gdma-out-eof-desc`, landed upstream unchanged (39a3d070) and is no longer carried from `esp-develop-9.2.2-20261109` on (ADR 0138). The rule for carrying a patch stands.
+
 ## Context
 
 ADR 0001 set the boundary: the Espressif fork is the CPU and SoC engine, and our

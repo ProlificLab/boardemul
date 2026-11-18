@@ -3,6 +3,8 @@
 **Status:** Accepted — 2026-10-02. Adds a carried QEMU patch (ADR 0017).
 Found by ADRs 0120 and 0121, which it lets pass `test_gps_boot`.
 
+**Upstream, 2026-11-18:** Landed upstream (31c98902, 4dcc05c0) in `esp-develop-9.2.2-20261109` as the UART's `rx-overflow` property, off by default, which every run now turns on. A full FIFO loses its oldest byte rather than the newest, and RXFIFO_RST now empties it. The patch is dropped (ADR 0138).
+
 ## Context
 
 With SPI and I2C taking their bus time (ADRs 0120, 0121), the vendor
