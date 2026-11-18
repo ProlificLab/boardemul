@@ -15,10 +15,16 @@
 # them to the ROM's `entry` line and the flash/cache/MMU/UART/eFuse path is
 # validated for all of them. See docs/BOOT.md.
 #
-# One image here is not a vendor's and is not listed below:
-# restart_probe.bin, which tools/restart_probe/build.py builds from source
-# (ADR 0123). It records its build time, so it has no stable hash to pin, and
-# tests/test_restart_probe.py skips until it has been built.
+# The probes beside them are not vendor images and are not listed here:
+# restart_probe.bin, matrix_reset_probe.bin, cpenable_probe.bin and
+# audio_probe.bin, each built from source by tools/<probe>/build.py (ADRs
+# 0123, 0142, 0143, 0146). They record their build time, so they have no
+# stable hash to pin, and their tests skip until they have been built.
+#
+# Each URL names the commit that last changed its file, not a branch: a
+# repository's firmware page is rewritten now and then, and an image that
+# leaves the branch is still served from its commit (ADR 0147).
+# tools/fetch_firmware.py fetches them all and checks every hash.
 
 source_repo = "https://github.com/Xinyuan-LilyGO/T-Deck-MAX"
 retrieved   = "2026-08-21"
@@ -27,7 +33,7 @@ retrieved   = "2026-08-21"
 name    = "factory"
 role    = "Vendor factory demo. Exercises every subsystem at once."
 path    = "T-Deck-MAX_V3.1_20260313.bin"
-url     = "https://raw.githubusercontent.com/Xinyuan-LilyGO/T-Deck-MAX/master/firmware/T-Deck-MAX_V3.1_20260313.bin"
+url     = "https://raw.githubusercontent.com/Xinyuan-LilyGO/T-Deck-MAX/c930d044b0edd4379ea3d79a5a71580c295c188e/firmware/T-Deck-MAX_V3.1_20260313.bin"
 size    = 3298944
 sha256  = "8278ba63da0eeac64b58d4b46e3043c1e0f3356993d7c347587db14fb6ae8a52"
 
@@ -35,7 +41,7 @@ sha256  = "8278ba63da0eeac64b58d4b46e3043c1e0f3356993d7c347587db14fb6ae8a52"
 name    = "wirescan"
 role    = "I2C bus scanner. Smallest app; isolates the I2C controller."
 path    = "examples/WireScan.bin"
-url     = "https://raw.githubusercontent.com/Xinyuan-LilyGO/T-Deck-MAX/master/firmware/examples/WireScan.bin"
+url     = "https://raw.githubusercontent.com/Xinyuan-LilyGO/T-Deck-MAX/a48d614037c84cec256886db64fe95565f8e9c2e/firmware/examples/WireScan.bin"
 size    = 334912
 sha256  = "403f3ebd2b7b3eb013241c3c5dfbc1724f3321de325710ffe00b36863d5002a2"
 
@@ -43,7 +49,7 @@ sha256  = "403f3ebd2b7b3eb013241c3c5dfbc1724f3321de325710ffe00b36863d5002a2"
 name    = "gps"
 role    = "MIA-M10Q GPS test. GPS is UART-attached and UART is emulated, so this is the image most likely to run furthest."
 path    = "examples/test_GPS.bin"
-url     = "https://raw.githubusercontent.com/Xinyuan-LilyGO/T-Deck-MAX/master/firmware/examples/test_GPS.bin"
+url     = "https://raw.githubusercontent.com/Xinyuan-LilyGO/T-Deck-MAX/e737aa7db24869deae43a32bef677cefb9663d62/firmware/examples/test_GPS.bin"
 size    = 386496
 sha256  = "1631daf1b4e02395131e7a1559466810b5b119cb05649c2e8e7add2a708d64ce"
 
@@ -51,7 +57,7 @@ sha256  = "1631daf1b4e02395131e7a1559466810b5b119cb05649c2e8e7add2a708d64ce"
 name    = "epaper"
 role    = "GDEQ031T10 e-paper test. Isolates general-purpose SPI."
 path    = "examples/test_Elink_paper.bin"
-url     = "https://raw.githubusercontent.com/Xinyuan-LilyGO/T-Deck-MAX/master/firmware/examples/test_Elink_paper.bin"
+url     = "https://raw.githubusercontent.com/Xinyuan-LilyGO/T-Deck-MAX/a48d614037c84cec256886db64fe95565f8e9c2e/firmware/examples/test_Elink_paper.bin"
 size    = 346768
 sha256  = "da1a7a42bae3b24e71eada7bad687bafd26fc7ab0242f5df5aaedc4ae8525f86"
 
@@ -59,10 +65,18 @@ sha256  = "da1a7a42bae3b24e71eada7bad687bafd26fc7ab0242f5df5aaedc4ae8525f86"
 # Pins from examples/UnitTest/utilities.h in Xinyuan-LilyGO/T-Deck.
 
 [[image]]
+name    = "tdeck-unittest-250620"
+role    = "The earlier factory unit-test build, which the T-Deck's slow tests boot (ADR 0019 on). Left the repository's master on 2026-10-27; served from the commit that added it (ADR 0147)."
+path    = "T-Deck_UnitTest_250620.bin"
+url     = "https://raw.githubusercontent.com/Xinyuan-LilyGO/T-Deck/e2aeb7e8ac8681c5759b9a8486956ee392d4db8d/firmware/T-Deck_UnitTest_250620.bin"
+size    = 16711680
+sha256  = "8b0a8bd346ac93b9cd2281e2033f962f42ac889bf7ccc14a50a1b2ea41f5c406"
+
+[[image]]
 name    = "tdeck-unittest"
 role    = "LilyGO factory unit-test build. Runs a float in a C++ global constructor, before FreeRTOS: panics with a coprocessor exception unless CPENABLE resets to 0xff, as on silicon (ADRs 0013, 0143)."
 path    = "T-Deck_UnitTest_251113.bin"
-url     = "https://raw.githubusercontent.com/Xinyuan-LilyGO/T-Deck/master/firmware/T-Deck_UnitTest_251113.bin"
+url     = "https://raw.githubusercontent.com/Xinyuan-LilyGO/T-Deck/306c6cb83b06eae18dc025869b18e636e1ea7f13/firmware/T-Deck_UnitTest_251113.bin"
 size    = 1869008
 sha256  = "b4c60f11b94c626dee8cbe1b6226c508b3463e50ce8f5d3a138993f1208f8dad"
 
@@ -70,7 +84,7 @@ sha256  = "b4c60f11b94c626dee8cbe1b6226c508b3463e50ce8f5d3a138993f1208f8dad"
 name    = "tdeck-unittest-debug"
 role    = "Same, debug variant. Same panic."
 path    = "T-Deck_UnitTest_Debug_251222.bin"
-url     = "https://raw.githubusercontent.com/Xinyuan-LilyGO/T-Deck/master/firmware/T-Deck_UnitTest_Debug_251222.bin"
+url     = "https://raw.githubusercontent.com/Xinyuan-LilyGO/T-Deck/4087b04e3fcf0d97f8e5e29a82297696e37ffffa/firmware/T-Deck_UnitTest_Debug_251222.bin"
 size    = 1890112
 sha256  = "995c6d0a9e60ee94910b93e9d2427982c756b1d2a3cdaf89d9cead63ef138317"
 
@@ -78,7 +92,7 @@ sha256  = "995c6d0a9e60ee94910b93e9d2427982c756b1d2a3cdaf89d9cead63ef138317"
 name    = "tdeck-meshtastic"
 role    = "Meshtastic 2.7.10 for T-Deck. Boots furthest of the four: reaches I2C, SD and LittleFS, and drives the ST7789."
 path    = "firmware-t-deck-tft-2.7.10.94d4bdf.bin"
-url     = "https://raw.githubusercontent.com/Xinyuan-LilyGO/T-Deck/master/firmware/firmware-t-deck-tft-2.7.10.94d4bdf.bin"
+url     = "https://raw.githubusercontent.com/Xinyuan-LilyGO/T-Deck/ac871c78be21adcc51838ebdaeeab6aa8250b779/firmware/firmware-t-deck-tft-2.7.10.94d4bdf.bin"
 size    = 3563024
 sha256  = "39249b3db92f4b4c59fe8615fa1391cb05b358601f23be8fe19869e4e813336d"
 
