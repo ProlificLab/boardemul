@@ -1,6 +1,6 @@
 // Hold a GPIO interrupt asserted with the CPU not taking it, reset the digital
-// system, and see whether a new edge on the same pin reaches the CPU after it
-// (ADR 0142). The boot count survives the reset in RTC memory.
+// system, and see what is left of it after the reset (ADRs 0142, 0154). The
+// boot count survives the reset in RTC memory.
 //
 // Everything runs on core 0: the board's GPIO block routes the PRO CPU's
 // interrupt enables, and Arduino's setup() runs on core 1.
@@ -28,6 +28,18 @@ static void say_status(const char *when) {
   Serial.printf("probe: %s, status 0x%08x\n", when, (unsigned)GPIO.status);
 }
 
+// One rising edge on the pin, and whether the handler ran for it.
+static void edge(const char *what) {
+  GPIO.out_w1tc = 1u << PIN;
+  vTaskDelay(pdMS_TO_TICKS(50));
+  uint32_t before = taken;
+  GPIO.out_w1ts = 1u << PIN;
+  vTaskDelay(pdMS_TO_TICKS(50));
+  uint32_t after = taken;
+  Serial.printf("probe: %s was taken: %s (before %u, after %u)\n", what,
+                after > before ? "yes" : "no", (unsigned)before, (unsigned)after);
+}
+
 static void probe_task(void *) {
   intr_handle_t handle;
 
@@ -47,27 +59,21 @@ static void probe_task(void *) {
     vTaskDelay(portMAX_DELAY);
   }
 
-  // After the reset, each step of configuring the pin says what it left in
-  // the status register: ESP-IDF's driver clears a pin's status while it
-  // configures it, which lowers the source again (ADR 0142).
+  // A digital reset resets the GPIO peripheral on silicon: the latched
+  // status and the pin's configuration are gone (ADR 0154).
   say_status("after the reset");
   gpio_isr_register(on_gpio, NULL, 0, &handle);
   say_status("after gpio_isr_register");
-  // Take the edge without going through the driver: the pin's configuration
-  // from before the reset is what the emulated GPIO block still holds.
-  GPIO.out_w1tc = 1u << PIN;
-  vTaskDelay(pdMS_TO_TICKS(50));
-  uint32_t before = taken;
-  GPIO.out_w1ts = 1u << PIN;
-  vTaskDelay(pdMS_TO_TICKS(50));
-  uint32_t after = taken;
-  Serial.printf("probe: an edge after the reset was taken: %s (before %u, after %u)\n",
-                after > before ? "yes" : "no", (unsigned)before, (unsigned)after);
+  // Without the driver the pin is not configured, so no edge interrupts.
   gpio_set_direction(PIN, GPIO_MODE_INPUT_OUTPUT);
-  say_status("after gpio_set_direction");
+  edge("an edge on the pin before configuring its interrupt");
+  // Configured again, as a firmware must after a digital reset: one edge,
+  // one interrupt, and nothing left over from before the reset (ADR 0142).
   gpio_set_intr_type(PIN, GPIO_INTR_POSEDGE);
-  say_status("after gpio_set_intr_type");
-  // Latched again with the CPU masked, so that only the driver can clear it.
+  gpio_intr_enable(PIN);
+  edge("an edge after configuring it again");
+  // Latched again with the CPU masked, so that only the driver can clear it:
+  // ESP-IDF's driver clears a pin's status while it enables it.
   esp_intr_disable(handle);
   GPIO.status_w1ts = 1u << PIN;
   say_status("latched again with the CPU masked");
