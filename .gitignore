@@ -11,7 +11,7 @@ third_party/
 logs/
 build/
 # Device folders: identity and storage that outlive a run (ADR 0133).
-devices/
+/devices/
 # PlatformIO's build tree, for tools/restart_probe (ADR 0123).
 .pio/
 *.log
