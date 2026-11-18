@@ -411,6 +411,56 @@ def test_the_speakers_streams_are_listed_and_served(server):
         assert status == 404
 
 
+def _tdeck(client, devices, name="node"):
+    status, _b, _h = call(client, "POST", "/api/devices",
+                          {"name": name, "board": "tdeck", "firmware": _up(client, devices)})
+    assert status == 201
+
+
+def test_a_stopped_device_is_snapshotted_and_restored(server):
+    """ADR 0149: storage, card and settings come back together."""
+    client, devices, _s = server
+    _tdeck(client, devices)
+    card = devices / "node" / "sdcard.img"
+    card.write_bytes(b"A" * card.stat().st_size)
+    call(client, "POST", "/api/devices/node/settings", {"settings": ["--reboot"]})
+    status, taken, _h = call(client, "POST", "/api/devices/node/snapshots",
+                             {"label": "set-up"})
+    assert status == 201 and taken["label"] == "set-up"
+    card.write_bytes(b"B" * card.stat().st_size)
+    call(client, "POST", "/api/devices/node/settings", {"settings": []})
+    status, listed, _h = call(client, "GET", "/api/devices/node/snapshots")
+    assert [s["label"] for s in listed["snapshots"]] == ["set-up"]
+    status, device, _h = call(client, "POST", "/api/devices/node/snapshots/set-up/restore")
+    assert status == 200 and device["settings"] == ["--reboot"]
+    assert card.read_bytes()[:1] == b"A"
+    status, _b, _h = call(client, "DELETE", "/api/devices/node/snapshots/set-up")
+    assert status == 200
+    assert call(client, "GET", "/api/devices/node/snapshots")[1]["snapshots"] == []
+
+
+def test_a_running_device_is_not_snapshotted(server):
+    client, devices, _s = server
+    _tdeck(client, devices)
+    call(client, "POST", "/api/devices/node/start", {})
+    status, body, _h = call(client, "POST", "/api/devices/node/snapshots")
+    assert status == 409 and "stop it first" in body["error"]
+
+
+def test_the_card_goes_out_and_comes_in(server):
+    client, devices, _s = server
+    _tdeck(client, devices)
+    status, image, headers = call(client, "GET", "/api/devices/node/card")
+    assert status == 200 and len(image) == 32 * 1024 * 1024
+    assert 'filename="node-card.img"' in headers["Content-Disposition"]
+    status, body, _h = call(client, "POST", "/api/devices/node/card",
+                            b"\x5a" * len(image))
+    assert status == 200 and body["snapshot"].startswith("before-card-")
+    assert (devices / "node" / "sdcard.img").read_bytes()[:4] == b"\x5a" * 4
+    status, body, _h = call(client, "POST", "/api/devices/node/card", b"too small")
+    assert status == 400 and "bytes" in body["error"]
+
+
 # -- a run that ends says why; the board's state is read where it is written --
 
 

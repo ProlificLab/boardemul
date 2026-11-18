@@ -73,6 +73,8 @@
     border-radius: 999px; padding: 9px 18px; font-size: 13.5px; font-weight: 600;
     font-family: inherit; transition: filter .15s;
   }
+  a.btn { display: inline-block; text-decoration: none; }
+  .btn:disabled { opacity: .45; cursor: default; filter: none; }
   .btn:hover { filter: brightness(1.12); }
   .btn:active { filter: brightness(.92); }
   .btn.filled { background: var(--primary); color: var(--on-primary); }
@@ -203,6 +205,18 @@
   .drop:hover, .drop.over { border-color: var(--primary); background: #1b2431; }
   .drop b { color: var(--ink); }
   .sheet .row, .dialog .row { display: flex; gap: 10px; justify-content: flex-end; margin-top: 18px; }
+  .storage { margin-top: 14px; border-top: 1px solid var(--outline); padding-top: 12px;
+             display: flex; flex-direction: column; gap: 8px; }
+  .storage h4 { margin: 0; font-size: 12px; text-transform: uppercase;
+                letter-spacing: .06em; color: var(--ink-dim); font-weight: 600; }
+  .storage .why { font-size: 12px; color: var(--ink-faint); margin: 0; }
+  .storage .actions { display: flex; flex-wrap: wrap; gap: 6px; }
+  .snap { display: flex; align-items: center; gap: 8px; font-size: 12.5px; }
+  .snap .who { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+  .snap .label { overflow: hidden; text-overflow: ellipsis;
+                 white-space: nowrap; color: var(--ink); font-variant-numeric: tabular-nums; }
+  .snap .when { color: var(--ink-faint); font-size: 11.5px; font-variant-numeric: tabular-nums; }
+  .snap .btn { padding: 4px 10px; font-size: 12px; }
   .sheet .card.wide { width: 520px; max-height: calc(100vh - 48px); overflow-y: auto; }
   .group { border-top: 1px solid var(--outline); padding-top: 14px; margin-top: 4px; }
   .group h4 { margin: 0 0 4px; font-size: 13px; font-weight: 600; color: var(--ink); }
@@ -256,6 +270,9 @@
         <div class="facewell"><img id="d-face" alt=""></div>
         <h3 id="d-name" style="margin-top:12px">—</h3>
         <table class="spec" id="d-spec"></table>
+        <div class="storage" id="d-storage"></div>
+        <input type="file" id="d-cardfile" accept=".img,.bin" style="display:none"
+               onchange="replaceCard(this.files)">
       </div>
     </div>
 
@@ -481,6 +498,77 @@ function renderDetail() {
     ["settings", (d.settings || []).join(" ") || "none"],
   ].map(([k, v]) => `<tr><td>${k}</td><td>${escapeHtml(String(v))}</td></tr>`).join("");
   $("d-face").src = `/api/skin/${d.board}.png`;
+  renderStorage(d);
+}
+
+/* ================= storage: snapshots and the card (ADR 0149) ============= */
+async function renderStorage(d) {
+  const el = $("d-storage");
+  const name = encodeURIComponent(d.name);
+  const data = await api(`/api/devices/${name}/snapshots`).catch(() => ({ snapshots: [] }));
+  if (devices[selected] !== d) return;          // another device was picked meanwhile
+  const busy = d.running;
+  const why = busy ? `<p class="why">Stop ${escapeHtml(d.name)} to take, restore or replace.</p>` : "";
+  const rows = data.snapshots.slice().reverse().map(s => `
+    <div class="snap">
+      <span class="who">
+        <span class="label" title="${escapeHtml(s.label)}">${escapeHtml(s.label)}</span>
+        <span class="when">${escapeHtml(s.taken.replace("T", " "))} · ${(s.bytes / 1e6).toFixed(0)} MB</span>
+      </span>
+      <button class="btn tonal" ${busy ? "disabled" : ""}
+              onclick="restoreSnapshot('${d.name}', '${escapeHtml(s.label)}')">Restore</button>
+      <button class="btn text" ${busy ? "disabled" : ""}
+              onclick="forgetSnapshot('${d.name}', '${escapeHtml(s.label)}')">Forget</button>
+    </div>`).join("");
+  el.innerHTML = `
+    <h4>Card</h4>
+    <div class="actions">
+      <a class="btn tonal" href="/api/devices/${name}/card" download>Download card image</a>
+      <button class="btn text" ${busy ? "disabled" : ""}
+              onclick="$('d-cardfile').click()">Replace from an image…</button>
+    </div>
+    <h4>Snapshots</h4>
+    ${why}
+    ${rows || '<p class="why">None yet. A snapshot keeps the flash, the card and the settings.</p>'}
+    <div class="actions">
+      <button class="btn filled" ${busy ? "disabled" : ""}
+              onclick="takeSnapshot('${d.name}')">Take a snapshot</button>
+    </div>`;
+}
+async function takeSnapshot(name) {
+  try {
+    const s = await api(`/api/devices/${encodeURIComponent(name)}/snapshots`, { method: "POST" });
+    snack(`Snapshot ${s.label} taken`);
+    renderDetail();
+  } catch (err) { snack(String(err.message || err)); }
+}
+async function restoreSnapshot(name, label) {
+  try {
+    await api(`/api/devices/${encodeURIComponent(name)}/snapshots/${encodeURIComponent(label)}/restore`,
+              { method: "POST" });
+    await refresh();
+    snack(`${name} is back as ${label} had it`);
+  } catch (err) { snack(String(err.message || err)); }
+}
+async function forgetSnapshot(name, label) {
+  try {
+    await api(`/api/devices/${encodeURIComponent(name)}/snapshots/${encodeURIComponent(label)}`,
+              { method: "DELETE" });
+    snack(`Snapshot ${label} forgotten`);
+    renderDetail();
+  } catch (err) { snack(String(err.message || err)); }
+}
+async function replaceCard(files) {
+  const d = devices[selected];
+  const file = files && files[0];
+  $("d-cardfile").value = "";
+  if (!d || !file) return;
+  try {
+    const r = await api(`/api/devices/${encodeURIComponent(d.name)}/card`, {
+      method: "POST", body: file, headers: { "Content-Type": "application/octet-stream" } });
+    snack(`New card in ${d.name} — the old one is snapshot ${r.snapshot}`);
+    renderDetail();
+  } catch (err) { snack(String(err.message || err)); }
 }
 
 function escapeHtml(text) {

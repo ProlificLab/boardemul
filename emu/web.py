@@ -316,13 +316,15 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _file(self, path: Path, kind: str) -> None:
+    def _file(self, path: Path, kind: str, download: str | None = None) -> None:
         try:
             body = path.read_bytes()
         except OSError:
             return self._json({"error": f"no file at {path}"}, 404)
         self.send_response(200)
         self.send_header("Content-Type", kind)
+        if download:
+            self.send_header("Content-Disposition", f'attachment; filename="{download}"')
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
@@ -387,6 +389,17 @@ class Handler(BaseHTTPRequestHandler):
                     {**device_json(d),
                      "running": d.name in self.server.state.runs}
                     for d in device_folder.all_devices(self.server.state.devices)]})
+
+            if segs[1] == "devices" and len(segs) == 4 and segs[3] == "snapshots":
+                device = self._device(segs[2])
+                return self._json({"snapshots": [
+                    s.__dict__ for s in device_folder.snapshots(device)]})
+            if segs[1] == "devices" and len(segs) == 4 and segs[3] == "card":
+                device = self._device(segs[2])
+                if not device.has_sdcard:
+                    return self._json({"error": f"{device.name} has no card"}, 404)
+                return self._file(device.sdcard, "application/octet-stream",
+                                  download=f"{device.name}-card.img")
 
             if segs[1] == "skin" and len(segs) == 3:
                 board = segs[2].removesuffix(".png")
@@ -481,11 +494,22 @@ class Handler(BaseHTTPRequestHandler):
                     return self._json({"removed": name})
                 if len(segs) == 4 and segs[3] == "settings":
                     return self._settings(name)
+                if len(segs) == 4 and segs[3] == "snapshots":
+                    device = self._stopped(name)
+                    label = self._body().get("label") or None
+                    return self._json(device_folder.snapshot(device, label).__dict__, 201)
+                if len(segs) == 6 and segs[3] == "snapshots" and segs[5] == "restore":
+                    device = device_folder.restore(self._stopped(name), segs[4])
+                    return self._json(device_json(device))
+                if len(segs) == 4 and segs[3] == "card":
+                    return self._card(name)
             if segs[:2] == ["api", "runs"] and len(segs) == 4 and segs[3] == "input":
                 return self._input(segs[2])
             return self._json({"error": "not found"}, 404)
         except Refused as exc:
             return self._json({"error": str(exc)}, exc.status)
+        except device_folder.DeviceBusy as exc:
+            return self._json({"error": str(exc)}, 409)
         except (NotFound, device_folder.DeviceError) as exc:
             return self._json({"error": str(exc)}, 404)
         except Conflict as exc:
@@ -500,9 +524,16 @@ class Handler(BaseHTTPRequestHandler):
             if segs[:2] == ["api", "devices"] and len(segs) == 3:
                 self._remove(segs[2])
                 return self._json({"removed": segs[2]})
+            if segs[:2] == ["api", "devices"] and len(segs) == 5 and segs[3] == "snapshots":
+                device_folder.forget(self._device(segs[2]), segs[4])
+                return self._json({"forgot": segs[4]})
             return self._json({"error": "not found"}, 404)
         except Refused as exc:
             return self._json({"error": str(exc)}, exc.status)
+        except device_folder.DeviceBusy as exc:
+            return self._json({"error": str(exc)}, 409)
+        except device_folder.DeviceError as exc:
+            return self._json({"error": str(exc)}, 404)
         except Exception as exc:
             return self._json({"error": str(exc)}, 500)
 
@@ -522,6 +553,35 @@ class Handler(BaseHTTPRequestHandler):
             psram_octal=bool(body.get("psram_octal", False)),
             overlays=tuple(body.get("overlays", ())))
         self._json(device_json(device), 201)
+
+    def _device(self, name: str):
+        return device_folder.load(device_folder.folder(self.server.state.devices, name))
+
+    def _stopped(self, name: str):
+        """The device, if no run of this server holds it; the folder's own
+        marker covers runs started elsewhere (ADR 0149)."""
+        handle = self.server.state.handle(name)
+        if handle is not None and handle.alive:
+            raise device_folder.DeviceBusy(f"{name} is running; stop it first")
+        return self._device(name)
+
+    def _card(self, name: str) -> None:
+        """Replace the device's card with an uploaded image of its size; the
+        card it had becomes a snapshot first (ADR 0149)."""
+        if self._content_type() != "application/octet-stream":
+            raise Refused(415, "a card image must be application/octet-stream")
+        length = int(self.headers.get("Content-Length") or 0)
+        if not length or length > UPLOAD_LIMIT:
+            raise Refused(400, f"a card image is 1 to {UPLOAD_LIMIT} bytes")
+        device = self._stopped(name)
+        image = self.rfile.read(length)
+        try:
+            taken = device_folder.replace_card(device, image)
+        except device_folder.DeviceBusy:
+            raise
+        except device_folder.DeviceError as exc:
+            raise Refused(400, str(exc)) from None
+        self._json({"card": "replaced", "snapshot": taken.label})
 
     def _settings(self, name: str) -> None:
         """Keep a device's run settings (ADR 0145): held to the same list a
