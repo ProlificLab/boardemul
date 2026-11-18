@@ -87,8 +87,9 @@ panel; touch, the three touch keys and the keyboard; the LoRa radio on chip
 select 3 (ADR 0102); the SD card; I2C0/I2C1 with the board's parts, the fuel
 gauge provisioned as its driver expects (ADR 0103) and the sensor hub booting
 the firmware it is given (ADR 0108); the A7682E modem and the u-blox receiver
-on their serial lines (ADRs 0105, 0117); WiFi, which scans and finds an
-access point given `--wifi-ap` (ADR 0137); the USB serial port (ADR 0100).
+on their serial lines (ADRs 0105, 0117); WiFi, whose scan lists an access
+point given `--wifi-ap` (ADRs 0137, 0152); the chip's I2S controllers and
+Bluetooth core, as on the T-Deck (ADR 0148); the USB serial port (ADR 0100).
 The factory firmware's own Test page passes LoRa, Touch, SY6970, BQ27220,
 SD Card, A7682E and ES8311.
 
@@ -104,10 +105,12 @@ The keyboard reaches the screens that read it: the launcher's icon grid is
 touch-only by the vendor's design, and its sub-screens take keys
 (`tests/test_max_keyboard.py`).
 
-**Not working yet on the Max:** sound -- the codec answers its identity and
-nothing more, so there is no audio in or out; Bluetooth, which only the
-T-Deck board models; the modem answers only the few commands the factory
-test sends, and has no SIM (ADR 0105).
+**Not working yet on the Max:** the ES8311 codec answers its identity and
+nothing more, so its volume and routing are not modelled, though what the
+firmware sends it over I2S is recorded with `--audio` (ADR 0148); the modem
+answers only the few commands the factory test sends, and has no SIM
+(ADR 0105); joining a network from the factory interface, whose password
+field fills with its own dialer's digits (ADR 0152).
 
 ### The T-Deck, second board
 
@@ -126,6 +129,11 @@ at and how it was read rather than guessed: the FPU enabled out of reset
 directions with one patch carried to QEMU's GDMA (ADR 0016, 0017), four radio bring-up waits answered from disassembled loops
 (ADR 0019), and the SAR ADC that `analogRead()` spins on plus the touch
 interrupt's real polarity (ADR 0020).
+
+Its screen is lit as the firmware lights it (ADR 0151): the backlight's pin
+is followed through the GPIO matrix, to an LED controller channel's duty or
+to LilyGO's sixteen-step pulses, and the page and the window dim the panel
+by it. When Meshtastic fades its screen out, the screen goes dark.
 
 Its sound is real too (ADR 0146). With `--audio` each stream the speaker
 plays is written to a WAV file in the run's `audio/` directory, which the
@@ -168,9 +176,11 @@ vendor's hyn_cst3xx driver parses them, and the vendor firmware answers them
 by taking its interface back a screen.
 
 Meshtastic also boots on this board, its PSRAM presented in octal because
-that is the driver its image carries (ADR 0144): with its filesystem
-image in place (`--overlay 0xc90000=firmware/littlefs-t-deck-tft-2.7.10.94d4bdf.bin`,
-ADR 0021) a fresh first boot mounts storage, reads its preferences and, some
+that is the driver its image carries (ADR 0144). Its filesystem image comes
+with it, as the vendor's installer writes it (ADR 0150): fetched, it is
+overlaid at 0xc90000 unless `--overlay` says otherwise (ADR 0021), and
+without it the interface stays black. A fresh first boot mounts storage,
+reads its preferences and, some
 30 seconds of guest time in, reaches the device-ui's setup dialog (ADR 0026).
 The dialog can be filled from the keyboard through the input file: byte 0x09
 moves LVGL's focus from the region to the names and on to OK, letters land in
@@ -204,7 +214,8 @@ orientation and segment handling are checked against synthetic wire traffic
 (`tests/test_lcd.py`), and what a frame even means on a display with no refresh
 command is ADR 0014.
 
-Two boards can be put on the same air with `--air DIR`, and `--at X,Y`,
+Two boards can be put on the same air with `--air DIR` (devices name one
+instead, ADR 0145), and `--at X,Y`,
 `--environment` and `--antenna` say where they stand and what is between them
 (ADRs 0036-0039). A node only transmits once it has a region, which the setup
 dialog gives it: `tools/make_configured_fs.py` does that by driving the dialog
@@ -224,13 +235,14 @@ through the controller's own mappings and sends what they point at
 connection request, the firmware's own link layer validates it and starts
 scheduling connection events (ADRs 0046-0047). Meshtastic never scans, so
 two boards cannot find each other over Bluetooth; a central connecting in is
-the peer it was built for. The link comes up and carries nothing yet.
+the peer it was built for. The link comes up and carries nothing yet. The
+Max carries the same Bluetooth core (ADR 0148).
 
 ## Tests
 
 ```
-python3 -m pytest tests/            # some 650 device, image and board tests, ~90 s
-python3 -m pytest tests/ -m slow    # some 110 that boot the boards under QEMU
+python3 -m pytest tests/            # some 700 device, image and board tests, ~2 min
+python3 -m pytest tests/ -m slow    # some 120 that boot the boards under QEMU
 ```
 
 The slow tests skip cleanly without a built QEMU or the vendor firmware. See
@@ -241,8 +253,8 @@ ADR 0012.
     docs/BOOT.md      the ESP32-S3 boot chain, and what QEMU provides for each stage
     docs/adr/         numbered architecture decision records
     qemu-patch/       the C we own, installed into the QEMU tree at build time
-    tools/            QEMU fetch and build, flash image assembly, frame viewer,
-                      device folders
+    tools/            QEMU build, firmware fetch, the doctor, flash image
+                      assembly, frame viewer, device folders, the probes
     tests/            fast device tests, plus golden-frame tests behind -m slow
     emu/              the emulator: launcher, bus bridge host side, device models,
                       the drawn faces, the web front door
@@ -287,4 +299,6 @@ standard library: `emu/app.py` uses tkinter, the web UI is
 Start with `docs/BOOT.md`, then the ADRs in order. ADR 0008 is the one with the
 most transferable lesson; ADR 0011 is the boundary that made the rest possible;
 ADRs 0126, 0130, 0131, 0133, 0134 and 0135 are the run of decisions that built
-the two front doors and the devices between them.
+the two front doors and the devices between them, and ADRs 0145 and 0149
+made a device something kept like a virtual machine: settings, snapshots,
+its card.
