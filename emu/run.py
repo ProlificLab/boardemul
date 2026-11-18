@@ -28,6 +28,7 @@ from emu import board  # noqa: E402
 from emu import board_tdeck  # noqa: E402
 from emu.devices import lora  # noqa: E402
 from emu.devices.air import HOST as AIR_LOOPBACK, air_host  # noqa: E402
+from emu.serial_input import SerialInput  # noqa: E402
 from emu.bus import BusServer, IrqChannel  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -165,7 +166,8 @@ def choose_psram_mode(forced: str | None, image: Path | None) -> tuple[bool, str
 def build_argv(qemu: Path, flash: Path, efuse: Path, uart: Path,
                qemu_log: Path, traced: bool, psram_mb: int,
                psram_octal: bool = False, seed: int = RNG_SEED,
-               reboot: bool = False, usb: Path | None = None) -> list[str]:
+               reboot: bool = False, usb: Path | None = None,
+               serial_in: dict[str, Path] | None = None) -> list[str]:
     debug = ["unimp", "guest_errors"]
     # Escape hatch for one-off investigations (in_asm, exec, int...). Not a
     # supported interface; the supported one is --trace.
@@ -180,9 +182,15 @@ def build_argv(qemu: Path, flash: Path, efuse: Path, uart: Path,
     # The chip's USB serial port, with a host listening on it (ADR 0100). It is
     # silicon, so it is there on every board; what the host hears goes to a file
     # beside the UART's when the run names one.
-    usb_port = (["-chardev", f"file,id=usbjtag,path={usb}",
+    # Each port reads a pipe a person can type into (ADR 0156).
+    serial_in = serial_in or {}
+    usb_in = f",input-path={serial_in['usb']}" if "usb" in serial_in else ""
+    usb_port = (["-chardev", f"file,id=usbjtag,path={usb}{usb_in}",
                  "-device", "esp-usb-serial-jtag,chardev=usbjtag"]
                 if usb is not None else ["-device", "esp-usb-serial-jtag"])
+    uart_port = (["-chardev", f"file,id=uart0,path={uart},input-path={serial_in['uart']}",
+                  "-serial", "chardev:uart0"]
+                 if "uart" in serial_in else ["-serial", f"file:{uart}"])
     return [
         str(qemu),
         "-machine", "esp32s3",
@@ -199,7 +207,7 @@ def build_argv(qemu: Path, flash: Path, efuse: Path, uart: Path,
         # took the fix behind this property, off by default; the base type's
         # global reaches the ESP32-S3's UARTs (ADR 0138).
         "-global", "driver=esp_soc.uart,property=rx-overflow,value=on",
-        "-serial", f"file:{uart}",
+    ] + uart_port + [
         "-rtc", f"base={RTC_BASE},clock=vm",
         "-seed", str(seed),
         "-d", ",".join(debug),
@@ -447,9 +455,11 @@ def main(argv: list[str] | None = None) -> int:
     qlog = args.outdir / f"{tag}.qemu.log"
     elog = args.outdir / f"{tag}.stderr.log"
     seed = rng_seed(mac)
+    # What a person types into the serial ports (ADR 0156).
+    serial_input = SerialInput(args.outdir)
     cmd = build_argv(qemu, flash, efuse, uart, qlog, args.trace, psram_mb,
                      psram_octal=psram_octal, seed=seed,
-                     reboot=args.reboot, usb=usb)
+                     reboot=args.reboot, usb=usb, serial_in=serial_input.paths)
 
     hw_module = {"tdeck-max": board, "tdeck": board_tdeck}[board_name]
     # SoC-level, so it applies with or without --bus: these describe the chip
@@ -586,6 +596,7 @@ def main(argv: list[str] | None = None) -> int:
                        if isinstance(d, SdCard)), None)
             if sd is not None:
                 sd.image[:] = device_folder.load_sdcard(device, len(sd.image))
+        hw.serial_in = serial_input
         hw.start()
         server = BusServer(args.outdir / f"{tag}.bus.sock", hw.regions)
         irq = IrqChannel(args.outdir / f"{tag}.irq.sock")
@@ -639,6 +650,7 @@ def main(argv: list[str] | None = None) -> int:
                     device_folder.save_sdcard(device, sd.image)
             hw.stop()
         faulthandler.cancel_dump_traceback_later()
+        serial_input.close()
 
     radio_stats: dict = {}
     backlight_stats: dict = {}

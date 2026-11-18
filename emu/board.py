@@ -440,6 +440,11 @@ def attach_input(server: BusServer, board: Board, outdir: Path) -> InputTail:
                 # the same INT line as a finger (ADR 0131).
                 touch.key = (int(event.get("key", 0)), bool(event.get("down", True)))
                 board.gpio.pulse_low(TOUCH_INT_PIN)
+            elif kind == "serial":
+                # Typed into a serial port (ADR 0156).
+                serial = getattr(board, "serial_in", None)
+                if serial is not None:
+                    serial.write(str(event.get("port", "uart")), str(event.get("text", "")))
             else:
                 log.warning("unknown input event %r", event)
 

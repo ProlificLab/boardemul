@@ -226,6 +226,10 @@ class InputWriter:
         """One of the Max's three glass touch keys (ADR 0131)."""
         self._emit({"type": "touchkey", "key": index, "down": down})
 
+    def serial(self, port: str, text: str) -> None:
+        """Text typed into a serial port, "uart" or "usb" (ADR 0156)."""
+        self._emit({"type": "serial", "port": port, "text": text})
+
 
 class TDeckTyping:
     """How a mouse and the host's keyboard press the T-Deck's keys (ADR 0127).

@@ -462,6 +462,11 @@ def attach_input(server, board: Board, outdir: Path) -> InputTail:
                 # mode the firmware wrote, or rests low until one is written
                 # (ADR 0029). The Max's CST328 next door pulses instead.
                 board.gpio.drive(TOUCH_INT_PIN, touch.int_level)
+            elif kind == "serial":
+                # Typed into a serial port (ADR 0156).
+                serial = getattr(board, "serial_in", None)
+                if serial is not None:
+                    serial.write(str(event.get("port", "uart")), str(event.get("text", "")))
             else:
                 log.warning("unknown input event %r", event)
 
