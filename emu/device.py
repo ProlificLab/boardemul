@@ -19,6 +19,9 @@ from __future__ import annotations
 import datetime
 import hashlib
 import json
+import os
+import re
+import socket
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -107,7 +110,7 @@ def create(devices: Path, name: str, firmware: Path, board: str = "tdeck-max",
             (root / SDCARD).write_bytes(bytes(sdimage.build(size_mb=SD_BOARDS[board])))
         device = Device(
             root=root, name=name, board=board,
-            firmware=str(firmware), firmware_sha256=_sha256(firmware),
+            firmware=firmware.as_posix(), firmware_sha256=_sha256(firmware),
             mac=mac, psram_mb=psram_mb, psram_octal=psram_octal,
             created=datetime.datetime.now().isoformat(timespec="seconds"),
             overlays=tuple(overlays),
@@ -137,7 +140,9 @@ def load(root: Path) -> Device:
             raise DeviceError(f"{manifest} has no {missing!r}")
     device = Device(
         root=root, name=fields["name"], board=fields["board"],
-        firmware=fields["firmware"],
+        # Written with forward slashes; a folder made on Windows before that
+        # wrote backslashes, which Linux reads as part of a name (ADR 0140).
+        firmware=fields["firmware"].replace("\\", "/"),
         firmware_sha256=fields.get("firmware_sha256", ""),
         mac=fields["mac"], psram_mb=fields.get("psram_mb", 8),
         psram_octal=fields.get("psram_octal", False),
@@ -175,7 +180,7 @@ def reflash(device: Device, firmware: Path, overlays: tuple[str, ...] = (),
     if not firmware.is_file():
         raise DeviceError(f"no firmware at {firmware}")
     flash, efuse = build(firmware, device.root, device.mac, list(overlays))
-    updated = Device(**{**device.__dict__, "firmware": str(firmware),
+    updated = Device(**{**device.__dict__, "firmware": firmware.as_posix(),
                         "firmware_sha256": _sha256(firmware),
                         "overlays": tuple(overlays)})
     save(updated)
@@ -224,14 +229,57 @@ def save_sdcard(device: Device, image: bytearray) -> None:
 WINDOW_RUN_TIMEOUT = 24 * 60 * 60
 
 
+REPO_ROOT = Path(__file__).resolve().parent.parent
+
+# The build container a run moves into where it cannot run natively, and the
+# image it is made from (.devcontainer/Dockerfile) unless told otherwise.
+DEFAULT_IMAGE = "boardemul-build:latest"
+
+
+def _run_flags(device: str, outdir: str, tag: str) -> list[str]:
+    return ["--device", device, "--bus", "--outdir", outdir, "--tag", tag,
+            "--timeout", str(WINDOW_RUN_TIMEOUT), "--stall", str(WINDOW_RUN_TIMEOUT)]
+
+
 def launch_command(root: Path, outdir: Path, extra: tuple[str, ...] = (),
                    python: str = sys.executable) -> list[str]:
     """The command that starts a device as a run, for a caller that owns the
     child: the emulator's own flags, nothing clever (ADR 0134)."""
-    return [python, str((Path(__file__).resolve().parent.parent) / "emu" / "run.py"),
-            "--device", str(root), "--bus", "--outdir", str(outdir),
-            "--tag", root.name, "--timeout", str(WINDOW_RUN_TIMEOUT),
-            "--stall", str(WINDOW_RUN_TIMEOUT)] + list(extra)
+    return ([python, str(REPO_ROOT / "emu" / "run.py")]
+            + _run_flags(str(root), str(outdir), root.name) + list(extra))
+
+
+def runs_natively() -> bool:
+    """Whether a run can start on this host as it is (ADR 0140).
+
+    The board models talk to QEMU over Unix sockets, and QEMU is built in
+    the build container as a Linux program; a Python without AF_UNIX is a
+    host where neither holds. BOARDEMUL_RUN_IN=native|container overrides."""
+    forced = os.environ.get("BOARDEMUL_RUN_IN", "").lower()
+    if forced in ("native", "container"):
+        return forced == "native"
+    return hasattr(socket, "AF_UNIX")
+
+
+def container_name(root: Path, outdir: Path) -> str:
+    """A name Docker accepts, unique to this device and run."""
+    name = re.sub(r"[^A-Za-z0-9_.-]", "-", f"boardemul-{root.name}-{outdir.name}")
+    return name.strip("-.") or "boardemul-run"
+
+
+def container_command(root: Path, outdir: Path, extra: tuple[str, ...] = (),
+                      name: str | None = None) -> list[str]:
+    """The same run inside the build container (ADR 0140): the repository,
+    the device folder and the run's output each mounted where the command
+    names them, so no host path has to be translated."""
+    def mount(host: Path, inside: str) -> list[str]:
+        return ["-v", f"{Path(host).resolve().as_posix()}:{inside}"]
+    image = os.environ.get("BOARDEMUL_IMAGE") or DEFAULT_IMAGE
+    return (["docker", "run", "--rm", "--name", name or container_name(root, outdir),
+             "--stop-signal", "SIGINT"]
+            + mount(REPO_ROOT, "/work") + mount(root, "/device") + mount(outdir, "/out")
+            + ["-w", "/work", image, "python3", "emu/run.py"]
+            + _run_flags("/device", "/out", root.name) + list(extra))
 
 
 class RunHandle:
@@ -259,18 +307,46 @@ class RunHandle:
         self.outdir = runs / str(index)
         self.outdir.mkdir(parents=True)
         self.proc: "object | None" = None
+        # Set when the run is in the build container, to stop it by name.
+        self.container: str | None = None
 
     def start(self) -> None:
         import subprocess
-        cmd = launch_command(self.device.root, self.outdir, self.extra)
+        if runs_natively():
+            cmd = launch_command(self.device.root, self.outdir, self.extra)
+        else:
+            self.container = container_name(self.device.root, self.outdir)
+            cmd = container_command(self.device.root, self.outdir, self.extra,
+                                    self.container)
         flags = subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == "win32" else 0
         # The child's console lands in its own run directory: a run.py that
         # dies at startup must say why where the run can be read (ADR 0133).
         console = open(self.outdir / "console.log", "wb")
-        self.proc = subprocess.Popen(cmd, cwd=Path(__file__).resolve().parent.parent,
-                                     stdout=console,
-                                     stderr=subprocess.STDOUT,
-                                     creationflags=flags)
+        try:
+            # Plain text in console.log: Python 3.13 colours its tracebacks
+            # for a terminal, and this file is read in a page.
+            self.proc = subprocess.Popen(cmd, cwd=REPO_ROOT, stdout=console,
+                                         stderr=subprocess.STDOUT,
+                                         env={**os.environ, "PYTHON_COLORS": "0"},
+                                         creationflags=flags)
+        except FileNotFoundError:
+            console.close()
+            if self.container is None:
+                raise
+            raise RuntimeError(
+                "this host starts runs in the build container (ADR 0140), and "
+                "docker is not on PATH: start Docker Desktop") from None
+
+    def console_tail(self, lines: int = 40) -> list[str]:
+        """The last lines the run's own process printed: why it ended, when
+        it ended early (ADR 0140)."""
+        try:
+            text = (self.outdir / "console.log").read_text(encoding="utf-8",
+                                                          errors="replace")
+        except OSError:
+            return []
+        # Any colour codes a child wrote anyway are a terminal's, not a page's.
+        return re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", text).splitlines()[-lines:]
 
     @property
     def alive(self) -> bool:
@@ -283,7 +359,11 @@ class RunHandle:
         import subprocess
         if not isinstance(self.proc, subprocess.Popen) or self.proc.poll() is not None:
             return
-        if sys.platform == "win32":
+        if self.container is not None:
+            # The same interrupt a native stop sends, delivered inside.
+            subprocess.run(["docker", "stop", "--signal", "SIGINT", "--time", "30",
+                            self.container], capture_output=True, timeout=60)
+        elif sys.platform == "win32":
             self.proc.send_signal(signal.CTRL_BREAK_EVENT)
         else:
             self.proc.send_signal(signal.SIGINT)

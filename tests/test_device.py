@@ -60,7 +60,7 @@ def test_create_makes_the_folder_and_its_storage(tmp_path, firmware, fake_build)
     assert len(device.sdcard.read_bytes()) > 0
     fields = json.loads((devices / "pocket" / "device.json").read_text())
     assert fields["board"] == "tdeck-max"
-    assert fields["firmware"] == str(firmware)
+    assert fields["firmware"] == firmware.as_posix()      # forward slashes (ADR 0140)
     assert fields["overlays"] == []
 
 
@@ -172,7 +172,7 @@ def test_reflash_keeps_the_card_and_updates_the_record(tmp_path, firmware,
     new = tmp_path / "fw" / "other.bin"
     new.write_bytes(FIRMWARE_BYTES + b"new")
     updated = device_folder.reflash(device, new)
-    assert updated.firmware == str(new)
+    assert updated.firmware == new.as_posix()
     assert updated.firmware_sha256 != device.firmware_sha256
     assert updated.sdcard.read_bytes()[0:4] == b"kept"
     assert fake_build[-1][0] == new                  # the assembler saw it

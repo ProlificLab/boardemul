@@ -8,6 +8,7 @@ widget tests.
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -52,6 +53,74 @@ def test_the_launch_command_is_the_emulators_own_flags(tmp_path):
     # A window-run device stops when its user stops it, not on a ceiling.
     assert str(device_folder.WINDOW_RUN_TIMEOUT) in cmd
     assert cmd[1].endswith("run.py")
+
+
+def test_where_the_emulator_cannot_run_the_run_moves_into_the_container(
+        tmp_path, monkeypatch):
+    """ADR 0140: the same flags, inside `docker run`, with the repository, the
+    folder and the output each mounted where the command names them."""
+    monkeypatch.setenv("BOARDEMUL_IMAGE", "deck-image:7")
+    root = tmp_path / "devices" / "my pocket"
+    outdir = tmp_path / "logs" / "my pocket" / "3"
+    cmd = device_folder.container_command(root, outdir, ("--wifi-ap", "deck"))
+    assert cmd[:3] == ["docker", "run", "--rm"]
+    assert cmd[cmd.index("--name") + 1] == "boardemul-my-pocket-3"
+    assert cmd[cmd.index("--stop-signal") + 1] == "SIGINT"
+    mounts = [cmd[i + 1] for i, a in enumerate(cmd) if a == "-v"]
+    assert mounts == [f"{device_folder.REPO_ROOT.as_posix()}:/work",
+                      f"{root.resolve().as_posix()}:/device",
+                      f"{outdir.resolve().as_posix()}:/out"]
+    tail = cmd[cmd.index("deck-image:7"):]
+    assert tail[:3] == ["deck-image:7", "python3", "emu/run.py"]
+    assert tail[tail.index("--device") + 1] == "/device"
+    assert tail[tail.index("--outdir") + 1] == "/out"
+    assert tail[-2:] == ["--wifi-ap", "deck"]
+
+
+def test_the_host_decides_where_a_run_starts(monkeypatch):
+    monkeypatch.setenv("BOARDEMUL_RUN_IN", "container")
+    assert not device_folder.runs_natively()
+    monkeypatch.setenv("BOARDEMUL_RUN_IN", "native")
+    assert device_folder.runs_natively()
+    monkeypatch.delenv("BOARDEMUL_RUN_IN")
+    import socket
+    assert device_folder.runs_natively() == hasattr(socket, "AF_UNIX")
+
+
+def test_a_container_run_without_docker_says_so(tmp_path, firmware, fake_build,
+                                                  monkeypatch):
+    from emu.device import RunHandle
+    monkeypatch.setenv("BOARDEMUL_RUN_IN", "container")
+    monkeypatch.setenv("PATH", str(tmp_path / "nowhere"))
+    device = device_folder.create(tmp_path / "devices", "pocket", firmware)
+    handle = RunHandle(device, logs=tmp_path / "logs")
+    with pytest.raises(RuntimeError, match="docker is not on PATH"):
+        handle.start()
+
+
+def test_a_folder_names_its_firmware_with_forward_slashes(tmp_path, firmware,
+                                                          fake_build):
+    device = device_folder.create(tmp_path / "devices", "pocket", firmware)
+    assert "\\" not in device.firmware
+    manifest = device.root / device_folder.MANIFEST
+    fields = json.loads(manifest.read_text())
+    fields["firmware"] = "firmware\\T-Deck.bin"       # as Windows once wrote it
+    manifest.write_text(json.dumps(fields))
+    assert device_folder.load(device.root).firmware == "firmware/T-Deck.bin"
+
+
+def test_a_run_tells_why_it_ended(tmp_path, firmware, fake_build):
+    from emu.device import RunHandle
+    device = device_folder.create(tmp_path / "devices", "pocket", firmware)
+    handle = RunHandle(device, logs=tmp_path / "logs")
+    assert handle.console_tail() == []
+    (handle.outdir / "console.log").write_text(
+        "".join(f"line {i}\n" for i in range(100)) + "AttributeError: no AF_UNIX\n")
+    tail = handle.console_tail()
+    assert len(tail) == 40 and tail[-1] == "AttributeError: no AF_UNIX"
+    (handle.outdir / "console.log").write_text(
+        "\x1b[1;35mAttributeError\x1b[0m: \x1b[35mno AF_UNIX\x1b[0m\n")
+    assert handle.console_tail() == ["AttributeError: no AF_UNIX"]
 
 
 def test_a_never_started_run_stops_as_nothing(tmp_path, firmware, fake_build):
