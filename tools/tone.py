@@ -54,10 +54,14 @@ def measure(path: Path) -> dict:
         return {"seconds": len(samples) / rate, "loud_seconds": 0.0,
                 "hz": 0.0, "dbfs": float("-inf")}
     span = samples[loud[0]:loud[-1] + 1]
-    crossings = sum(1 for a, b in zip(span, span[1:]) if (a < 0) != (b < 0))
+    # The pitch from the first half second only: a driver that repeats its
+    # last buffers after a sound joins them with a jump in phase, and the
+    # crossings counted across one are off by a percent.
+    head = span[:rate // 2]
+    crossings = sum(1 for a, b in zip(head, head[1:]) if (a < 0) != (b < 0))
     rms = math.sqrt(sum(v * v for v in span) / len(span))
     return {"seconds": len(samples) / rate, "loud_seconds": len(span) / rate,
-            "hz": crossings / 2 / (len(span) / rate),
+            "hz": crossings / 2 / (len(head) / rate),
             "dbfs": 20 * math.log10(rms / 32768) if rms else float("-inf")}
 
 
