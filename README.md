@@ -26,6 +26,20 @@ The page lists your devices, starts and stops them, shows the panel live
 (the same chord logic the drawn window uses), tails the serial console, and
 can scrub back through the run's frames.
 
+On Windows the page and the browser stay on Windows and each run moves into
+the build container, because the board models need Unix sockets and QEMU is
+built there as a Linux program (ADR 0140). Docker Desktop has to be running,
+with the image built and QEMU built into the tree:
+
+```
+docker build -t boardemul-build .devcontainer
+docker run --rm -v "%CD%":/work -w /work boardemul-build bash -lc tools/build_qemu.sh
+```
+
+`BOARDEMUL_IMAGE` names another image; `BOARDEMUL_RUN_IN=native` or
+`container` overrides the choice. The server serves only its own page and a
+run takes per-run settings from it, never a program or a path (ADR 0139).
+
 ```
 # in the devcontainer
 python3 emu/run.py firmware/T-Deck-MAX_V3.1_20260313.bin --bus --timeout 200
