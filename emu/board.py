@@ -27,6 +27,7 @@ from emu import sdimage
 from emu.devices.air import HOST as AIR_LOOPBACK, AirMedium, air_host, keep_time
 from emu.devices.gps import UBloxM10
 from emu.devices.ledc import Ledc
+from emu.peripherals.adc import SarAdc
 from emu.devices.modem import A7682E
 from emu.guest_clock import GuestClock
 from emu.devices.sdcard import SdCard
@@ -108,6 +109,7 @@ I2S0_BASE, GDMA_PERIPH_I2S0 = 0x6000F000, 3
 I2S1_BASE, GDMA_PERIPH_I2S1 = 0x6002D000, 4
 BLE_CORE_BASE = 0x60031000
 IRQ_RWBLE = 8               # ETS_RWBLE_INTR_SOURCE
+SENS_BASE, SENS_SIZE = 0x60008800, 0x400   # DR_REG_SENS_BASE (ADR 0152)
 
 # Windows nothing models. Claiming them changes no behaviour on its own -- reads
 # still return what was last written -- but it stops read-modify-write being
@@ -355,6 +357,9 @@ def build(outdir: Path, air: str | None = None, ble_air: str | None = None,
                              else PhyGates(n, b) if PhyGates.covers(b)
                              else TraceRegion(n, b)
                              for n, b in UNMODELLED.items()]
+    # The chip's SENS block: the SAR ADC and the temperature sensor the WiFi
+    # PHY reads as it starts, which spun the Max's scan forever (ADR 0152).
+    regions.append(SarAdc("sens", SENS_BASE, SENS_SIZE))
 
     # GPIO is declared first: the SPI master registers a chip-select watch when
     # it is realized, and -device instances are realized in command-line order.
