@@ -206,6 +206,14 @@
   .drop:hover, .drop.over { border-color: var(--primary); background: #1b2431; }
   .drop b { color: var(--ink); }
   .sheet .row, .dialog .row { display: flex; gap: 10px; justify-content: flex-end; margin-top: 18px; }
+  .doctor { margin: 0 0 16px; padding: 14px 16px; border-radius: var(--radius-s);
+            background: #3a1d1d; color: #ffdad6; display: flex; flex-direction: column; gap: 8px; }
+  .doctor[hidden] { display: none; }
+  .doctor h4 { margin: 0; font-size: 14px; }
+  .doctor .item { font-size: 13px; }
+  .doctor code { font-family: Consolas, monospace; font-size: 12px; background: #00000040;
+                 padding: 2px 6px; border-radius: 6px; user-select: all; }
+  .doctor .btn { align-self: flex-start; }
   .storage { margin-top: 14px; border-top: 1px solid var(--outline); padding-top: 12px;
              display: flex; flex-direction: column; gap: 8px; }
   .storage h4 { margin: 0; font-size: 12px; text-transform: uppercase;
@@ -264,6 +272,8 @@
       <input id="filter" placeholder="Filter by name" oninput="render()">
       <span class="kbd">/</span>
     </div>
+
+    <div class="doctor" id="doctor" role="alert" hidden></div>
 
     <div class="layout">
       <div><div class="devgrid" id="devgrid"></div></div>
@@ -577,6 +587,19 @@ function escapeHtml(text) {
                                           '"': "&quot;", "'": "&#39;" })[c]);
 }
 
+/* ================= what the machine lacks (ADR 0153) ================= */
+async function checkMachine() {
+  const el = $("doctor");
+  const data = await api("/api/doctor").catch(() => null);
+  const errors = data ? data.findings.filter(f => f.level === "error") : [];
+  el.hidden = errors.length === 0;
+  if (!errors.length) { el.innerHTML = ""; return; }
+  el.innerHTML = `<h4>This machine cannot start a device yet</h4>` + errors.map(f => `
+    <div class="item"><b>${escapeHtml(f.what)}</b>: ${escapeHtml(f.detail)}${f.fix
+      ? `<br>fix: <code>${escapeHtml(f.fix)}</code>` : ""}</div>`).join("") +
+    `<button class="btn tonal" onclick="checkMachine()">Check again</button>`;
+}
+
 /* ================= settings (ADR 0145) ================= */
 // A device keeps what every run of it is told about the world around it. The
 // list is the run's own flags; the sheet reads them into fields and back.
@@ -709,7 +732,10 @@ async function start(name) {
     const r = await api(`/api/devices/${encodeURIComponent(name)}/start`,
                         { method: "POST" });
     showRun(r.id, r.board);
-  } catch (err) { snack(`${name} did not start: ${err.message || err}`); }
+  } catch (err) {
+    snack(`${name} did not start: ${err.message || err}`);
+    checkMachine();
+  }
 }
 function openRun(name) {
   const d = devices.find(x => x.name === name);
@@ -1067,6 +1093,7 @@ const autorun = new URLSearchParams(location.search).get("run");
 refresh().then(() => {
   if (autorun) start(autorun).catch(err => snack("auto-start: " + err.message));
 }).catch(err => snack("load failed: " + err.message));
+checkMachine();
 </script>
 </body>
 </html>

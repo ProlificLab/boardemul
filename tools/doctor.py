@@ -66,7 +66,7 @@ def check_where(image: str) -> list[Finding]:
     have = _run(["docker", "image", "inspect", "--format", "{{.Id}}", image])
     if have is None or have.returncode != 0:
         found.append(Finding(ERROR, "Build image", f"{image} is not built",
-                             "docker build -t boardemul-build .devcontainer"))
+                             f"docker build -t {image} .devcontainer"))
     else:
         found.append(Finding(OK, "Build image", image))
     return found

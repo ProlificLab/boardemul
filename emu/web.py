@@ -390,6 +390,10 @@ class Handler(BaseHTTPRequestHandler):
                      "running": d.name in self.server.state.runs}
                     for d in device_folder.all_devices(self.server.state.devices)]})
 
+            if segs[1] == "doctor" and len(segs) == 2:
+                # What this machine lacks, by the doctor's own checks (ADR 0153).
+                from tools import doctor
+                return self._json({"findings": [f.__dict__ for f in doctor.diagnose()]})
             if segs[1] == "devices" and len(segs) == 4 and segs[3] == "snapshots":
                 device = self._device(segs[2])
                 return self._json({"snapshots": [

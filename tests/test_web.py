@@ -487,3 +487,18 @@ def test_the_keyboard_glow_is_read_beside_the_frames(server):
     (outdir / "frames" / "board.json").write_text('{"keyboard_backlight": 0.5}')
     status, body, _h = call(client, "GET", "/api/runs/pocket/state")
     assert status == 200 and body == {"keyboard_backlight": 0.5}
+
+
+def test_the_page_can_ask_what_the_machine_lacks(server, monkeypatch):
+    """ADR 0153: the doctor's own findings, so page and command line agree."""
+    from tools import doctor
+    monkeypatch.setattr(doctor, "diagnose", lambda: [
+        doctor.Finding(doctor.ERROR, "Docker", "its daemon does not answer",
+                       "start Docker Desktop"),
+        doctor.Finding(doctor.OK, "Python", "3.12.3")])
+    client, _devices, _s = server
+    status, body, _h = call(client, "GET", "/api/doctor")
+    assert status == 200
+    assert body["findings"][0] == {"level": "error", "what": "Docker",
+                                   "detail": "its daemon does not answer",
+                                   "fix": "start Docker Desktop"}
