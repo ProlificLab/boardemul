@@ -6,6 +6,7 @@
     device.py show NAME
     device.py flash NAME --firmware F.bin [--overlay ...]
     device.py remove NAME
+    device.py settings NAME [--clear] [-- SETTINGS...]
     device.py start NAME [run.py arguments...]
 
 A device folder keeps identity and storage between runs. Starting one is
@@ -83,6 +84,8 @@ def cmd_show(args) -> int:
         print(f"{field:16s} {getattr(device, field)}")
     if device.overlays:
         print(f"{'overlays':16s} {', '.join(device.overlays)}")
+    if device.settings:
+        print(f"{'settings':16s} {' '.join(device.settings)}")
     print(f"{'storage':16s} {device.flash} + {device.efuse}"
           + (f" + {device.sdcard}" if device.has_sdcard else ""))
     return 0
@@ -112,10 +115,28 @@ def cmd_remove(args) -> int:
     return 0
 
 
+def cmd_settings(args) -> int:
+    """Show or keep the settings every run of the device is told (ADR
+    0145): an access point, a GPS fix, a named air and a place on it."""
+    device = _get(devices_dir(args.dir), args.name)
+    wanted = [a for a in args.settings if a != "--"]
+    if args.clear or wanted:
+        try:
+            device = device_folder.set_settings(device, () if args.clear else wanted)
+        except device_folder.DeviceError as exc:
+            raise SystemExit(str(exc))
+    print(" ".join(device.settings) if device.settings else "(no settings)")
+    return 0
+
+
 def cmd_start(args) -> int:
     device = _get(devices_dir(args.dir), args.name)
+    # The device's own settings, its named airs beside the folders, then
+    # whatever this start adds (ADR 0145).
+    kept = device_folder.place_airs(device.settings,
+                                    device_folder.local_air_base(device.root))
     cmd = [sys.executable, str(REPO_ROOT / "emu" / "run.py"),
-           "--device", str(device.root)] + args.run_args
+           "--device", str(device.root)] + list(kept) + args.run_args
     return subprocess.run(cmd, cwd=REPO_ROOT).returncode
 
 
@@ -162,6 +183,16 @@ def main(argv: list[str] | None = None) -> int:
     remove.add_argument("--yes", action="store_true",
                         help="without a prompt, for scripts")
     remove.set_defaults(fn=cmd_remove)
+
+    settings = sub.add_parser("settings", help="show or keep what every run "
+                              "of the device is told (ADR 0145)")
+    settings.add_argument("name")
+    settings.add_argument("--clear", action="store_true",
+                          help="forget the device's settings")
+    settings.add_argument("settings", nargs=argparse.REMAINDER,
+                          help="after --: --wifi-ap NAME, --gps LAT,LON, "
+                               "--air NAME, --at X,Y, ...")
+    settings.set_defaults(fn=cmd_settings)
 
     start = sub.add_parser("start", help="run the device (emu/run.py --device)")
     start.add_argument("name")

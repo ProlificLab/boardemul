@@ -77,6 +77,61 @@ def test_where_the_emulator_cannot_run_the_run_moves_into_the_container(
     assert tail[-2:] == ["--wifi-ap", "deck"]
 
 
+def test_a_container_run_on_an_air_meets_the_others_on_a_network(tmp_path):
+    """ADR 0145: the airs' volume, the network, the board's address there,
+    and each named air placed under the volume."""
+    root = tmp_path / "devices" / "node"
+    outdir = tmp_path / "logs" / "node" / "1"
+    cmd = device_folder.container_command(
+        root, outdir, ("--air", "mesh", "--ble-air", "talk", "--at", "5,0"))
+    assert f"{device_folder.AIR_VOLUME}:/air" in cmd
+    assert cmd[cmd.index("--network") + 1] == device_folder.AIR_NETWORK
+    assert "BOARDEMUL_AIR_HOST=auto" in cmd
+    assert cmd[-6:] == ["--air", "/air/lora/mesh", "--ble-air", "/air/ble/talk",
+                        "--at", "5,0"]
+
+
+def test_a_container_run_off_the_air_is_started_as_before(tmp_path):
+    cmd = device_folder.container_command(tmp_path / "d", tmp_path / "o",
+                                          ("--reboot",))
+    assert "--network" not in cmd and "BOARDEMUL_AIR_HOST=auto" not in cmd
+
+
+def test_a_run_on_this_host_keeps_its_airs_beside_the_folders(tmp_path):
+    root = tmp_path / "devices" / "node"
+    cmd = device_folder.launch_command(root, tmp_path / "o", ("--air", "mesh"))
+    assert cmd[-2:] == ["--air", f"{(tmp_path / 'devices').resolve().as_posix()}/.air/lora/mesh"]
+
+
+def test_a_run_is_told_the_devices_settings_then_its_own(tmp_path, firmware,
+                                                         fake_build, monkeypatch):
+    from emu.device import RunHandle
+    import subprocess
+    monkeypatch.setenv("BOARDEMUL_RUN_IN", "native")
+    device = device_folder.create(tmp_path / "devices", "pocket", firmware)
+    device = device_folder.set_settings(device, ["--reboot", "--air", "mesh"])
+    assert device_folder.load(device.root).settings == ("--reboot", "--air", "mesh")
+    seen = []
+
+    class Fake:
+        def __init__(self, cmd, **_kw):
+            seen.append(cmd)
+
+    monkeypatch.setattr(subprocess, "Popen", Fake)
+    RunHandle(device, logs=tmp_path / "logs", extra=("--icount",)).start()
+    tail = seen[0][-4:]
+    assert tail[0] == "--reboot" and tail[1] == "--air"
+    assert tail[2].endswith("/.air/lora/mesh") and tail[3] == "--icount"
+
+
+@pytest.mark.parametrize("bad", [["--air", "/tmp/x"], ["--qemu", "q"], ["--gps"]])
+def test_a_device_keeps_only_settings_from_the_list(tmp_path, firmware,
+                                                    fake_build, bad):
+    device = device_folder.create(tmp_path / "devices", "pocket", firmware)
+    with pytest.raises(device_folder.DeviceError):
+        device_folder.set_settings(device, bad)
+
+
 def test_the_host_decides_where_a_run_starts(monkeypatch):
     monkeypatch.setenv("BOARDEMUL_RUN_IN", "container")
     assert not device_folder.runs_natively()

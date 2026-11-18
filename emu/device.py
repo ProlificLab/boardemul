@@ -43,6 +43,64 @@ class DeviceError(Exception):
     """Raised for anything a folder, its manifest or its firmware gets wrong."""
 
 
+# The run settings a device keeps and a page may pass, and whether each takes
+# a value (ADRs 0139, 0145). Nothing here names a file, a directory or a
+# program: an air is named, and where its directory is depends on where the
+# run is, which the run handle decides.
+RUN_FLAGS = {
+    "--wifi-ap": True, "--wifi-wpa2": False, "--wifi-pass": True,
+    "--wifi-uplink": False, "--gps": True, "--at": True, "--antenna": True,
+    "--environment": True, "--obstruction": True, "--icount": False,
+    "--reboot": False, "--air": True, "--ble-air": True,
+}
+# The named airs, and the band each lives under.
+NAMED_AIRS = {"--air": "lora", "--ble-air": "ble"}
+AIR_NAME = re.compile(r"[a-z0-9][a-z0-9-]{0,31}\Z")
+# Where runs in the build container keep their airs, and the network they
+# meet on (ADR 0145).
+AIR_VOLUME = AIR_NETWORK = "boardemul-air"
+AIR_MOUNT = "/air"
+
+
+def check_settings(args) -> tuple[str, ...]:
+    """Run settings held to RUN_FLAGS, each air a plain name. Raises
+    DeviceError saying what is wrong."""
+    if not isinstance(args, (list, tuple)):
+        raise DeviceError("settings must be a list")
+    out: list[str] = []
+    i = 0
+    while i < len(args):
+        flag = args[i]
+        if not isinstance(flag, str) or flag not in RUN_FLAGS:
+            raise DeviceError(f"{flag!r} is not a setting a device takes")
+        out.append(flag)
+        i += 1
+        if RUN_FLAGS[flag]:
+            value = args[i] if i < len(args) else None
+            if not isinstance(value, str) or value.startswith("--"):
+                raise DeviceError(f"{flag} needs a value")
+            if flag in NAMED_AIRS and not AIR_NAME.match(value):
+                raise DeviceError(f"{flag} takes an air's name (lower-case "
+                                  f"letters, digits and dashes), not {value!r}")
+            out.append(value)
+            i += 1
+    return tuple(out)
+
+
+def place_airs(args: tuple[str, ...], base: str) -> tuple[str, ...]:
+    """The same settings with each named air given its directory under `base`
+    (ADR 0145)."""
+    out = list(args)
+    for i, flag in enumerate(out[:-1]):
+        if flag in NAMED_AIRS:
+            out[i + 1] = f"{base}/{NAMED_AIRS[flag]}/{out[i + 1]}"
+    return tuple(out)
+
+
+def uses_air(args: tuple[str, ...]) -> bool:
+    return any(flag in NAMED_AIRS for flag in args)
+
+
 def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
@@ -61,6 +119,8 @@ class Device:
     psram_octal: bool             # forced octal; False takes the image's mode (ADR 0144)
     created: str
     overlays: tuple[str, ...] = ()
+    # What every run of it is told about the world around it (ADR 0145).
+    settings: tuple[str, ...] = ()
 
     @property
     def flash(self) -> Path:
@@ -147,6 +207,7 @@ def load(root: Path) -> Device:
         mac=fields["mac"], psram_mb=fields.get("psram_mb", 8),
         psram_octal=fields.get("psram_octal", False),
         created=fields.get("created", ""), overlays=tuple(fields.get("overlays", ())),
+        settings=check_settings(fields.get("settings", [])),
     )
     if not device.flash.is_file() or not device.efuse.is_file():
         raise DeviceError(f"{root} has no assembled storage; run device.py flash")
@@ -166,6 +227,7 @@ def save(device: Device) -> None:
         "psram_octal": device.psram_octal,
         "created": device.created,
         "overlays": list(device.overlays),
+        "settings": list(device.settings),
     }
     (device.root / MANIFEST).write_text(
         json.dumps(fields, indent=2) + "\n", encoding="utf-8")
@@ -183,6 +245,13 @@ def reflash(device: Device, firmware: Path, overlays: tuple[str, ...] = (),
     updated = Device(**{**device.__dict__, "firmware": firmware.as_posix(),
                         "firmware_sha256": _sha256(firmware),
                         "overlays": tuple(overlays)})
+    save(updated)
+    return updated
+
+
+def set_settings(device: Device, settings) -> Device:
+    """Keep these run settings in the device's manifest (ADR 0145)."""
+    updated = Device(**{**device.__dict__, "settings": check_settings(settings)})
     save(updated)
     return updated
 
@@ -246,7 +315,14 @@ def launch_command(root: Path, outdir: Path, extra: tuple[str, ...] = (),
     """The command that starts a device as a run, for a caller that owns the
     child: the emulator's own flags, nothing clever (ADR 0134)."""
     return ([python, str(REPO_ROOT / "emu" / "run.py")]
-            + _run_flags(str(root), str(outdir), root.name) + list(extra))
+            + _run_flags(str(root), str(outdir), root.name)
+            + list(place_airs(tuple(extra), local_air_base(root))))
+
+
+def local_air_base(root: Path) -> str:
+    """Where a run on this host keeps its named airs: beside the device
+    folders (ADR 0145)."""
+    return (Path(root).resolve().parent / ".air").as_posix()
 
 
 def runs_natively() -> bool:
@@ -275,11 +351,27 @@ def container_command(root: Path, outdir: Path, extra: tuple[str, ...] = (),
     def mount(host: Path, inside: str) -> list[str]:
         return ["-v", f"{Path(host).resolve().as_posix()}:{inside}"]
     image = os.environ.get("BOARDEMUL_IMAGE") or DEFAULT_IMAGE
+    # On an air, the airs' volume and the network the boards meet on, each
+    # board reached at its container's address there (ADR 0145).
+    air = (["-v", f"{AIR_VOLUME}:{AIR_MOUNT}", "--network", AIR_NETWORK,
+            "-e", "BOARDEMUL_AIR_HOST=auto"] if uses_air(extra) else [])
     return (["docker", "run", "--rm", "--name", name or container_name(root, outdir),
              "--stop-signal", "SIGINT"]
             + mount(REPO_ROOT, "/work") + mount(root, "/device") + mount(outdir, "/out")
-            + ["-w", "/work", image, "python3", "emu/run.py"]
-            + _run_flags("/device", "/out", root.name) + list(extra))
+            + air + ["-w", "/work", image, "python3", "emu/run.py"]
+            + _run_flags("/device", "/out", root.name)
+            + list(place_airs(tuple(extra), AIR_MOUNT)))
+
+
+def ensure_air_network() -> None:
+    """The Docker network boards on an air meet on, made the first time it is
+    needed (ADR 0145)."""
+    import subprocess
+    found = subprocess.run(["docker", "network", "inspect", AIR_NETWORK],
+                           capture_output=True)
+    if found.returncode != 0:
+        subprocess.run(["docker", "network", "create", AIR_NETWORK],
+                       capture_output=True, check=True)
 
 
 class RunHandle:
@@ -312,11 +404,19 @@ class RunHandle:
 
     def start(self) -> None:
         import subprocess
+        # The device's own settings, then this run's (ADR 0145).
+        settings = tuple(self.device.settings) + tuple(self.extra)
         if runs_natively():
-            cmd = launch_command(self.device.root, self.outdir, self.extra)
+            cmd = launch_command(self.device.root, self.outdir, settings)
         else:
             self.container = container_name(self.device.root, self.outdir)
-            cmd = container_command(self.device.root, self.outdir, self.extra,
+            if uses_air(settings):
+                try:
+                    ensure_air_network()
+                except (OSError, subprocess.CalledProcessError) as exc:
+                    raise RuntimeError(f"could not make the Docker network "
+                                       f"{AIR_NETWORK}: {exc}") from None
+            cmd = container_command(self.device.root, self.outdir, settings,
                                     self.container)
         flags = subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == "win32" else 0
         # The child's console lands in its own run directory: a run.py that
