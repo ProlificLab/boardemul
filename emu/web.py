@@ -448,7 +448,9 @@ class Handler(BaseHTTPRequestHandler):
                 if segs[3] == "frames":
                     return self._frame_list(handle)
                 if segs[3] == "uart":
-                    return self._uart(handle, int(self._query().get("after", 0)))
+                    query = self._query()
+                    return self._uart(handle, int(query.get("after", 0)),
+                                      query.get("port", "uart"))
                 if segs[3] == "console":
                     return self._json({"alive": handle.alive,
                                        "lines": handle.console_tail()})
@@ -660,6 +662,11 @@ class Handler(BaseHTTPRequestHandler):
                     writer.roll(str(event["roll"]), int(event.get("steps", 1)))
                 else:
                     writer.ball(bool(event.get("press", True)))
+            elif kind == "serial":
+                port = str(event.get("port", "uart"))
+                if port not in ("uart", "usb"):
+                    raise Refused(400, "port is uart or usb")
+                writer.serial(port, str(event.get("text", "")))
         self._json({"accepted": True})
 
     def _frame(self, handle: device_folder.RunHandle) -> None:
@@ -692,8 +699,12 @@ class Handler(BaseHTTPRequestHandler):
         return self._json({"frames": [
             {"name": f.name, "mtime": f.stat().st_mtime_ns} for f in frames]})
 
-    def _uart(self, handle: device_folder.RunHandle, after: int) -> None:
-        path = handle.outdir / f"{handle.device.name}.uart.log"
+    def _uart(self, handle: device_folder.RunHandle, after: int,
+              port: str = "uart") -> None:
+        """One serial port's log: the UART's, or the USB port's (ADR 0156)."""
+        if port not in ("uart", "usb"):
+            raise Refused(400, "port is uart or usb")
+        path = handle.outdir / f"{handle.device.name}.{port}.log"
         try:
             text = path.read_text(errors="replace")
         except OSError:

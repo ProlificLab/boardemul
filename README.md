@@ -40,7 +40,8 @@ python -m emu.web                # serves http://127.0.0.1:8420 and opens it
 
 The page lists your devices, starts and stops them, shows the panel live
 (long-polled frames), takes touches on the glass and typing on the keyboard
-(the same chord logic the drawn window uses), tails the serial console, and
+(the same chord logic the drawn window uses), tails either serial port and
+takes a line typed into it (ADR 0156), plays what the speaker played, and
 can scrub back through the run's frames.
 
 On Windows the page and the browser stay on Windows and each run moves into

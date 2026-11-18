@@ -135,6 +135,13 @@
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer;
   }
   .uart.open { white-space: normal; max-height: 160px; overflow-y: auto; }
+  .sendline { display: flex; gap: 8px; width: 100%; align-items: center; }
+  .sendline .seg { flex: 0 0 auto; padding: 3px; }
+  .sendline .seg button { padding: 5px 12px; font-size: 12px; }
+  .sendline input { flex: 1; min-width: 0; background: #0c0e10; color: var(--ink);
+                    border: 1px solid var(--outline); border-radius: 8px; padding: 7px 10px;
+                    font-family: Consolas, monospace; font-size: 12px; outline: none; }
+  .sendline input:focus { border-color: var(--primary); }
   .sound { width: 100%; display: none; flex-direction: column; gap: 6px; }
   .sound.has { display: flex; }
   .sound .stream { display: flex; align-items: center; gap: 10px;
@@ -326,6 +333,15 @@
         </div>
         <div class="uart" id="uart" onclick="this.classList.toggle('open')"
              title="click to expand">[    0] waiting for guest output…</div>
+        <form class="sendline" onsubmit="sendLine(event)">
+          <div class="seg" id="c-port" role="group" aria-label="Serial port">
+            <button type="button" class="on" onclick="setPort(this, 'uart')">UART</button>
+            <button type="button" onclick="setPort(this, 'usb')">USB</button>
+          </div>
+          <input id="c-line" autocomplete="off" spellcheck="false"
+                 placeholder="Type to the serial port — Enter sends the line"
+                 aria-label="Line to send to the serial port">
+        </form>
         <div class="sound" id="sound" aria-label="What the speaker played"></div>
       </div>
 
@@ -893,7 +909,7 @@ async function uartLoop() {
         const run = await api(`/api/runs/${id}/console`);
         if (!run.alive) endRun(run.lines);
       }
-      const data = await api(`/api/runs/${id}/uart?after=${uartAfter}`);
+      const data = await api(`/api/runs/${id}/uart?after=${uartAfter}&port=${consolePort}`);
       if (data.lines.length) {
         uartAfter = data.total;
         const el = $("uart");
@@ -911,6 +927,29 @@ async function uartLoop() {
     await new Promise(r => setTimeout(r, 1500));
   }
 }
+/* -- the serial ports, both ways (ADR 0156) -------------------------------- */
+let consolePort = "uart";
+function setPort(btn, port) {
+  consolePort = port;
+  for (const b of document.querySelectorAll("#c-port button")) b.classList.remove("on");
+  btn.classList.add("on");
+  uartAfter = 0;
+  consoleLines.length = 0;
+  $("uart").textContent = `[    0] the ${port === "usb" ? "USB serial port" : "UART"}…`;
+}
+async function sendLine(e) {
+  e.preventDefault();
+  if (!current) return;
+  const text = $("c-line").value;
+  try {
+    await api(`/api/runs/${encodeURIComponent(current)}/input`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ events: [{ type: "serial", port: consolePort, text: text + "\n" }] }),
+    });
+    $("c-line").value = "";
+  } catch (err) { snack(String(err.message || err)); }
+}
+
 /* -- what the speaker played (ADR 0146) ----------------------------------- */
 let soundSeen = "";
 async function soundLoop(id) {
@@ -1110,6 +1149,7 @@ function keyUp(name) {
   document.addEventListener("keydown", e => {
     const runOpen = $("view-run").style.display !== "none";
     if (!runOpen || $("sheet").classList.contains("open")) return;
+    if (e.target.closest && e.target.closest("input, textarea, select")) return;
     // Alt+B passes through as the chord; the guest drives its own backlight,
     // and the state poll above lights the drawn keyboard when it does.
     if (e.key === "Shift") shiftHeld = true;
@@ -1120,6 +1160,7 @@ function keyUp(name) {
       }
   });
 document.addEventListener("keyup", e => {
+  if (e.target.closest && e.target.closest("input, textarea, select")) return;
   if ($("view-run").style.display !== "none" && e.key)
     send({ type: "hostkey", keysym: e.key, char: e.key, down: false });
   if (e.key === "Shift") shiftHeld = false;

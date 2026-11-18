@@ -521,3 +521,21 @@ def test_a_device_is_cloned_with_a_mac_of_its_own(server):
     status, _b, _h = call(client, "POST", "/api/devices/pocket/clone",
                           {"name": "pocket-3"})
     assert status == 409
+
+
+def test_the_console_reads_either_port_and_takes_typing(server):
+    """ADR 0156: the USB port's log beside the UART's, and a serial event."""
+    client, devices, _s = server
+    _pocket(client, devices)
+    call(client, "POST", "/api/devices/pocket/start", {})
+    outdir = Path(web_state_run_outdirs(client)[0])
+    (outdir / "pocket.uart.log").write_text("rom\n")
+    (outdir / "pocket.usb.log").write_text("hwcdc says hi\n")
+    assert call(client, "GET", "/api/runs/pocket/uart?port=usb")[1]["lines"] == ["hwcdc says hi"]
+    assert call(client, "GET", "/api/runs/pocket/uart")[1]["lines"] == ["rom"]
+    assert call(client, "GET", "/api/runs/pocket/uart?port=jtag")[0] == 400
+    status, _b, _h = call(client, "POST", "/api/runs/pocket/input",
+                          {"events": [{"type": "serial", "port": "usb", "text": "ls\n"}]})
+    assert status == 200
+    last = (outdir / "input.jsonl").read_text().splitlines()[-1]
+    assert json.loads(last) == {"type": "serial", "port": "usb", "text": "ls\n"}
