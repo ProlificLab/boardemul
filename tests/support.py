@@ -36,6 +36,8 @@ MESHTASTIC_LITTLEFS = REPO_ROOT / "firmware" / "littlefs-t-deck-tft-2.7.10.94d4b
 FIRMWARE_RESTART_PROBE = REPO_ROOT / "firmware" / "restart_probe.bin"
 # Built the same way, from tools/matrix_reset_probe (ADR 0142).
 FIRMWARE_MATRIX_RESET_PROBE = REPO_ROOT / "firmware" / "matrix_reset_probe.bin"
+# And from tools/cpenable_probe (ADR 0143).
+FIRMWARE_CPENABLE_PROBE = REPO_ROOT / "firmware" / "cpenable_probe.bin"
 
 
 PNG_MAGIC = bytes([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])
