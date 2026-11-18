@@ -152,3 +152,4 @@ superseded ADR is marked superseded and points forward.
 | [0144](0144-the-image-says-its-psram-line-mode.md) | The image says which PSRAM line mode it was built for | Accepted (amends 0007) |
 | [0145](0145-a-device-keeps-its-settings-and-meets-others-on-a-named-air.md) | A device keeps its run settings, and meets others on a named air | Accepted (amends 0036, 0045, 0133, 0139) |
 | [0146](0146-sound-comes-out-and-goes-in.md) | Sound comes out of the speaker, and goes into the microphone | Accepted (ends 0016's and 0119's silence) |
+| [0147](0147-a-new-machine-is-ready-in-three-commands.md) | A new machine is ready in three commands, and says what it lacks | Accepted (amends 0003's manifest) |
