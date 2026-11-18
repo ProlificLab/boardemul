@@ -18,7 +18,7 @@ superseded ADR is marked superseded and points forward.
 | [0010](0010-input-path.md) | Deliver input by modelling GPIO interrupts and pushing them out of band | Accepted |
 | [0011](0011-transaction-granularity-boundary.md) | Carry transactions, not register accesses; scope the C tier to SoC silicon | Accepted |
 | [0012](0012-testing.md) | Two tiers of test: device models in milliseconds, pixels in minutes | Accepted (one slow test boots a probe of ours, 0123) |
-| [0013](0013-coprocessor-enable-at-reset.md) | Enable the FPU at reset, per board, and say so out loud | Accepted |
+| [0013](0013-coprocessor-enable-at-reset.md) | Enable the FPU at reset, per board, and say so out loud | Superseded by 0143 |
 | [0014](0014-what-counts-as-a-frame.md) | Decide what a frame is, for a display that does not have any | Accepted |
 | [0015](0015-i2s-left-unmodelled.md) | Leave I2S unmodelled, and record why the obvious route fails | Superseded by 0016 |
 | [0016](0016-i2s-receive-path.md) | Model the I2S receive path, from the reference manual | Accepted |
@@ -148,3 +148,4 @@ superseded ADR is marked superseded and points forward.
 | [0140](0140-a-run-starts-in-the-build-container-where-it-cannot-start-natively.md) | A run starts in the build container where it cannot start natively | Accepted (amends 0133, 0134, 0135) |
 | [0141](0141-the-radio-says-a-packet-is-arriving-and-a-sweep-leaves-rx.md) | The radio says a packet is arriving, and a sweep leaves RX | Accepted (closes 0111's CAD exception; amends 0113) |
 | [0142](0142-our-devices-re-drive-their-interrupt-after-a-reset.md) | Our devices re-drive their interrupt after a reset | Accepted (follows up 0138) |
+| [0143](0143-the-fpu-is-on-out-of-reset-as-on-silicon.md) | The FPU is on out of reset, as on silicon, and our device goes | Accepted (supersedes 0013; follows up 0138) |

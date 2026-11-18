@@ -1,6 +1,9 @@
 # ADR 0013 — Enable the FPU at reset, per board, and say so out loud
 
-**Status:** Accepted — 2026-08-27
+**Status:** Superseded by [ADR 0143](0143-the-fpu-is-on-out-of-reset-as-on-silicon.md)
+— 2026-11-18 (accepted 2026-08-27). Upstream measured silicon: CPENABLE resets
+to 0xff, and QEMU now does the same itself, so the device this ADR added is
+gone. The account of the panic below stands, and so does the reading it chose.
 
 ## Context
 
