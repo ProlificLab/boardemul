@@ -238,8 +238,10 @@ through the controller's own mappings and sends what they point at
 connection request, the firmware's own link layer validates it and starts
 scheduling connection events (ADRs 0046-0047). Meshtastic never scans, so
 two boards cannot find each other over Bluetooth; a central connecting in is
-the peer it was built for. The link comes up and carries nothing yet. The
-Max carries the same Bluetooth core (ADR 0148).
+the peer it was built for. The link comes up and stays up, and carries no
+data: that is where the Bluetooth model stops, and ADR 0157 maps the road
+past it, from the controller's transmit path to pairing. The Max carries the
+same Bluetooth core (ADR 0148).
 
 ## Tests
 
