@@ -79,8 +79,9 @@ def _boots(run: Run) -> str:
 def test_the_fpu_is_enabled_before_the_scheduler_starts(booted: Run) -> None:
     """The regression this board exists to guard (ADR 0013).
 
-    Without esp-coproc-enable this firmware dies about a second in, inside a
+    With CPENABLE reset to 0 this firmware dies about a second in, inside a
     C++ global constructor, on a float that no task yet owns the FPU state for.
+    Silicon resets it to 0xff, and so does QEMU now (ADR 0143).
     The panic prints before anything else the firmware would say, so its absence
     is the assertion; the tests below only show it kept going afterwards.
 

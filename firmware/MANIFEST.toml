@@ -60,7 +60,7 @@ sha256  = "da1a7a42bae3b24e71eada7bad687bafd26fc7ab0242f5df5aaedc4ae8525f86"
 
 [[image]]
 name    = "tdeck-unittest"
-role    = "LilyGO factory unit-test build. Panics on an FPU coprocessor exception during app startup, before any output."
+role    = "LilyGO factory unit-test build. Runs a float in a C++ global constructor, before FreeRTOS: panics with a coprocessor exception unless CPENABLE resets to 0xff, as on silicon (ADRs 0013, 0143)."
 path    = "T-Deck_UnitTest_251113.bin"
 url     = "https://raw.githubusercontent.com/Xinyuan-LilyGO/T-Deck/master/firmware/T-Deck_UnitTest_251113.bin"
 size    = 1869008

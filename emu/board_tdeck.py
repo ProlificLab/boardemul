@@ -96,12 +96,11 @@ SPI_DISPLAY, SPI_RADIO, SPI_SDCARD = 0, 1, 2
 SD_CARD_MB = 32
 MISO_MASK = (1 << SPI_RADIO) | (1 << SPI_SDCARD)
 
-# ADR 0013. This board's vendor firmware runs a float in a C++ global
-# constructor, before FreeRTOS exists to own the FPU state, and IDF panics.
-# Leaving CP0 enabled out of reset is a divergence from the architectural reset
-# value that we could not confirm against silicon, so it is stated here per
-# board rather than applied to every board quietly.
-SOC_DEVICES = ["esp-coproc-enable,mask=0x1"]
+# This board's vendor firmware runs a float in a C++ global constructor, before
+# FreeRTOS exists to own the FPU state (ADR 0013). It needs no help: QEMU
+# resets CPENABLE to 0xff, the value upstream measured on silicon, so the FPU
+# is on out of every reset, on every board (ADR 0143).
+SOC_DEVICES: list[str] = []
 
 # Audio both ways, in C because completing a transfer means walking DMA
 # descriptors in guest memory: the microphone captures on I2S1 and the speaker

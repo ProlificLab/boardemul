@@ -91,8 +91,9 @@ TOUCH_INT_PIN = 12
 # finger lift.
 TOUCH_REPORT_HZ = 500
 
-# This board's firmware never executes a float before the scheduler starts, so
-# it needs no help from ADR 0013 and does not get any.
+# Devices that change the SoC from what QEMU models, each a declared divergence
+# from silicon argued in its own ADR. None is needed: the one there was, ADR
+# 0013's FPU enable, went when QEMU took silicon's CPENABLE (ADR 0143).
 SOC_DEVICES: list[str] = []
 
 # The WiFi MAC's page (ADR 0137): the same C device the T-Deck board wires,

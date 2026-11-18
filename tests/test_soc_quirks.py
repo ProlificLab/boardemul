@@ -29,18 +29,11 @@ def test_every_board_declares_its_soc_quirks(name: str) -> None:
     assert isinstance(BOARDS[name].SOC_DEVICES, list)
 
 
-def test_only_the_tdeck_enables_the_fpu_at_reset() -> None:
-    """ADR 0013 turned this on for one board and argued the case there. The Max
-    never runs a float before the scheduler, so if it ever acquires this line
-    someone has applied a divergence that was never justified for it."""
-    assert board_tdeck.SOC_DEVICES == ["esp-coproc-enable,mask=0x1"]
-    assert board.SOC_DEVICES == []
-
-
-def test_the_claim_is_the_narrowest_one_the_evidence_supports() -> None:
-    """Only CP0, the FPU, was ever shown to matter. A wider mask would be
-    claiming something about silicon that ADR 0013 explicitly could not."""
-    (spec,) = board_tdeck.SOC_DEVICES
-    kind, _, mask = spec.partition(",mask=")
-    assert kind == "esp-coproc-enable"
-    assert int(mask, 0) == 0x1
+@pytest.mark.parametrize("name", sorted(BOARDS))
+def test_no_board_diverges_from_the_soc(name: str) -> None:
+    """The T-Deck enabled the FPU at reset with a device of ours (ADR 0013).
+    QEMU now resets CPENABLE to 0xff, the value upstream measured on silicon,
+    on every board and every reset path, and the device is gone (ADR 0143).
+    A board that lists one again is diverging from silicon, and needs an ADR
+    of its own that says why."""
+    assert BOARDS[name].SOC_DEVICES == []
