@@ -357,3 +357,15 @@ def test_a_run_reports_its_end_and_its_last_words(server, monkeypatch):
     assert status == 200 and body["alive"] is False
     assert body["lines"][-1] == "AttributeError: no AF_UNIX"
 
+
+def test_the_keyboard_glow_is_read_beside_the_frames(server):
+    """The board writes frames/board.json (ADR 0129); the page asked for a
+    file that was never there, so the glow never showed in a browser."""
+    client, devices, _s = server
+    _pocket(client, devices)
+    call(client, "POST", "/api/devices/pocket/start")
+    outdir = Path(web_state_run_outdirs(client)[0])
+    (outdir / "frames").mkdir(parents=True, exist_ok=True)
+    (outdir / "frames" / "board.json").write_text('{"keyboard_backlight": 0.5}')
+    status, body, _h = call(client, "GET", "/api/runs/pocket/state")
+    assert status == 200 and body == {"keyboard_backlight": 0.5}

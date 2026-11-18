@@ -425,7 +425,8 @@ class Handler(BaseHTTPRequestHandler):
                     return self._json({"alive": handle.alive,
                                        "lines": handle.console_tail()})
                 if segs[3] == "state":
-                    path = handle.outdir / "board.json"
+                    # Beside the frames, where the board writes it (ADR 0129).
+                    path = handle.outdir / "frames" / "board.json"
                     try:
                         return self._json(json.loads(path.read_text(encoding="utf-8")))
                     except (OSError, ValueError):
