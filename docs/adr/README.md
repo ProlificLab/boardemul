@@ -160,3 +160,4 @@ superseded ADR is marked superseded and points forward.
 | [0152](0152-the-max-carries-the-chips-sar-and-its-scan-finishes.md) | The Max carries the chip's SAR block, and its WiFi scan finishes | Accepted (corrects 0137's evidence) |
 | [0153](0153-the-page-says-what-the-machine-lacks.md) | The page says what the machine lacks | Accepted (carries 0147's doctor into the page) |
 | [0154](0154-our-devices-reset-with-the-digital-core.md) | Our devices reset with the digital core, and keep their state across a CPU reset | Accepted (takes up 0142's last cost) |
+| [0155](0155-a-device-can-be-cloned-with-a-mac-of-its-own.md) | A device can be cloned, with a MAC of its own | Accepted (adds to 0133, 0149) |
