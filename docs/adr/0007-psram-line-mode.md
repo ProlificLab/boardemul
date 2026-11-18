@@ -9,6 +9,10 @@ presented as octal -- the opposite of what is described below. So the line
 mode stayed a launch option rather than becoming a board constant, and which
 setting a given image needs is now something to determine per firmware.
 
+**Re-tested 2026-11-18** on the tag of ADR 0138: unchanged, image by image.
+Since ADR 0144 the mode is read off the image, from the PSRAM driver it
+carries, unless a flag says otherwise.
+
 ## Context
 
 Every firmware image failed PSRAM detection identically:

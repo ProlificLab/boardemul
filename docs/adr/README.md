@@ -12,7 +12,7 @@ superseded ADR is marked superseded and points forward.
 | [0004](0004-running-and-observing.md) | Launch QEMU deterministically, and observe with the memory-region trace | Accepted |
 | [0005](0005-bus-bridge.md) | Forward unmodelled MMIO out of QEMU over a Unix socket | Accepted (wire format amended by 0011) |
 | [0006](0006-peripheral-and-panel-models.md) | Model peripherals in Python, and learn their behaviour from the wire | Accepted |
-| [0007](0007-psram-line-mode.md) | Present PSRAM in quad line mode, though the board's part is octal | Accepted (scope amended by the second board) |
+| [0007](0007-psram-line-mode.md) | Present PSRAM in quad line mode, though the board's part is octal | Accepted (scope amended by the second board; the mode read off the image by 0144) |
 | [0008](0008-claim-unmodelled-windows.md) | Claim unmodelled peripheral windows even with no model behind them | Accepted (converse added 0015) |
 | [0009](0009-desktop-viewer.md) | A desktop viewer that watches a file and draws its own device | Accepted |
 | [0010](0010-input-path.md) | Deliver input by modelling GPIO interrupts and pushing them out of band | Accepted |
@@ -149,3 +149,4 @@ superseded ADR is marked superseded and points forward.
 | [0141](0141-the-radio-says-a-packet-is-arriving-and-a-sweep-leaves-rx.md) | The radio says a packet is arriving, and a sweep leaves RX | Accepted (closes 0111's CAD exception; amends 0113) |
 | [0142](0142-our-devices-re-drive-their-interrupt-after-a-reset.md) | Our devices re-drive their interrupt after a reset | Accepted (follows up 0138) |
 | [0143](0143-the-fpu-is-on-out-of-reset-as-on-silicon.md) | The FPU is on out of reset, as on silicon, and our device goes | Accepted (supersedes 0013; follows up 0138) |
+| [0144](0144-the-image-says-its-psram-line-mode.md) | The image says which PSRAM line mode it was built for | Accepted (amends 0007) |
