@@ -135,3 +135,13 @@ superseded ADR is marked superseded and points forward.
 | [0127](0127-the-t-deck-keyboard-behaves-as-lilygos-sketch-does.md) | The T-Deck keyboard behaves as LilyGO's sketch does | Accepted (extends 0126) |
 | [0128](0128-the-t-deck-trackball-rolls-and-clicks.md) | The T-Deck's trackball rolls and clicks | Accepted (extends 0026) |
 | [0129](0129-the-window-shows-the-t-deck-keyboards-backlight.md) | The window shows the T-Deck keyboard's backlight | Accepted (extends 0126, 0127) |
+| [0130](0130-the-max-face-is-drawn-from-lilygos-case.md) | The Max's face is drawn from LilyGO's own case | Accepted (closes 0126's Max item) |
+| [0131](0131-the-maxs-three-touch-keys-report-as-key-events.md) | The Max's three touch keys report as key events | Accepted (closes 0130's open item) |
+| [0132](0132-the-t-decks-keyboard-interrupt-line-is-never-driven.md) | The T-Deck's keyboard interrupt line is never driven | Accepted (closes 0127's open item) |
+| [0133](0133-a-device-folder-keeps-a-device-between-runs.md) | A device folder keeps a device between runs | Accepted |
+| [0134](0134-the-window-starts-a-device.md) | The window starts a device | Accepted (extends 0133) |
+| [0135](0135-a-browser-is-the-window.md) | A browser is the window | Accepted (amended by 0139, 0140) |
+| [0136](0136-a-teardown-that-hangs-leaves-its-own-autopsy.md) | A teardown that hangs leaves its own autopsy | Accepted |
+| [0137](0137-the-max-board-carries-the-t-decks-wifi.md) | The Max board carries the T-Deck's WiFi | Accepted |
+| [0139](0139-the-web-server-answers-only-its-own-page.md) | The web server answers only its own page | Accepted (amends 0135) |
+| [0140](0140-a-run-starts-in-the-build-container-where-it-cannot-start-natively.md) | A run starts in the build container where it cannot start natively | Accepted (amends 0133, 0134, 0135) |
