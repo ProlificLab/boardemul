@@ -311,3 +311,39 @@ def test_removing_a_device_takes_its_snapshots(tmp_path, firmware, fake_build):
     device_folder.snapshot(device, "one")
     device_folder.remove(device)
     assert not device.root.exists()
+
+
+# -- clones (ADR 0155) ---------------------------------------------------------
+
+
+def test_a_clone_has_the_storage_and_a_mac_of_its_own(tmp_path, firmware, fake_build):
+    from tools import mkflash
+    device = device_folder.create(tmp_path / "devices", "node", firmware,
+                                  mac="24:6F:28:00:00:11")
+    device = device_folder.set_settings(device, ["--air", "mesh"])
+    device.flash.write_bytes(b"configured flash")
+    device_folder.snapshot(device, "kept")
+    twin = device_folder.clone(device, "node-2")
+    assert twin.mac == "24:6F:28:00:00:12" and twin.cloned_from == "node"
+    assert twin.flash.read_bytes() == b"configured flash"
+    assert twin.sdcard.read_bytes() == device.sdcard.read_bytes()
+    assert twin.efuse.read_bytes() == mkflash.build_efuse(mkflash.parse_mac(twin.mac))
+    assert twin.settings == ("--air", "mesh")
+    assert device_folder.snapshots(twin) == []          # the original's history
+    assert device_folder.load(twin.root).cloned_from == "node"
+    third = device_folder.clone(device, "node-3")
+    assert third.mac == "24:6F:28:00:00:13"             # the next free one
+
+
+def test_a_clone_refuses_a_taken_mac_or_a_running_original(tmp_path, firmware,
+                                                          fake_build):
+    device = device_folder.create(tmp_path / "devices", "node", firmware,
+                                  mac="24:6F:28:00:00:11")
+    with pytest.raises(device_folder.DeviceError, match="already has the MAC"):
+        device_folder.clone(device, "twin", mac="24:6F:28:00:00:11")
+    with pytest.raises(device_folder.DeviceError, match="not a MAC"):
+        device_folder.clone(device, "twin", mac="nope")
+    (device.root / device_folder.RUNNING).write_text("1 now\n")
+    with pytest.raises(device_folder.DeviceBusy):
+        device_folder.clone(device, "twin")
+    assert not (tmp_path / "devices" / "twin").exists()

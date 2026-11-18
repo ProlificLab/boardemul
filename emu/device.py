@@ -129,6 +129,7 @@ class Device:
     overlays: tuple[str, ...] = ()
     # What every run of it is told about the world around it (ADR 0145).
     settings: tuple[str, ...] = ()
+    cloned_from: str = ""         # the device it was cloned from (ADR 0155)
 
     @property
     def flash(self) -> Path:
@@ -221,6 +222,7 @@ def load(root: Path) -> Device:
         psram_octal=fields.get("psram_octal", False),
         created=fields.get("created", ""), overlays=tuple(fields.get("overlays", ())),
         settings=check_settings(fields.get("settings", [])),
+        cloned_from=fields.get("cloned_from", ""),
     )
     if not device.flash.is_file() or not device.efuse.is_file():
         raise DeviceError(f"{root} has no assembled storage; run device.py flash")
@@ -242,6 +244,8 @@ def save(device: Device) -> None:
         "overlays": list(device.overlays),
         "settings": list(device.settings),
     }
+    if device.cloned_from:
+        fields["cloned_from"] = device.cloned_from
     (device.root / MANIFEST).write_text(
         json.dumps(fields, indent=2) + "\n", encoding="utf-8")
 
@@ -394,6 +398,61 @@ def restore(device: Device, label: str) -> Device:
 
 def forget(device: Device, label: str) -> None:
     shutil.rmtree(_snapshot_folder(device, label))
+
+
+# -- clones (ADR 0155) ---------------------------------------------------------
+
+def _mac_int(mac: str) -> int:
+    return int(mac.replace("-", ":").replace(":", ""), 16)
+
+
+def _mac_text(value: int) -> str:
+    return ":".join(f"{(value >> shift) & 0xFF:02X}" for shift in range(40, -8, -8))
+
+
+def next_free_mac(devices: Path, after: str) -> str:
+    """The first MAC counting up from `after` that no device in the folder
+    has, within the same first three octets."""
+    taken = {_mac_int(d.mac) for d in all_devices(devices)}
+    value = _mac_int(after)
+    prefix = value & ~0xFFFFFF
+    for _ in range(0xFFFFFF):
+        value = prefix | ((value + 1) & 0xFFFFFF)
+        if value not in taken:
+            return _mac_text(value)
+    raise DeviceError("no free MAC left under " + after[:8])
+
+
+def clone(device: Device, name: str, mac: str | None = None) -> Device:
+    """A stopped device copied into a new folder, with a MAC of its own: its
+    flash, card, settings and overlays as they are now, not its snapshots."""
+    from tools import mkflash
+    _require_stopped(device)
+    devices = device.root.parent
+    target = folder(devices, name)
+    if target.exists():
+        raise DeviceError(f"{target} already exists; remove it first")
+    mac = mac or next_free_mac(devices, device.mac)
+    try:
+        efuse = mkflash.build_efuse(mkflash.parse_mac(mac))
+    except ValueError as exc:
+        raise DeviceError(f"{mac!r} is not a MAC: {exc}") from None
+    if _mac_int(mac) in {_mac_int(d.mac) for d in all_devices(devices)}:
+        raise DeviceError(f"another device already has the MAC {mac}")
+    target.mkdir(parents=True)
+    try:
+        shutil.copy2(device.flash, target / FLASH)
+        if device.sdcard.is_file():
+            shutil.copy2(device.sdcard, target / SDCARD)
+        (target / EFUSE).write_bytes(efuse)
+        made = Device(**{**device.__dict__, "root": target, "name": name, "mac": mac,
+                         "cloned_from": device.name,
+                         "created": datetime.datetime.now().isoformat(timespec="seconds")})
+        save(made)
+        return made
+    except Exception:
+        _force_clear(target)
+        raise
 
 
 # -- the card, in and out (ADR 0149) ------------------------------------------

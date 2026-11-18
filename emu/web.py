@@ -211,6 +211,7 @@ def device_json(device) -> dict:
         "created": (device.created or "").split("T")[0],
         "overlays": list(device.overlays),
         "settings": list(device.settings),
+        "cloned_from": device.cloned_from,
         "running": running,
     }
 
@@ -507,6 +508,17 @@ class Handler(BaseHTTPRequestHandler):
                     return self._json(device_json(device))
                 if len(segs) == 4 and segs[3] == "card":
                     return self._card(name)
+                if len(segs) == 4 and segs[3] == "clone":
+                    body = self._body()
+                    try:
+                        made = device_folder.clone(self._stopped(name),
+                                                   str(body.get("name", "")),
+                                                   body.get("mac") or None)
+                    except device_folder.DeviceBusy:
+                        raise
+                    except device_folder.DeviceError as exc:
+                        raise Refused(400, str(exc)) from None
+                    return self._json(device_json(made), 201)
             if segs[:2] == ["api", "runs"] and len(segs) == 4 and segs[3] == "input":
                 return self._input(segs[2])
             return self._json({"error": "not found"}, 404)

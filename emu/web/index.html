@@ -403,6 +403,20 @@
   </div>
 </div>
 
+<div class="dialog" id="clonedialog">
+  <div class="card">
+    <h2>Clone <span id="clonename"></span></h2>
+    <p style="color:var(--ink-dim); margin:0 0 14px">A copy of its flash, card and
+      settings, with a MAC of its own, so a mesh node becomes two.</p>
+    <div class="field"><label for="clone-new">New device's name</label>
+      <input type="text" id="clone-new" autocomplete="off"></div>
+    <div class="row">
+      <button class="btn text rippleHost" onclick="closeClone()">Cancel</button>
+      <button class="btn filled rippleHost" onclick="doClone()">Clone</button>
+    </div>
+  </div>
+</div>
+
 <div class="dialog" id="rmdialog">
   <div class="card">
     <h2>Remove device?</h2>
@@ -490,6 +504,8 @@ function render() {
           : `<button class="btn filled" onclick="event.stopPropagation(); start('${d.name}')">▶ Start</button>`}
         <button class="btn text"
                 onclick="event.stopPropagation(); openSettings('${d.name}')">Settings</button>
+        <button class="btn text"
+                onclick="event.stopPropagation(); askClone('${d.name}')">Clone</button>
         <button class="btn text" style="color:var(--error)"
                 onclick="event.stopPropagation(); askRemove('${d.name}')">Remove</button>
       </div>`;
@@ -507,6 +523,7 @@ function renderDetail() {
     ["board", d.board], ["mac", d.mac], ["firmware", d.firmware],
     ["storage", d.storage], ["created", d.created],
     ["settings", (d.settings || []).join(" ") || "none"],
+    ...(d.cloned_from ? [["cloned from", d.cloned_from]] : []),
   ].map(([k, v]) => `<tr><td>${k}</td><td>${escapeHtml(String(v))}</td></tr>`).join("");
   $("d-face").src = `/api/skin/${d.board}.png`;
   renderStorage(d);
@@ -662,6 +679,31 @@ async function saveSettings() {
     const d = devices.find(x => x.name === name);
     snack(d && d.running ? `Saved — ${name} uses them from its next start`
                          : `Saved — ${name} starts with them`);
+  } catch (err) { snack(String(err.message || err)); }
+}
+
+/* ================= clone (ADR 0155) ================= */
+let cloning = null;
+function askClone(name) {
+  cloning = name;
+  $("clonename").textContent = name;
+  $("clone-new").value = `${name}-2`;
+  $("clonedialog").classList.add("open");
+  $("clone-new").focus();
+  $("clone-new").select();
+}
+function closeClone() { $("clonedialog").classList.remove("open"); cloning = null; }
+async function doClone() {
+  if (!cloning) return;
+  const from = cloning, name = $("clone-new").value.trim();
+  try {
+    const made = await api(`/api/devices/${encodeURIComponent(from)}/clone`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name }),
+    });
+    closeClone();
+    await refresh();
+    snack(`${made.name} cloned from ${from}, MAC ${made.mac}`);
   } catch (err) { snack(String(err.message || err)); }
 }
 
@@ -1085,6 +1127,8 @@ document.addEventListener("keyup", e => {
 
 document.addEventListener("keydown", e => {
   if (e.key === "Escape" && $("setsheet").classList.contains("open")) closeSettings();
+  if (e.key === "Escape" && $("clonedialog").classList.contains("open")) closeClone();
+  if (e.key === "Enter" && $("clonedialog").classList.contains("open")) doClone();
   if (e.key === "Enter" && $("setsheet").classList.contains("open")) saveSettings();
 });
 

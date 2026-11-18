@@ -10,6 +10,7 @@
     device.py snapshot NAME [LABEL]      device.py snapshots NAME
     device.py restore NAME LABEL         device.py forget NAME LABEL
     device.py card NAME (--export OUT | --image IMG | --files FILE...)
+    device.py clone NAME NEW [--mac MAC]
     device.py start NAME [run.py arguments...]
 
 A device folder keeps identity and storage between runs. Starting one is
@@ -191,6 +192,14 @@ def cmd_card(args) -> int:
     return 0
 
 
+def cmd_clone(args) -> int:
+    """A copy of a stopped device with a MAC of its own (ADR 0155)."""
+    device = _get(devices_dir(args.dir), args.name)
+    made = _or_exit(device_folder.clone, device, args.new, args.mac)
+    print(f"cloned {device.name} into {made.root}, MAC {made.mac}")
+    return 0
+
+
 def cmd_start(args) -> int:
     device = _get(devices_dir(args.dir), args.name)
     # The device's own settings, its named airs beside the folders, then
@@ -284,6 +293,15 @@ def main(argv: list[str] | None = None) -> int:
     which.add_argument("--files", metavar="FILE", nargs="+",
                        help="a fresh card holding these files, by 8.3 names")
     card.set_defaults(fn=cmd_card)
+
+    twin = sub.add_parser("clone", help="copy a stopped device, with a MAC of "
+                          "its own (ADR 0155)")
+    twin.add_argument("name")
+    twin.add_argument("new")
+    twin.add_argument("--mac", default=None,
+                      help="default: the first free one counting up from the "
+                           "original's")
+    twin.set_defaults(fn=cmd_clone)
 
     start = sub.add_parser("start", help="run the device (emu/run.py --device)")
     start.add_argument("name")

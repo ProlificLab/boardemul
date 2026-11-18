@@ -80,7 +80,9 @@ each run is its own container: the runs then meet on a Docker network.
 A stopped device can be snapshotted and put back, flash, card and settings
 together, and its SD card is yours: download it as a FAT16 image, replace it
 with another, or make a fresh one from files (ADR 0149). The page does all
-three; so does `device.py snapshot|restore|card`.
+three; so does `device.py snapshot|restore|card`. A stopped device can also
+be cloned, flash, card and settings, with a MAC of its own, so one node set
+up through its dialog becomes a mesh of them (ADR 0155).
 
 **Working on the Max:** the boot chain, flash and eFuses; PSRAM; the e-paper
 panel; touch, the three touch keys and the keyboard; the LoRa radio on chip

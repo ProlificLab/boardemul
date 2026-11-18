@@ -502,3 +502,22 @@ def test_the_page_can_ask_what_the_machine_lacks(server, monkeypatch):
     assert body["findings"][0] == {"level": "error", "what": "Docker",
                                    "detail": "its daemon does not answer",
                                    "fix": "start Docker Desktop"}
+
+
+def test_a_device_is_cloned_with_a_mac_of_its_own(server):
+    """ADR 0155: one configured node becomes two."""
+    client, devices, _s = server
+    _pocket(client, devices)
+    status, made, _h = call(client, "POST", "/api/devices/pocket/clone",
+                            {"name": "pocket-2"})
+    assert status == 201 and made["name"] == "pocket-2"
+    assert made["cloned_from"] == "pocket"
+    listed = call(client, "GET", "/api/devices")[1]["devices"]
+    assert len({d["mac"] for d in listed}) == 2
+    status, body, _h = call(client, "POST", "/api/devices/pocket/clone",
+                            {"name": "pocket-2"})
+    assert status == 400 and "already exists" in body["error"]
+    call(client, "POST", "/api/devices/pocket/start", {})
+    status, _b, _h = call(client, "POST", "/api/devices/pocket/clone",
+                          {"name": "pocket-3"})
+    assert status == 409
