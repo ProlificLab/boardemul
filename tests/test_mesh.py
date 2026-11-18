@@ -46,8 +46,10 @@ OVERLAY_AT = 0xC90000
 # has received a packet from the other. Both have to be waited for -- two nodes
 # that boot together can put their first broadcasts on top of each other, each
 # deaf while it transmits, so "both have spoken" can come well before "a packet
-# crossed" (ADR 0098). This ceiling only matters on a host too slow for either.
-RUN_SECONDS = 300
+# crossed" (ADR 0098). This ceiling only matters on a host too slow for either:
+# with sixteen guests on fourteen cores a node was seen to send nothing in
+# 300 s, so it is twice that (ADR 0141).
+RUN_SECONDS = 600
 # A moment after the evidence, so a node that has just received is not stopped
 # in the middle of answering.
 GRACE_SECONDS = 2
@@ -126,21 +128,16 @@ def two_nodes(tmp_path_factory, configured_filesystem: Path) -> dict[str, dict]:
                for name, mac in nodes.items()}
     try:
         deadline = time.monotonic() + RUN_SECONDS
-        senders: set[bytes] = set()
+        senders: set[str] = set()
         while time.monotonic() < deadline:
-            for frame in listener.poll():
-                # A mesh packet carries who sent it, four bytes in (Meshtastic's
-                # header is to, from, id...). Counting frames instead would stop
-                # as soon as one node had spoken twice, with the other still
-                # silent -- which is exactly how this went flaky under a loaded
-                # suite. But the air puts a propagation header in front of the
-                # packet (ADR 0037), so the packet has to be decoded out of it
-                # first: reading four bytes into the raw frame read the header's
-                # frequency, the same for both nodes, so two senders were never
-                # counted and every run waited out the whole ceiling.
-                packet = lora.decode(frame)
-                if packet is not None and len(packet.payload) >= 8:
-                    senders.add(packet.payload[4:8])
+            for board, frame in listener.poll_named():
+                # Who sent a frame is the air's to say: the board it came from.
+                # Counting frames would stop as soon as one node had spoken
+                # twice (ADR 0098), and counting the packet's `from` counts a
+                # node that never spoke whenever the other relays its packet,
+                # or sends it by mistake (ADR 0141).
+                if lora.decode(frame) is not None:
+                    senders.add(board)
             if len(senders) >= len(nodes) and _a_node_received(work, nodes):
                 time.sleep(GRACE_SECONDS)
                 break
@@ -185,9 +182,8 @@ def test_the_listener_heard_both_nodes(two_nodes) -> None:
     two senders apart, the run silently waits out its whole ceiling instead of
     stopping -- which went unnoticed for three weeks -- so it fails here."""
     senders = two_nodes["senders"]
-    assert len(senders) == 2, (
-        f"the listener told {len(senders)} sender(s) apart: "
-        f"{sorted(s.hex() for s in senders)}; boots {two_nodes['boots']}")
+    assert senders == {"one", "two"}, (
+        f"the listener heard {sorted(senders)}; boots {two_nodes['boots']}")
 
 
 def test_a_packet_crosses_between_them(two_nodes) -> None:
