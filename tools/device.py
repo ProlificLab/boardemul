@@ -7,6 +7,9 @@
     device.py flash NAME --firmware F.bin [--overlay ...]
     device.py remove NAME
     device.py settings NAME [--clear] [-- SETTINGS...]
+    device.py snapshot NAME [LABEL]      device.py snapshots NAME
+    device.py restore NAME LABEL         device.py forget NAME LABEL
+    device.py card NAME (--export OUT | --image IMG | --files FILE...)
     device.py start NAME [run.py arguments...]
 
 A device folder keeps identity and storage between runs. Starting one is
@@ -129,6 +132,65 @@ def cmd_settings(args) -> int:
     return 0
 
 
+def _or_exit(fn, *args):
+    try:
+        return fn(*args)
+    except device_folder.DeviceError as exc:
+        raise SystemExit(str(exc))
+
+
+def cmd_snapshot(args) -> int:
+    """Copy a stopped device's storage into snapshots/<label>/ (ADR 0149)."""
+    device = _get(devices_dir(args.dir), args.name)
+    taken = _or_exit(device_folder.snapshot, device, args.label)
+    print(f"snapshot {taken.label} of {device.name}: {taken.bytes / 1e6:.1f} MB")
+    return 0
+
+
+def cmd_snapshots(args) -> int:
+    device = _get(devices_dir(args.dir), args.name)
+    found = device_folder.snapshots(device)
+    if not found:
+        print(f"{device.name} has no snapshots")
+    for s in found:
+        print(f"{s.label:32s} {s.taken}  {s.bytes / 1e6:6.1f} MB")
+    return 0
+
+
+def cmd_restore(args) -> int:
+    device = _get(devices_dir(args.dir), args.name)
+    _or_exit(device_folder.restore, device, args.label)
+    print(f"{device.name} is as snapshot {args.label} has it")
+    return 0
+
+
+def cmd_forget(args) -> int:
+    device = _get(devices_dir(args.dir), args.name)
+    _or_exit(device_folder.forget, device, args.label)
+    print(f"forgot snapshot {args.label} of {device.name}")
+    return 0
+
+
+def cmd_card(args) -> int:
+    """The device's card, out as an image, or in as an image or as files.
+    Replacing it snapshots the card it had first (ADR 0149)."""
+    device = _get(devices_dir(args.dir), args.name)
+    if args.export:
+        if not device.has_sdcard:
+            raise SystemExit(f"{device.name} has no card")
+        Path(args.export).write_bytes(device.sdcard.read_bytes())
+        print(f"wrote {args.export}")
+        return 0
+    if args.image:
+        taken = _or_exit(device_folder.replace_card, device,
+                         Path(args.image).read_bytes())
+    else:
+        files = [(Path(f).name, Path(f).read_bytes()) for f in args.files]
+        taken = _or_exit(device_folder.card_from_files, device, files)
+    print(f"{device.name} has a new card; the old one is snapshot {taken.label}")
+    return 0
+
+
 def cmd_start(args) -> int:
     device = _get(devices_dir(args.dir), args.name)
     # The device's own settings, its named airs beside the folders, then
@@ -193,6 +255,35 @@ def main(argv: list[str] | None = None) -> int:
                           help="after --: --wifi-ap NAME, --gps LAT,LON, "
                                "--air NAME, --at X,Y, ...")
     settings.set_defaults(fn=cmd_settings)
+
+    snap = sub.add_parser("snapshot", help="copy a stopped device's storage "
+                          "into a snapshot (ADR 0149)")
+    snap.add_argument("name")
+    snap.add_argument("label", nargs="?", default=None,
+                      help="default: the time it is taken")
+    snap.set_defaults(fn=cmd_snapshot)
+    snaps = sub.add_parser("snapshots", help="a device's snapshots")
+    snaps.add_argument("name")
+    snaps.set_defaults(fn=cmd_snapshots)
+    back = sub.add_parser("restore", help="put a stopped device back as a "
+                          "snapshot has it")
+    back.add_argument("name")
+    back.add_argument("label")
+    back.set_defaults(fn=cmd_restore)
+    gone = sub.add_parser("forget", help="delete a snapshot")
+    gone.add_argument("name")
+    gone.add_argument("label")
+    gone.set_defaults(fn=cmd_forget)
+    card = sub.add_parser("card", help="the device's SD card, out or in "
+                          "(ADR 0149)")
+    card.add_argument("name")
+    which = card.add_mutually_exclusive_group(required=True)
+    which.add_argument("--export", metavar="OUT", help="copy the card image out")
+    which.add_argument("--image", metavar="IMG",
+                       help="replace the card with an image of its size")
+    which.add_argument("--files", metavar="FILE", nargs="+",
+                       help="a fresh card holding these files, by 8.3 names")
+    card.set_defaults(fn=cmd_card)
 
     start = sub.add_parser("start", help="run the device (emu/run.py --device)")
     start.add_argument("name")
