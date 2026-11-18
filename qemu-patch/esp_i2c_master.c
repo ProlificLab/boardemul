@@ -231,6 +231,20 @@ static void i2c_reset(void *opaque)
 {
     EspI2cMaster *s = opaque;
 
+    if (esp_reset_was_digital()) {
+        /* Back to what the first boot found (ADR 0154). */
+        memset(s->regs, 0, sizeof(s->regs));
+        s->int_raw = 0;
+        s->int_pending = 0;
+        s->int_at = 0;
+        s->tx_count = s->rx_count = s->rx_pos = 0;
+        s->cur_addr = -1;
+        s->addressing = false;
+        s->pending_len = 0;
+        s->ack_check = false;
+        s->exchanged = false;
+        s->read_total = 0;
+    }
     s->irq_level = -1;
     i2c_irq_due(s);
 }

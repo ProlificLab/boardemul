@@ -12,10 +12,41 @@
 
 #include "qemu/osdep.h"
 #include "hw/qdev-core.h"
+#include "exec/address-spaces.h"
+#include "exec/memory.h"
 
 #define TYPE_ESP_GPIO_BLOCK "esp-gpio-block"
 #define TYPE_ESP_SPI_MASTER "esp-spi-master"
 #define TYPE_ESP_I2C_MASTER "esp-i2c-master"
+
+/*
+ * Whether the machine reset under way resets the digital core, which resets
+ * the GPIO, I2C and Bluetooth peripherals on silicon, or only a CPU, which
+ * leaves them as they were (ADR 0154). The cause is the chip's own record,
+ * RTC_CNTL_RESET_STATE_REG's PRO CPU field, which the fork sets when the
+ * guest asks for a reset and the ROM prints at boot. ESP-IDF's RESET_REASON
+ * (esp_rom/include/esp32s3/rom/rtc.h) names the five that reset a CPU alone.
+ */
+#define ESP_RTC_CNTL_RESET_STATE 0x60008038
+static inline bool esp_reset_was_digital(void)
+{
+    uint8_t raw[4];
+
+    if (address_space_read(&address_space_memory, ESP_RTC_CNTL_RESET_STATE,
+                           MEMTXATTRS_UNSPECIFIED, raw, sizeof(raw)) != MEMTX_OK) {
+        return false;
+    }
+    switch (ldl_le_p(raw) & 0x3F) {
+    case 10:    /* INTRUSION_RESET */
+    case 11:    /* TG0WDT_CPU_RESET */
+    case 12:    /* RTC_SW_CPU_RESET */
+    case 13:    /* RTCWDT_CPU_RESET */
+    case 17:    /* TG1WDT_CPU_RESET */
+        return false;
+    default:
+        return true;
+    }
+}
 
 /*
  * Current level of one pin, output or externally driven. Returns 0 for a pin

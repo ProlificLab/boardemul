@@ -300,6 +300,19 @@ static void ble_reset(void *opaque)
 {
     EspBleCore *s = opaque;
 
+    if (esp_reset_was_digital()) {
+        /* Back to what the first boot found, timers stopped (ADR 0154). */
+        memset(s->regs, 0, sizeof(s->regs));
+        s->raw = 0;
+        s->fifo_len = 0;
+        s->n_events = 0;
+        if (s->timer) {
+            timer_del(s->timer);
+        }
+        if (s->event_timer) {
+            timer_del(s->event_timer);
+        }
+    }
     s->irq_level = -1;
     ble_irq_due(s);
 }

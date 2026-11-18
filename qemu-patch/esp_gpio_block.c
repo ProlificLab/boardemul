@@ -220,10 +220,24 @@ static void gpio_update_irq(EspGpioBlock *s)
  * change would then lose the next interrupt, the matrix holding 0 and this
  * device 1. After a CPU reset the matrix kept the level, and it forwards only a
  * change, so driving the same level again does nothing (ADR 0142). */
+static void gpio_levels_changed(EspGpioBlock *s, uint64_t before);
+
 static void gpio_reset(void *opaque)
 {
     EspGpioBlock *s = opaque;
 
+    if (esp_reset_was_digital()) {
+        /* What the guest configured goes; what the board drives from
+         * outside is the board's and stays (ADR 0154). */
+        uint64_t before = gpio_levels(s);
+        s->out_level = 0;
+        s->enable = 0;
+        s->status = 0;
+        memset(s->pin_cfg, 0, sizeof(s->pin_cfg));
+        memset(s->regs, 0, sizeof(s->regs));
+        gpio_recompute_enabled(s);
+        gpio_levels_changed(s, before);
+    }
     s->irq_level = -1;
     gpio_update_irq(s);
 }
