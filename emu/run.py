@@ -164,6 +164,10 @@ def build_argv(qemu: Path, flash: Path, efuse: Path, uart: Path,
         "-drive", f"file={efuse},if=none,format=raw,id=efuse",
         "-global", "driver=nvram.esp32s3.efuse,property=drive,value=efuse",
         "-global", f"driver=esp32s3.gpio,property=strap_mode,value=0x{STRAP_MODE:02x}",
+        # A full RX FIFO loses a byte, as silicon does (ADR 0122). Upstream
+        # took the fix behind this property, off by default; the base type's
+        # global reaches the ESP32-S3's UARTs (ADR 0138).
+        "-global", "driver=esp_soc.uart,property=rx-overflow,value=on",
         "-serial", f"file:{uart}",
         "-rtc", f"base={RTC_BASE},clock=vm",
         "-seed", str(seed),
