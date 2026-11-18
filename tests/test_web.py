@@ -384,6 +384,33 @@ def test_settings_for_a_device_that_is_not_there_404(server):
     assert status == 404
 
 
+def test_the_speakers_streams_are_listed_and_served(server):
+    """ADR 0146: each played stream is a WAV file in the run's audio/."""
+    import wave
+    client, devices, _s = server
+    _pocket(client, devices)
+    call(client, "POST", "/api/devices/pocket/start", {"args": ["--audio"]})
+    outdir = Path(web_state_run_outdirs(client)[0])
+    (outdir / "audio").mkdir()
+    with wave.open(str(outdir / "audio" / "i2s0-1.wav"), "wb") as wav:
+        wav.setnchannels(2)
+        wav.setsampwidth(2)
+        wav.setframerate(16000)
+        wav.writeframes(b"\x00\x10" * 2 * 8000)
+    (outdir / "audio" / "notes.txt").write_text("not a stream")
+    status, body, _h = call(client, "GET", "/api/runs/pocket/audio")
+    assert status == 200
+    assert body["streams"] == [{"name": "i2s0-1.wav", "seconds": 0.5,
+                                "rate": 16000, "channels": 2,
+                                "bytes": 44 + 32000}]
+    status, data, headers = call(client, "GET", "/api/runs/pocket/audio/i2s0-1.wav")
+    assert status == 200 and headers["Content-Type"] == "audio/wav"
+    assert data[:4] == b"RIFF"
+    for name in ("notes.txt", "..%2F..%2Fdevice.json", "i2s0-1.wav.bak"):
+        status, _b, _h = call(client, "GET", f"/api/runs/pocket/audio/{name}")
+        assert status == 404
+
+
 # -- a run that ends says why; the board's state is read where it is written --
 
 

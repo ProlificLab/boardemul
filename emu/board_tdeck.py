@@ -200,9 +200,18 @@ def build(outdir: Path, air: str | None = None, ble_air: str | None = None,
           gps: tuple[float, float, float] | None = None,
           wifi_ap: tuple[str, int, int, bool, str, bool] | None = None,
           air_boards: int = 0, air_quantum_ns: int = 1_000_000,
+          audio: bool = False, mic: str | None = None,
           air_name: str | None = None) -> Board:
     outdir = Path(outdir)
     panel = St7789Panel(outdir / "frames")
+    # Sound out and in (ADR 0146): either controller may play or record, so
+    # both are told where played streams go and what the microphone hears.
+    sound = ""
+    if audio:
+        (outdir / "audio").mkdir(parents=True, exist_ok=True)
+        sound += ",speaker={}".format((outdir / "audio").as_posix() + "/{name}")
+    if mic:
+        sound += f",mic={Path(mic).resolve().as_posix()}"
     gpio = GpioClient(outdir / "gpio.sock")
     for pin in TRACKBALL_PINS.values():
         gpio.drive(pin, 1)          # nobody is pressing the trackball
@@ -276,12 +285,13 @@ def build(outdir: Path, air: str | None = None, ble_air: str | None = None,
         f"socket={i2c0.socket_path}",
         f"esp-i2c-master,name=i2c1,base=0x{I2C1_BASE:x},irq={IRQ_I2C_EXT1},"
         f"socket={i2c1.socket_path}",
-        # No socket: it says nothing to Python. Its job is to let the DMA
-        # engine finish the capture the firmware waits on at startup.
+        # No socket: it says nothing to Python. It lets the DMA engine finish
+        # the transfers the firmware waits on, and with --audio and --mic the
+        # samples are a WAV file's (ADR 0146).
         f"esp-i2s-master,name=i2s0,base=0x{I2S0_BASE:x},"
-        f"periph={GDMA_PERIPH_I2S0}",
+        f"periph={GDMA_PERIPH_I2S0}" + sound.format(name="i2s0"),
         f"esp-i2s-master,name=i2s1,base=0x{I2S1_BASE:x},"
-        f"periph={GDMA_PERIPH_I2S1}",
+        f"periph={GDMA_PERIPH_I2S1}" + sound.format(name="i2s1"),
         # The Bluetooth link-layer core's page, on QEMU's own clock: its timers
         # must interrupt within the half-slot they were set for (ADR 0025).
         # Bluetooth's own air, when a scenario gives it one: a different band

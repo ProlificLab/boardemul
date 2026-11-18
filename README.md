@@ -112,6 +112,12 @@ directions with one patch carried to QEMU's GDMA (ADR 0016, 0017), four radio br
 (ADR 0019), and the SAR ADC that `analogRead()` spins on plus the touch
 interrupt's real polarity (ADR 0020).
 
+Its sound is real too (ADR 0146). With `--audio` each stream the speaker
+plays is written to a WAV file in the run's `audio/` directory, which the
+web page plays back; the UnitTest build plays six seconds of a sound of its
+own. With `--mic FILE.wav` the microphone hears that file.
+`tools/tone.py` writes a test tone and measures one.
+
 ```
 python3 emu/run.py firmware/T-Deck_UnitTest_250620.bin --board tdeck --bus --timeout 3600
 ```

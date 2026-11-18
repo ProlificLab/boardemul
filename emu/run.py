@@ -370,6 +370,12 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--air-quantum-us", type=int, default=1000, metavar="US",
                     help="how far a timed air's boards run between meeting, in "
                          "microseconds of guest time (default 1000)")
+    ap.add_argument("--audio", action="store_true",
+                    help="write what the speaker plays to WAV files in the "
+                         "run's audio/ directory, one per stream (ADR 0146)")
+    ap.add_argument("--mic", default=None, metavar="FILE.wav",
+                    help="the microphone hears this PCM WAV file, from its "
+                         "start at each capture (ADR 0146)")
     ap.add_argument("--icount", action="store_true",
                     help="drive the guest clock from executed instructions (ADR 0027): "
                          "exact timer delivery and deterministic runs; the Bluetooth "
@@ -461,7 +467,8 @@ def main(argv: list[str] | None = None) -> int:
     # were spent on that before it was noticed (ADR 0056), so it is refused.
     needs_board = {"--air": args.air, "--ble-air": args.ble_air,
                    "--gps": args.gps, "--at": args.at,
-                   "--wifi-ap": args.wifi_ap}
+                   "--wifi-ap": args.wifi_ap, "--audio": args.audio,
+                   "--mic": args.mic}
     given = [name for name, value in needs_board.items() if value]
     if given and not args.bus:
         raise SystemExit(", ".join(given) + " needs --bus: without it no board "
@@ -547,13 +554,15 @@ def main(argv: list[str] | None = None) -> int:
         if args.ble_air:
             # The Bluetooth core writes its file there and does not make it.
             Path(args.ble_air).mkdir(parents=True, exist_ok=True)
+        if args.mic and not Path(args.mic).is_file():
+            raise SystemExit(f"--mic: no file at {args.mic}")
         hw = hw_module.build(args.outdir, air=args.air, ble_air=args.ble_air,
                              position=where, antenna_dbi=args.antenna,
                              exponent=exponent, obstruction_db=args.obstruction,
                              gps=fix, wifi_ap=access_point,
                              air_boards=args.air_boards,
                              air_quantum_ns=args.air_quantum_us * 1000,
-                             air_name=tag)
+                             audio=args.audio, mic=args.mic, air_name=tag)
         if device is not None and device.has_sdcard:
             # The device's card, in place of the fresh empty one the board
             # built. Its contents go back to the folder when the run ends

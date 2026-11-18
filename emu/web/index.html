@@ -132,6 +132,13 @@
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer;
   }
   .uart.open { white-space: normal; max-height: 160px; overflow-y: auto; }
+  .sound { width: 100%; display: none; flex-direction: column; gap: 6px; }
+  .sound.has { display: flex; }
+  .sound .stream { display: flex; align-items: center; gap: 10px;
+                   font-size: 12px; color: var(--ink-dim); }
+  .sound .stream b { color: var(--ink); font-weight: 600; min-width: 92px;
+                     font-variant-numeric: tabular-nums; }
+  .sound audio { height: 30px; flex: 1; min-width: 0; }
   .slider { width: 100%; accent-color: var(--primary); }
   .histlabel { font-size: 11.5px; color: var(--ink-faint); }
   .chips { display: flex; gap: 8px; flex-wrap: wrap; width: 100%; }
@@ -291,6 +298,7 @@
         </div>
         <div class="uart" id="uart" onclick="this.classList.toggle('open')"
              title="click to expand">[    0] waiting for guest output…</div>
+        <div class="sound" id="sound" aria-label="What the speaker played"></div>
       </div>
 
       <div class="deck" id="deck">
@@ -358,6 +366,7 @@
       <h4>Running</h4>
       <label class="check"><input type="checkbox" id="s-reboot"> Restart after a panic, as the board does</label>
       <label class="check"><input type="checkbox" id="s-icount"> Count the guest's time in instructions (Bluetooth needs it)</label>
+      <label class="check" id="s-audio-field"><input type="checkbox" id="s-audio"> Record what the speaker plays</label>
     </div>
     <div class="row">
       <button class="btn text rippleHost" onclick="closeSettings()">Cancel</button>
@@ -509,6 +518,9 @@ function openSettings(name) {
   $("s-gps").value = m["--gps"] || "";
   $("s-reboot").checked = !!m["--reboot"];
   $("s-icount").checked = !!m["--icount"];
+  $("s-audio").checked = !!m["--audio"];
+  // Only the T-Deck board models the I2S controllers (ADR 0146).
+  $("s-audio-field").style.display = d.board === "tdeck" ? "" : "none";
   $("setsheet").classList.add("open");
   $("s-air").focus();
 }
@@ -527,6 +539,8 @@ function settingsFromSheet() {
   if (val("s-gps")) out.push("--gps", val("s-gps"));
   if ($("s-reboot").checked) out.push("--reboot");
   if ($("s-icount").checked) out.push("--icount");
+  if ($("s-audio").checked && $("s-audio-field").style.display !== "none")
+    out.push("--audio");
   return out;
 }
 async function saveSettings() {
@@ -622,6 +636,7 @@ async function showRun(id, board) {
   current = id;
   window.board = board;
   frameMtime = 0; uartAfter = 0; histFrames = []; symHeld = false; runEnded = false;
+  soundSeen = ""; $("sound").innerHTML = ""; $("sound").classList.remove("has");
   $("view-devices").style.display = "none";
   $("view-run").style.display = "block";
   $("viewtitle").innerHTML = `<h1>${id}</h1><span class="count">running · ${board}</span>`;
@@ -732,6 +747,7 @@ async function uartLoop() {
         const el = $("uart");
         for (const line of data.lines) consolePush(el, line);
       }
+      soundLoop(id);
       // The keyboard's backlight, as the guest itself drives it (ADR 0129).
       const state = await api(`/api/runs/${id}/state`).catch(() => ({}));
       $("device").classList.toggle("glow", +state.keyboard_backlight > 0);
@@ -739,6 +755,36 @@ async function uartLoop() {
     await new Promise(r => setTimeout(r, 1500));
   }
 }
+/* -- what the speaker played (ADR 0146) ----------------------------------- */
+let soundSeen = "";
+async function soundLoop(id) {
+  const data = await api(`/api/runs/${id}/audio`).catch(() => ({ streams: [] }));
+  const streams = data.streams || [];
+  // Redrawn only when a stream is added or grows, so a playing one goes on.
+  const key = streams.map(s => `${s.name}:${s.seconds}`).join("|");
+  if (key === soundSeen) return;
+  const el = $("sound");
+  const playing = [...el.querySelectorAll("audio")].some(a => !a.paused);
+  if (playing && streams.length === el.querySelectorAll("audio").length) return;
+  soundSeen = key;
+  el.classList.toggle("has", streams.length > 0);
+  el.innerHTML = "";
+  for (const s of streams) {
+    const row = document.createElement("div");
+    row.className = "stream";
+    const label = document.createElement("b");
+    label.textContent = s.name.replace(".wav", "");
+    const player = document.createElement("audio");
+    player.controls = true;
+    player.preload = "none";
+    player.src = `/api/runs/${id}/audio/${encodeURIComponent(s.name)}?v=${s.bytes}`;
+    const info = document.createElement("span");
+    info.textContent = `${s.seconds.toFixed(1)} s · ${s.rate} Hz · ${s.channels} ch`;
+    row.append(label, player, info);
+    el.appendChild(row);
+  }
+}
+
 const consoleLines = [];
 function consolePush(el, line) {
   consoleLines.push(line);

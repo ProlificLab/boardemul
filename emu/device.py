@@ -52,6 +52,9 @@ RUN_FLAGS = {
     "--wifi-uplink": False, "--gps": True, "--at": True, "--antenna": True,
     "--environment": True, "--obstruction": True, "--icount": False,
     "--reboot": False, "--air": True, "--ble-air": True,
+    # What the speaker plays, to WAV files in the run's own directory (ADR
+    # 0146). --mic names a file, so it stays on the command line.
+    "--audio": False,
 }
 # The named airs, and the band each lives under.
 NAMED_AIRS = {"--air": "lora", "--ble-air": "ble"}

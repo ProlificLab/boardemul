@@ -287,6 +287,7 @@ def build(outdir: Path, air: str | None = None, ble_air: str | None = None,
           gps: tuple[float, float, float] | None = None,
           wifi_ap: tuple[str, int, int, bool, str, bool] | None = None,
           air_boards: int = 0, air_quantum_ns: int = 1_000_000,
+          audio: bool = False, mic: str | None = None,
           air_name: str | None = None) -> Board:
     """`ble_air` is accepted and does nothing here: this board has a radio and
     the T-Deck's WiFi MAC (ADR 0137), but no Bluetooth controller modelled, so
@@ -300,6 +301,9 @@ def build(outdir: Path, air: str | None = None, ble_air: str | None = None,
     if ble_air:
         print(f"ble-air : {ble_air} ignored -- this board has no Bluetooth "
               "controller modelled")
+    if audio or mic:
+        # Its I2S is a claimed window, not a controller (ADRs 0008, 0146).
+        print("audio   : ignored -- this board has no I2S controller modelled")
     panel = EPaperPanel(outdir / "frames",
                         quarter_turns=int(os.environ.get("BOARDEMUL_ROTATE", "0")))
     gpio = GpioClient(outdir / "gpio.sock")

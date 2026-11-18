@@ -19,10 +19,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 import threading
 import time
 import urllib.parse
+import wave
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -170,6 +172,32 @@ def run_args(args) -> tuple[str, ...]:
 
 class NotFound(Exception):
     pass
+
+
+# A played stream's file, as the I2S controller names it (ADR 0146).
+AUDIO_FILE = re.compile(r"i2s[0-9]-[0-9]+\.wav\Z")
+
+
+def audio_streams(outdir: Path) -> list[dict]:
+    """The run's played streams, oldest first, with their length in seconds
+    read from each WAV header (ADR 0146)."""
+    found = []
+    folder = outdir / "audio"
+    if not folder.is_dir():
+        return found
+    for path in sorted(folder.iterdir(), key=lambda p: p.stat().st_mtime):
+        if not AUDIO_FILE.match(path.name):
+            continue
+        try:
+            with wave.open(str(path), "rb") as wav:
+                seconds = wav.getnframes() / float(wav.getframerate() or 1)
+                rate, channels = wav.getframerate(), wav.getnchannels()
+        except (OSError, EOFError, wave.Error):
+            continue
+        found.append({"name": path.name, "seconds": round(seconds, 2),
+                      "rate": rate, "channels": channels,
+                      "bytes": path.stat().st_size})
+    return found
 
 
 def device_json(device) -> dict:
@@ -406,6 +434,14 @@ class Handler(BaseHTTPRequestHandler):
                 if segs[3] == "console":
                     return self._json({"alive": handle.alive,
                                        "lines": handle.console_tail()})
+                if segs[3] == "audio" and len(segs) == 5:
+                    # One stream's WAV file (ADR 0146), by its own name only.
+                    name = Path(segs[4]).name
+                    if not AUDIO_FILE.match(name):
+                        return self._json({"error": "not a stream's file"}, 404)
+                    return self._file(handle.outdir / "audio" / name, "audio/wav")
+                if segs[3] == "audio":
+                    return self._json({"streams": audio_streams(handle.outdir)})
                 if segs[3] == "state":
                     # Beside the frames, where the board writes it (ADR 0129).
                     path = handle.outdir / "frames" / "board.json"
