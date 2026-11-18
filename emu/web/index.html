@@ -481,9 +481,11 @@ let frameMtime = 0, frameAbort = null, histFrames = [], uartAfter = 0,
     uptimeTimer = null, bootT = 0, symHeld = false, shiftHeld = false;
 
 async function start(name) {
-  const r = await api(`/api/devices/${encodeURIComponent(name)}/start`,
-                      { method: "POST" });
-  showRun(r.id, r.board);
+  try {
+    const r = await api(`/api/devices/${encodeURIComponent(name)}/start`,
+                        { method: "POST" });
+    showRun(r.id, r.board);
+  } catch (err) { snack(`${name} did not start: ${err.message || err}`); }
 }
 function openRun(name) {
   const d = devices.find(x => x.name === name);
@@ -492,7 +494,7 @@ function openRun(name) {
 async function showRun(id, board) {
   current = id;
   window.board = board;
-  frameMtime = 0; uartAfter = 0; histFrames = []; symHeld = false;
+  frameMtime = 0; uartAfter = 0; histFrames = []; symHeld = false; runEnded = false;
   $("view-devices").style.display = "none";
   $("view-run").style.display = "block";
   $("viewtitle").innerHTML = `<h1>${id}</h1><span class="count">running · ${board}</span>`;
@@ -577,10 +579,26 @@ function replay() {
 let playTimer = null, histLive = true;
 
 /* -- the serial console ---------------------------------------------------- */
+let runEnded = false;
+function endRun(lines) {
+  // The run's process has gone: say so, and show why (ADR 0140).
+  runEnded = true;
+  clearInterval(uptimeTimer);
+  $("uptime").textContent = "ended";
+  $("viewtitle").querySelector(".count").textContent = `ended · ${window.board}`;
+  const el = $("uart");
+  el.classList.add("open");
+  consolePush(el, "── the run ended; its last words ──");
+  for (const line of lines) consolePush(el, line);
+}
 async function uartLoop() {
   while (current) {
     const id = encodeURIComponent(current);
     try {
+      if (!runEnded) {
+        const run = await api(`/api/runs/${id}/console`);
+        if (!run.alive) endRun(run.lines);
+      }
       const data = await api(`/api/runs/${id}/uart?after=${uartAfter}`);
       if (data.lines.length) {
         uartAfter = data.total;

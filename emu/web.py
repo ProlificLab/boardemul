@@ -421,6 +421,9 @@ class Handler(BaseHTTPRequestHandler):
                     return self._frame_list(handle)
                 if segs[3] == "uart":
                     return self._uart(handle, int(self._query().get("after", 0)))
+                if segs[3] == "console":
+                    return self._json({"alive": handle.alive,
+                                       "lines": handle.console_tail()})
                 if segs[3] == "state":
                     path = handle.outdir / "board.json"
                     try:

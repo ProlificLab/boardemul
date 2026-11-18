@@ -341,3 +341,19 @@ def test_start_passes_the_run_settings_through(server, monkeypatch):
             "--gps", "48.85,2.35", "--reboot"]
     status, _b, _h = call(client, "POST", "/api/devices/pocket/start", {"args": args})
     assert status == 200 and seen == [tuple(args)]
+
+
+# -- a run that ends says why; the board's state is read where it is written --
+
+
+def test_a_run_reports_its_end_and_its_last_words(server, monkeypatch):
+    client, devices, _s = server
+    _pocket(client, devices)
+    call(client, "POST", "/api/devices/pocket/start")
+    outdir = Path(web_state_run_outdirs(client)[0])
+    (outdir / "console.log").write_text("starting\nAttributeError: no AF_UNIX\n")
+    monkeypatch.setattr(device_folder.RunHandle, "alive", property(lambda self: False))
+    status, body, _h = call(client, "GET", "/api/runs/pocket/console")
+    assert status == 200 and body["alive"] is False
+    assert body["lines"][-1] == "AttributeError: no AF_UNIX"
+
