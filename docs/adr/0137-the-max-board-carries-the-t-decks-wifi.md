@@ -2,6 +2,8 @@
 
 **Status:** Accepted — 2026-10-21.
 
+**Corrected 2026-11-18 by ADR 0152:** the scan this record calls answered never finished on the Max; its test pressed a point inside "WIFI Config". With the chip's SENS block in place it does, and lists the access point.
+
 ## Context
 
 The Max board was wired without a WiFi MAC: `--wifi-ap` was refused with
