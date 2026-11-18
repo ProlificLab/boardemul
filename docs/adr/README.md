@@ -159,3 +159,4 @@ superseded ADR is marked superseded and points forward.
 | [0151](0151-the-screen-shows-its-backlight.md) | The T-Deck's screen shows its backlight | Accepted (takes up 0053's undimmed frames) |
 | [0152](0152-the-max-carries-the-chips-sar-and-its-scan-finishes.md) | The Max carries the chip's SAR block, and its WiFi scan finishes | Accepted (corrects 0137's evidence) |
 | [0153](0153-the-page-says-what-the-machine-lacks.md) | The page says what the machine lacks | Accepted (carries 0147's doctor into the page) |
+| [0154](0154-our-devices-reset-with-the-digital-core.md) | Our devices reset with the digital core, and keep their state across a CPU reset | Accepted (takes up 0142's last cost) |

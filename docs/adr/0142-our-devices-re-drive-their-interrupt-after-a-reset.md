@@ -1,7 +1,8 @@
 # ADR 0142 — Our devices re-drive their interrupt after a reset
 
 **Status:** Accepted — 2026-11-18. Follows up a difference ADR 0138 recorded
-in the QEMU tag it adopted.
+in the QEMU tag it adopted. Its last cost, registers that survive a digital
+reset, is taken up by ADR 0154.
 
 ## Context
 
