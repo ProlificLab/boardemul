@@ -150,3 +150,4 @@ superseded ADR is marked superseded and points forward.
 | [0142](0142-our-devices-re-drive-their-interrupt-after-a-reset.md) | Our devices re-drive their interrupt after a reset | Accepted (follows up 0138) |
 | [0143](0143-the-fpu-is-on-out-of-reset-as-on-silicon.md) | The FPU is on out of reset, as on silicon, and our device goes | Accepted (supersedes 0013; follows up 0138) |
 | [0144](0144-the-image-says-its-psram-line-mode.md) | The image says which PSRAM line mode it was built for | Accepted (amends 0007) |
+| [0145](0145-a-device-keeps-its-settings-and-meets-others-on-a-named-air.md) | A device keeps its run settings, and meets others on a named air | Accepted (amends 0036, 0045, 0133, 0139) |
