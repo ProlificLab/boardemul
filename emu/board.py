@@ -287,15 +287,18 @@ def build(outdir: Path, air: str | None = None, ble_air: str | None = None,
           gps: tuple[float, float, float] | None = None,
           wifi_ap: tuple[str, int, int, bool, str, bool] | None = None,
           air_boards: int = 0, air_quantum_ns: int = 1_000_000) -> Board:
-    """`ble_air` and `wifi_ap` are accepted and do nothing here: this board has
-    a radio but no Bluetooth controller and no WiFi MAC modelled, so there is no
-    part for either to reach. Every board takes the same arguments on purpose --
-    when they did not, the caller's `except TypeError` quietly dropped this
-    board back to a build with no air at all, and the radio options did nothing
-    for a release (ADR 0052). Being ignored is said out loud below for the same
-    reason.
+    """`ble_air` is accepted and does nothing here: this board has a radio and
+    the T-Deck's WiFi MAC (ADR 0137), but no Bluetooth controller modelled, so
+    there is no part for it to reach. Every board takes the same arguments on
+    purpose -- when they did not, the caller's `except TypeError` quietly
+    dropped this board back to a build with no air at all, and the radio
+    options did nothing for a release (ADR 0052). Being ignored is said out
+    loud below for the same reason.
     """
     outdir = Path(outdir)
+    if ble_air:
+        print(f"ble-air : {ble_air} ignored -- this board has no Bluetooth "
+              "controller modelled")
     panel = EPaperPanel(outdir / "frames",
                         quarter_turns=int(os.environ.get("BOARDEMUL_ROTATE", "0")))
     gpio = GpioClient(outdir / "gpio.sock")

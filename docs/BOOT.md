@@ -6,9 +6,10 @@ the Espressif QEMU fork actually satisfies.
 
 **Every concrete number in this document was measured from the vendor images
 pinned in `firmware/MANIFEST.toml`, not copied from a datasheet.** Where
-something is derived but not yet observed, it is labelled as such. Nothing here
-has been run yet — that is M0's job, and this document exists to make its
-output interpretable.
+something is derived but not yet observed, it is labelled as such. It was
+written before the first run, to make M0's output interpretable. What the runs
+corrected is marked where it fell, and the table of what QEMU provides says
+which of the fork's gaps this project has since filled, and in which ADR.
 
 ---
 
@@ -227,27 +228,28 @@ varies per physical device, so it must be pinned rather than left to chance.
 
 ## What QEMU provides, by stage
 
-| Requirement | Stage | Modelled by the fork? |
-|---|---|---|
-| Xtensa LX7 core | all | yes |
-| SPI1 flash controller | 0, 1 | yes |
-| Flash cache + MMU | 1, 2 | yes |
-| UART0 | 0, 1, 2 | yes |
-| eFuse block 0 | 1 | yes |
-| Timer-group watchdogs | 1 | yes |
-| SHA-256 accelerator | 1 | yes |
-| RTC watchdog | 1 | **no** — absent from the fork |
-| Octal PSRAM + MMU | 2 | yes (`-m 8M`, `is_octal=true`) |
-| I2C controller | 2 | **no** |
-| General-purpose SPI (SPI2/SPI3) | 2 | **no** |
-| GPIO matrix / IOMUX | 2 | **no** |
-| I2S | 2 | **no** |
-| Wi-Fi / Bluetooth | 2 | **no** |
-| USB | 2 | **no** |
+| Requirement | Stage | Modelled by the fork? | Since then, here |
+|---|---|---|---|
+| Xtensa LX7 core | all | yes | CPENABLE resets to silicon's 0xff (ADR 0143) |
+| SPI1 flash controller | 0, 1 | yes | |
+| Flash cache + MMU | 1, 2 | yes | |
+| UART0 | 0, 1, 2 | yes | overflows as a serial line does (ADR 0122) |
+| eFuse block 0 | 1 | yes | |
+| Timer-group watchdogs | 1 | yes | |
+| SHA-256 accelerator | 1 | yes | |
+| RTC watchdog | 1 | **no** — absent from the fork | still absent |
+| Octal PSRAM + MMU | 2 | yes (`-m 8M`, `is_octal=true`) | the line mode a firmware needs is per firmware (ADR 0007) |
+| I2C controller | 2 | **no** | ours, a transaction at a time (ADRs 0011, 0121) |
+| General-purpose SPI (SPI2/SPI3) | 2 | **no** | SPI2 is ours, several devices on it (ADRs 0011, 0032, 0120) |
+| GPIO matrix / IOMUX | 2 | **no** | levels and interrupts are ours (ADR 0011); pull-ups are not (ADR 0026) |
+| I2S | 2 | **no** | both directions, at the sample rate (ADRs 0016, 0119) |
+| Wi-Fi / Bluetooth | 2 | **no** | WiFi MAC to a LAN (ADRs 0054–0097); Bluetooth core and link layer (ADRs 0025, 0045–0051) |
+| USB | 2 | **no** | USB-Serial-JTAG (ADR 0100); the OTG controller is not |
 
 The absent RTC watchdog is benign: a watchdog that does not exist cannot fire,
 so its absence is safer than its presence. The absences from the app stage
-onward are the substance of the M0 report.
+onward were the substance of the M0 report, and the last column is what the
+ADRs since have done about them.
 
 ---
 
@@ -291,11 +293,14 @@ the desk. Recorded so they are not rediscovered later as bugs.
   behave *better* here than in reality. This cannot be pinned.
 - **No RTC watchdog.** Code relying on an RTC watchdog reset to recover will
   hang instead of resetting.
-- **No GPIO matrix or IOMUX.** Pin routing writes are accepted and discarded,
-  so firmware that reads back a routing configuration sees nothing.
+- **No GPIO matrix or IOMUX in the fork.** Our GPIO block models pin levels,
+  directions and interrupts (ADR 0011), but not the pull-ups that live in
+  IO_MUX, so each board states its pins' idle levels itself (ADR 0026).
 - **Secure Boot is unsupported** on the fork's S3 machine. Irrelevant here —
   our eFuses do not enable it — but it forecloses testing secure-boot images.
-- **Timing.** Virtual time does not track wall-clock time, and once ADR 0001's
-  bus bridge stalls the guest on an external round-trip it will not track the
-  guest's view of elapsed time either. No timing claim should be made from an
-  emulator run.
+- **Timing.** Bus transfers take the time their wire would, on the guest's
+  clock (ADRs 0118–0121). By default that clock follows the host's, so a
+  loaded host stretches a run. With `--icount` it counts instructions instead,
+  and two runs of the same inputs are the same run (ADR 0115). Either way a
+  claim about time is a claim about the model: the instruction rate is QEMU's,
+  not the LX7's cycle count.

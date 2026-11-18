@@ -60,9 +60,15 @@ or the web UI boots it, and what the guest saves is kept. Configure
 Meshtastic's dialog once and every later boot is a node that already knows
 itself.
 
-**Working:** the boot chain; flash and eFuse assembly; the MMIO bridge with
-interrupt delivery; I2C0/I2C1 with the board's devices; GPIO levels; SPI2; the
-e-paper panel; PSRAM.
+**Working on the Max:** the boot chain, flash and eFuses; PSRAM; the e-paper
+panel; touch, the three touch keys and the keyboard; the LoRa radio on chip
+select 3 (ADR 0102); the SD card; I2C0/I2C1 with the board's parts, the fuel
+gauge provisioned as its driver expects (ADR 0103) and the sensor hub booting
+the firmware it is given (ADR 0108); the A7682E modem and the u-blox receiver
+on their serial lines (ADRs 0105, 0117); WiFi, which scans and finds an
+access point given `--wifi-ap` (ADR 0137); the USB serial port (ADR 0100).
+The factory firmware's own Test page passes LoRa, Touch, SY6970, BQ27220,
+SD Card, A7682E and ES8311.
 
 Touch input works: tapping an icon navigates. Click the panel in the web UI
 or the Tk window -- the keyboard drawn on the shell is the vendor's own
@@ -72,11 +78,14 @@ script can drive it just as well as a person. The Max's three touch keys
 under the screen are modelled too, and the vendor firmware answers them by
 going back a screen (ADR 0131).
 
-**Not working yet:** the Max's keyboard is wired but untested against a
-screen that consumes keys -- the launcher is touch-only. PSRAM only
-enumerates when presented in quad line mode, which is not what the board
-actually has — see ADR 0007, which is the first thing to re-test after any
-QEMU tag bump.
+The keyboard reaches the screens that read it: the launcher's icon grid is
+touch-only by the vendor's design, and its sub-screens take keys
+(`tests/test_max_keyboard.py`).
+
+**Not working yet on the Max:** sound -- the codec answers its identity and
+nothing more, so there is no audio in or out; Bluetooth, which only the
+T-Deck board models; the modem answers only the few commands the factory
+test sends, and has no SIM (ADR 0105).
 
 ### The T-Deck, second board
 
@@ -84,14 +93,15 @@ The second board runs LilyGO's own `UnitTest` firmware, unmodified, all the way
 into its LVGL interface -- and the interface answers keys and taps. In one
 110-second run: 740 frames at a steady ten a second, every injected keystroke
 delivered and echoed by the firmware itself (`Key pressed : 0x69`), 66 touch
-reports read. The status bar shows a modelled battery voltage; the panel says
-"Radio is offline", which is the LoRa radio honestly reporting absent. Given
+reports read. The status bar shows a modelled battery voltage, and the LoRa
+radio answers its bring-up ("Start Radio success!", ADR 0034). Given
 `--wifi-ap NAME` its WiFi scan finds that network, on every scan (ADR 0057);
 without one it finds nothing, correctly.
 
 Getting there is five records long, and each one is a wall the firmware stopped
 at and how it was read rather than guessed: the FPU enabled out of reset
-(ADR 0013), both I2S directions with one patch carried to QEMU's GDMA
+(ADR 0013, now QEMU's own reset value, as on silicon: ADR 0143), both I2S
+directions with one patch carried to QEMU's GDMA
 (ADR 0016, 0017), four radio bring-up waits answered from disassembled loops
 (ADR 0019), and the SAR ADC that `analogRead()` spins on plus the touch
 interrupt's real polarity (ADR 0020).
@@ -130,7 +140,8 @@ trackball, which the Max does not have. The three touch keys are modelled too
 vendor's hyn_cst3xx driver parses them, and the vendor firmware answers them
 by taking its interface back a screen.
 
-Meshtastic also boots on this board (`--psram-octal`): with its filesystem
+Meshtastic also boots on this board, its PSRAM presented in octal because
+that is the driver its image carries (ADR 0144): with its filesystem
 image in place (`--overlay 0xc90000=firmware/littlefs-t-deck-tft-2.7.10.94d4bdf.bin`,
 ADR 0021) a fresh first boot mounts storage, reads its preferences and, some
 30 seconds of guest time in, reaches the device-ui's setup dialog (ADR 0026).
@@ -146,8 +157,10 @@ its own blank-screen button releases it. And touch: Meshtastic's LovyanGFX
 driver reads the touch controller only while its interrupt line is low, and
 never writes the controller's trigger mode, whereas the vendor firmware writes
 mode 0 and treats that same line as pressed when high. The controller model
-resolves the conflict by following the mode each firmware wrote, resting the
-line low until one is (ADR 0029). The controller also reports in its own
+follows the mode each firmware wrote (ADR 0029), and asserts the line while
+it holds a report, release included, idling otherwise; a firmware that never
+writes a mode gets the controller's default, low level (ADR 0031). The
+controller also reports in its own
 raster, portrait like the panel behind it, with the board stating the mounting
 (ADR 0030). With both in place the dialog can be filled by touch alone: tapping
 the little keyboard icon beside a field is what binds the keypad to it, typed
@@ -157,7 +170,7 @@ Run it with `--icount` (ADR 0027):
 the Bluetooth link layer, which the device-ui switches on when its boot logo
 is held, needs the instruction-counted clock to keep its events on time; its
 core's clock, timers and interrupt FIFO are a C device read off the ROM
-(ADR 0025). Nothing transmits.
+(ADR 0025). What it then puts on the air is below.
 
 Because neither firmware exercises much of the panel, the window arithmetic,
 orientation and segment handling are checked against synthetic wire traffic
@@ -171,13 +184,9 @@ dialog gives it: `tools/make_configured_fs.py` does that by driving the dialog
 and keeps the filesystem it produces in `build/`, so the two-node mesh in
 `tests/test_mesh.py` rebuilds from the vendor image and nothing else.
 
-A device, though, is now a thing that stays. `tools/device.py create NAME
---firmware F.bin` makes a folder in `devices/` holding the board's identity
-and its storage -- flash, eFuses and card -- assembled once (ADR 0133).
-`device.py start NAME -- --bus` boots it; what the guest saves is written
-into the folder's own flash, so stopping and starting again finds it as it
-was. Configure Meshtastic's dialog once and every later boot is a node that
-already knows itself.
+A device folder (above) is the other way to keep a configured node: fill
+the dialog once on a device, and every later boot of it already knows
+itself.
 
 Bluetooth advertises on an air of its own with `--ble-air DIR`, built the same
 way (ADR 0045). `tools/make_configured_fs.py --bluetooth` captures a filesystem
@@ -193,8 +202,8 @@ the peer it was built for. The link comes up and carries nothing yet.
 ## Tests
 
 ```
-python3 -m pytest tests/            # 618 device, image and board tests, ~25s
-python3 -m pytest tests/ -m slow    # boots both boards under QEMU, ~15 min
+python3 -m pytest tests/            # some 650 device, image and board tests, ~90 s
+python3 -m pytest tests/ -m slow    # some 110 that boot the boards under QEMU
 ```
 
 The slow tests skip cleanly without a built QEMU or the vendor firmware. See
@@ -222,19 +231,20 @@ transaction then *means* is Python. The panel sees whole segments and an I2C
 device sees whole exchanges, instead of either side counting FIFO writes. That
 is what took the first board from 232,320 round trips per frame to about 44.
 
-Our C is ten files we own plus a header, copied into the QEMU tree by
-`tools/build_qemu.sh` rather than committed to it. Their tree's own modification
-is a handful of build lines across two `meson.build` files, plus eleven carried
-patches to their own logic, each reported upstream and listed in the build
-script: a GDMA transmit path that never reported which descriptor finished
-(ADR 0017); an SPI1 dummy-cycle conversion that shifted every runtime flash
-read by two bytes (ADR 0022); two Bluetooth clock registers the controller
-checks before it will start (ADR 0023); a cross-thread TLB flush that crashed
-two-thread translation (ADR 0066); GDMA reaching PSRAM (ADR 0083); an
-interrupt-matrix level mirror (ADR 0101); a UART chardev hook (ADR 0105); an
-icount sleep that is not deterministic (ADR 0115); flash writes that land
-synchronously (ADR 0115); UART RX overflow behaviour (ADR 0122); and core
-reset-and-stall semantics (ADR 0123).
+Our C is nine files we own plus a header, copied into the QEMU tree by
+`tools/build_qemu.sh` rather than committed to it. Their tree's own
+modification is a handful of build lines in one `meson.build`, plus two
+carried patches to their own logic, each reported upstream and listed in the
+build script: an icount sleep that is not deterministic, in QEMU's core, and
+flash writes that land synchronously (both ADR 0115). Nine more were carried
+until Espressif took them into the tag we pin (ADR 0138): a GDMA transmit
+path that never reported which descriptor finished (ADR 0017); an SPI1
+dummy-cycle conversion that shifted every runtime flash read by two bytes
+(ADR 0022); two Bluetooth clock registers the controller checks before it
+will start (ADR 0023); a cross-thread TLB flush that crashed two-thread
+translation (ADR 0066); GDMA reaching PSRAM (ADR 0083); an interrupt-matrix
+level mirror (ADR 0101); a UART chardev hook (ADR 0105); UART RX overflow
+behaviour (ADR 0122); and core reset-and-stall semantics (ADR 0123).
 Each is applied from a declared patch file, and the build stops if any ever
 fails to apply. See ADR 0001, ADR 0011, and the ADR beside each patch.
 
