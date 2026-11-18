@@ -16,9 +16,9 @@
 # validated for all of them. See docs/BOOT.md.
 #
 # The probes beside them are not vendor images and are not listed here:
-# restart_probe.bin, matrix_reset_probe.bin, cpenable_probe.bin and
-# audio_probe.bin, each built from source by tools/<probe>/build.py (ADRs
-# 0123, 0142, 0143, 0146). They record their build time, so they have no
+# restart_probe.bin, matrix_reset_probe.bin, cpenable_probe.bin,
+# audio_probe.bin and serial_probe.bin, each built from source by
+# tools/<probe>/build.py (ADRs 0123, 0142, 0143, 0146, 0156). They record their build time, so they have no
 # stable hash to pin, and their tests skip until they have been built.
 #
 # Each URL names the commit that last changed its file, not a branch: a

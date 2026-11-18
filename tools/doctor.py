@@ -24,7 +24,8 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 OK, WARN, ERROR = "ok", "warn", "error"
-PROBES = ("restart_probe", "matrix_reset_probe", "cpenable_probe", "audio_probe")
+PROBES = ("restart_probe", "matrix_reset_probe", "cpenable_probe", "audio_probe",
+          "serial_probe")
 
 
 @dataclass
