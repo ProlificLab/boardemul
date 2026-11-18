@@ -161,3 +161,4 @@ superseded ADR is marked superseded and points forward.
 | [0153](0153-the-page-says-what-the-machine-lacks.md) | The page says what the machine lacks | Accepted (carries 0147's doctor into the page) |
 | [0154](0154-our-devices-reset-with-the-digital-core.md) | Our devices reset with the digital core, and keep their state across a CPU reset | Accepted (takes up 0142's last cost) |
 | [0155](0155-a-device-can-be-cloned-with-a-mac-of-its-own.md) | A device can be cloned, with a MAC of its own | Accepted (adds to 0133, 0149) |
+| [0156](0156-a-person-types-into-the-serial-ports.md) | The page reads both serial ports, and a person can type into them | Accepted (adds to 0100, 0135) |
