@@ -38,6 +38,8 @@ FIRMWARE_RESTART_PROBE = REPO_ROOT / "firmware" / "restart_probe.bin"
 FIRMWARE_MATRIX_RESET_PROBE = REPO_ROOT / "firmware" / "matrix_reset_probe.bin"
 # And from tools/cpenable_probe (ADR 0143).
 FIRMWARE_CPENABLE_PROBE = REPO_ROOT / "firmware" / "cpenable_probe.bin"
+# And from tools/audio_probe (ADR 0146).
+FIRMWARE_AUDIO_PROBE = REPO_ROOT / "firmware" / "audio_probe.bin"
 
 
 PNG_MAGIC = bytes([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])
