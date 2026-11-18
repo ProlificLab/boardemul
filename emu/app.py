@@ -127,6 +127,7 @@ class DeckWindow:
         # The keyboard's backlight, as the board reports it (ADR 0129).
         self.board_stamp: tuple[int, int] | None = None
         self.glow = 0.0
+        self.lit: float | None = None     # the screen's backlight (ADR 0151)
         self.glow_items: list[int] = []
         self._ball_after: str | None = None
 
@@ -507,6 +508,7 @@ class DeckWindow:
         self.photo = shown
         self.canvas.create_image(*self.s(self.skin.screen_x, self.skin.screen_y), image=shown,
                                  anchor="nw", tags="screen")
+        self._show_lit()
         self.frames += 1
         self.note = time.strftime("%H:%M:%S")
         if (src.width(), src.height()) != (box_w, box_h):
@@ -557,6 +559,25 @@ class DeckWindow:
         if glow != self.glow:
             self.glow = glow
             self._show_glow()
+        lit = state.get("screen_backlight")
+        lit = None if lit is None else float(lit)
+        if lit != self.lit:
+            self.lit = lit
+            self._show_lit()
+
+    def _show_lit(self) -> None:
+        """Dim the panel by the screen's backlight (ADR 0151). Tk has no alpha,
+        so a black veil is stippled over it, denser as the light falls."""
+        self.canvas.delete("veil")
+        if self.lit is None or self.lit >= 0.875 or not self.photo:
+            return
+        x0, y0 = self.s(self.skin.screen_x, self.skin.screen_y)
+        w, h = self.skin.screen_w * self.scale, self.skin.screen_h * self.scale
+        dark = 1.0 - self.lit
+        stipple = ("" if dark >= 0.875 else "gray75" if dark >= 0.625
+                   else "gray50" if dark >= 0.375 else "gray25")
+        self.canvas.create_rectangle(x0, y0, x0 + w, y0 + h, fill="#000000",
+                                     outline="", stipple=stipple, tags=("screen", "veil"))
 
     def _show_glow(self) -> None:
         """The keyboard's LEDs sit under the caps: lit, light leaks round

@@ -28,6 +28,7 @@ from emu.i2c_link import I2CServer
 from emu.serial_link import SerialServer
 from emu.devices.gps import L76K
 from emu.guest_clock import GuestClock
+from emu.devices.backlight import Backlight, GpioReports
 from emu.devices.ledc import Ledc
 from emu.devices.lcd import St7789Panel
 from emu.devices.air import HOST as AIR_LOOPBACK, AirMedium, air_host, keep_time
@@ -213,6 +214,8 @@ def build(outdir: Path, air: str | None = None, ble_air: str | None = None,
     if mic:
         sound += f",mic={Path(mic).resolve().as_posix()}"
     gpio = GpioClient(outdir / "gpio.sock")
+    # Bound now, before QEMU connects to it (ADR 0151).
+    reports = GpioReports(outdir / "gpio-report.sock")
     for pin in TRACKBALL_PINS.values():
         gpio.drive(pin, 1)          # nobody is pressing the trackball
     # Three parts share SPI2 (ADR 0032). The display drives nothing back; the
@@ -274,7 +277,9 @@ def build(outdir: Path, air: str | None = None, ble_air: str | None = None,
 
     devices = [
         f"esp-gpio-block,base=0x{GPIO_BASE:x},irq={IRQ_GPIO},"
-        f"socket={gpio.socket_path}",
+        f"socket={gpio.socket_path},"
+        # The backlight's pin, reported with what drives it (ADR 0151).
+        f"report={reports.path},report_pins=0x{1 << TFT_BACKLIGHT:x}",
         f"esp-spi-master,name=spi2,base=0x{SPI2_BASE:x},"
         f"cs_gpio={TFT_CS_PIN},cs1_gpio={RADIO_CS_PIN},cs2_gpio={SD_CS_PIN},"
         f"busy1_gpio={RADIO_BUSY_PIN},reset1_gpio={RADIO_RST_PIN},"
@@ -329,6 +334,8 @@ def build(outdir: Path, air: str | None = None, ble_air: str | None = None,
                   clock=clock)
     board.touch = touch
     board.keypad = keypad
+    board.reports = reports
+    board.backlight = Backlight(next((r for r in regions if isinstance(r, Ledc)), None))
     return board
 
 
@@ -390,10 +397,27 @@ def attach_input(server, board: Board, outdir: Path) -> InputTail:
     state_path = Path(outdir) / "frames" / "board.json"
     shown: dict = {}
 
+    backlight = getattr(board, "backlight", None)
+    reports = getattr(board, "reports", None)
+    heard = [0]                 # the latest guest time a report carried
+
     def publish() -> None:
-        if not isinstance(keypad, TDeckKeyboard):
-            return
-        state = {"keyboard_backlight": round(keypad.pwm / 255, 3)}
+        state = {}
+        if isinstance(keypad, TDeckKeyboard):
+            state["keyboard_backlight"] = round(keypad.pwm / 255, 3)
+        if backlight is not None and reports is not None:
+            # The screen's backlight, from what drives its pin (ADR 0151).
+            for pin, level, out_sel, ns in reports.poll():
+                if pin == TFT_BACKLIGHT:
+                    log.debug("backlight pin: level %d, signal %d, at guest %d ns",
+                              level, out_sel, ns)
+                    backlight.report(level, out_sel, ns)
+                    heard[0] = max(heard[0], ns)
+            seconds = board.clock.seconds() if board.clock else None
+            now = max(heard[0], int(seconds * 1e9) if seconds is not None else 0)
+            bright = backlight.brightness(now)
+            if bright is not None:
+                state["screen_backlight"] = round(bright, 3)
         if state != shown:
             write_state(state_path, state)
             shown.clear()

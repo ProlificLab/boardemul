@@ -126,6 +126,7 @@
   .devview .ballspot:hover { background: #ffffff10; }
   .panelwrap { position: absolute; overflow: hidden; }
   .paper { display: block; width: 100%; height: 100%; image-rendering: pixelated;
+           transition: filter .25s;
            background: #d5d7cf; }
   .runbar { display: flex; gap: 10px; width: 100%; align-items: center; flex-wrap: wrap; }
   .uart {
@@ -719,6 +720,7 @@ async function showRun(id, board) {
   window.board = board;
   frameMtime = 0; uartAfter = 0; histFrames = []; symHeld = false; runEnded = false;
   soundSeen = ""; $("sound").innerHTML = ""; $("sound").classList.remove("has");
+  $("paper").style.filter = "";
   $("view-devices").style.display = "none";
   $("view-run").style.display = "block";
   $("viewtitle").innerHTML = `<h1>${id}</h1><span class="count">running · ${board}</span>`;
@@ -833,6 +835,10 @@ async function uartLoop() {
       // The keyboard's backlight, as the guest itself drives it (ADR 0129).
       const state = await api(`/api/runs/${id}/state`).catch(() => ({}));
       $("device").classList.toggle("glow", +state.keyboard_backlight > 0);
+      // The screen's backlight, from what drives its pin (ADR 0151): the
+      // frames stay as drawn, and the panel is lit as the guest lights it.
+      const lit = state.screen_backlight;
+      $("paper").style.filter = lit === undefined ? "" : `brightness(${Math.max(0, Math.min(1, +lit))})`;
     } catch (err) { /* a stopped run ends this loop via current = null */ }
     await new Promise(r => setTimeout(r, 1500));
   }

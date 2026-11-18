@@ -249,3 +249,28 @@ def test_clicking_a_cap_sends_that_key(tmp_path: Path) -> None:
 
     assert {"type": "key", "key": "Q", "down": True} in lines
     assert {"type": "key", "key": "Q", "down": False} in lines
+
+
+@needs_display
+def test_the_panel_is_veiled_as_the_backlight_falls(tmp_path: Path) -> None:
+    """ADR 0151: no alpha in Tk, so a stippled veil, denser as it darkens."""
+    import tkinter as tk
+
+    from emu.app import DeckWindow
+
+    root = tk_root()
+    root.withdraw()
+    try:
+        window = DeckWindow(tk.Toplevel(root), tmp_path / "latest.png", 2,
+                            InputWriter(tmp_path / "input.jsonl"))
+        window.photo = tk.PhotoImage(master=window.canvas, width=1, height=1)
+        seen = {}
+        for lit in (1.0, 0.7, 0.2, 0.0):
+            window.lit = lit
+            window._show_lit()
+            veils = window.canvas.find_withtag("veil")
+            seen[lit] = window.canvas.itemcget(veils[0], "stipple") if veils else None
+    finally:
+        root.destroy()
+
+    assert seen == {1.0: None, 0.7: "gray25", 0.2: "gray75", 0.0: ""}
