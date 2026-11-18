@@ -99,3 +99,84 @@ def test_the_doctor_says_a_missing_image_is_only_a_warning(monkeypatch, tmp_path
     findings = doctor.check_firmware()
     assert findings and all(f.level == doctor.WARN for f in findings)
     assert all("fetch_firmware.py --only" in f.fix for f in findings)
+
+
+# -- a firmware brings its filesystem (ADR 0150) ------------------------------
+
+
+def _manifest(tmp_path: Path, firmware: bytes, littlefs: bytes) -> Path:
+    def sha(data: bytes) -> str:
+        return hashlib.sha256(data).hexdigest()
+    path = tmp_path / "MANIFEST.toml"
+    path.write_text(f'''
+[[image]]
+name = "mesh"
+path = "mesh.bin"
+url = "https://example/mesh.bin"
+size = {len(firmware)}
+sha256 = "{sha(firmware)}"
+companions = ["fs"]
+
+[[image]]
+name = "fs"
+path = "fs.bin"
+url = "https://example/fs.bin"
+offset = 0xc90000
+size = {len(littlefs)}
+sha256 = "{sha(littlefs)}"
+''', encoding="utf-8")
+    return path
+
+
+def test_a_pinned_firmware_brings_its_companion(tmp_path: Path) -> None:
+    manifest = _manifest(tmp_path, IMAGE, b"littlefs")
+    (tmp_path / "fs.bin").write_bytes(b"littlefs")
+    firmware = tmp_path / "elsewhere.bin"            # an upload, by its hash
+    firmware.write_bytes(IMAGE)
+    overlays, missing = fetch_firmware.companion_overlays(firmware, tmp_path, manifest)
+    assert overlays == [f"0xc90000={(tmp_path / 'fs.bin').resolve().as_posix()}"]
+    assert missing == []
+
+
+def test_a_companion_not_fetched_is_named(tmp_path: Path) -> None:
+    manifest = _manifest(tmp_path, IMAGE, b"littlefs")
+    (tmp_path / "fs.bin").write_bytes(b"not the pinned one")
+    firmware = tmp_path / "mesh.bin"
+    firmware.write_bytes(IMAGE)
+    assert fetch_firmware.companion_overlays(firmware, tmp_path, manifest) == ([], ["fs"])
+
+
+def test_an_unpinned_firmware_brings_nothing(tmp_path: Path) -> None:
+    manifest = _manifest(tmp_path, IMAGE, b"littlefs")
+    firmware = tmp_path / "other.bin"
+    firmware.write_bytes(b"another build")
+    assert fetch_firmware.companion_overlays(firmware, tmp_path, manifest) == ([], [])
+
+
+def test_the_meshtastic_build_names_its_filesystem() -> None:
+    manifest = tomllib.loads(fetch_firmware.MANIFEST.read_text(encoding="utf-8"))
+    by_name = {e["name"]: e for e in manifest["image"]}
+    assert by_name["tdeck-meshtastic"]["companions"] == ["meshtastic-littlefs"]
+    assert by_name["meshtastic-littlefs"]["offset"] == 0xC90000
+
+
+def test_a_new_device_takes_the_companions_unless_given_overlays(tmp_path, monkeypatch):
+    from emu import device as device_folder
+    seen = []
+
+    def build(firmware, outdir, mac, overlays):
+        outdir.mkdir(parents=True, exist_ok=True)
+        seen.append(list(overlays))
+        (outdir / "flash.bin").write_bytes(b"f")
+        (outdir / "efuse.bin").write_bytes(b"e")
+        return outdir / "flash.bin", outdir / "efuse.bin"
+
+    monkeypatch.setattr(fetch_firmware, "companion_overlays",
+                        lambda fw: (["0xc90000=/fs.bin"], []))
+    firmware = tmp_path / "fw.bin"
+    firmware.write_bytes(IMAGE)
+    made = device_folder.create(tmp_path / "d", "a", firmware, build=build)
+    assert made.overlays == ("0xc90000=/fs.bin",)
+    device_folder.create(tmp_path / "d", "b", firmware, overlays=("0x1=/x.bin",),
+                         build=build)
+    assert seen == [["0xc90000=/fs.bin"], ["0x1=/x.bin"]]

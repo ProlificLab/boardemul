@@ -50,6 +50,30 @@ def state(entry: dict, root: Path = FIRMWARE) -> str:
         else "wrong"
 
 
+def companion_overlays(firmware: Path, root: Path = FIRMWARE,
+                       manifest: Path = MANIFEST) -> tuple[list[str], list[str]]:
+    """The overlays a pinned firmware brings, as `OFFSET=PATH` (ADR 0150), and
+    the names of companions it should bring but that are not here."""
+    try:
+        digest = sha256(Path(firmware).read_bytes())
+        entries = load(manifest)
+    except (OSError, KeyError, tomllib.TOMLDecodeError):
+        return [], []
+    by_name = {e["name"]: e for e in entries}
+    image = next((e for e in entries if e.get("sha256") == digest), None)
+    overlays, missing = [], []
+    for name in (image or {}).get("companions", []):
+        companion = by_name.get(name)
+        if companion is None or "offset" not in companion:
+            continue
+        if state(companion, root) == "ok":
+            path = (root / companion["path"]).resolve().as_posix()
+            overlays.append(f"0x{companion['offset']:x}={path}")
+        else:
+            missing.append(name)
+    return overlays, missing
+
+
 def download(url: str) -> bytes:
     request = urllib.request.Request(url, headers={"User-Agent": AGENT})
     with urllib.request.urlopen(request, timeout=TIMEOUT_S) as response:

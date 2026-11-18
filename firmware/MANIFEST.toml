@@ -95,6 +95,8 @@ path    = "firmware-t-deck-tft-2.7.10.94d4bdf.bin"
 url     = "https://raw.githubusercontent.com/Xinyuan-LilyGO/T-Deck/ac871c78be21adcc51838ebdaeeab6aa8250b779/firmware/firmware-t-deck-tft-2.7.10.94d4bdf.bin"
 size    = 3563024
 sha256  = "39249b3db92f4b4c59fe8615fa1391cb05b358601f23be8fe19869e4e813336d"
+# Written beside it by the vendor's installer, so a run brings it too (ADR 0150).
+companions = ["meshtastic-littlefs"]
 
 [[image]]
 name    = "meshtastic-littlefs"

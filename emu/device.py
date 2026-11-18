@@ -173,6 +173,11 @@ def create(devices: Path, name: str, firmware: Path, board: str = "tdeck-max",
         raise DeviceError(f"no firmware at {firmware}")
     root.mkdir(parents=True)
     try:
+        if not overlays:
+            # A pinned firmware brings its filesystem, as its installer would
+            # (ADR 0150); the device records it among its overlays.
+            from tools.fetch_firmware import companion_overlays
+            overlays = tuple(companion_overlays(firmware)[0])
         flash, efuse = build(firmware, root, mac, list(overlays))
         if board in SD_BOARDS:
             (root / SDCARD).write_bytes(bytes(sdimage.build(size_mb=SD_BOARDS[board])))

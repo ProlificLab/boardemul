@@ -23,6 +23,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from emu import device as device_folder  # noqa: E402
 from tools import mkflash  # noqa: E402
+from tools.fetch_firmware import companion_overlays as firmware_companions  # noqa: E402
 from emu import board  # noqa: E402
 from emu import board_tdeck  # noqa: E402
 from emu.devices import lora  # noqa: E402
@@ -422,9 +423,19 @@ def main(argv: list[str] | None = None) -> int:
 
     qemu = find_qemu(args.qemu)
     if device is None:
+        overlays = list(args.overlay)
+        if not overlays:
+            # A pinned firmware brings what its installer writes beside it
+            # (ADR 0150).
+            overlays, missing = firmware_companions(args.firmware)
+            for spec in overlays:
+                print(f"overlay : {spec.replace('=', ' = ', 1)}, the firmware's own filesystem")
+            for name in missing:
+                print(f"overlay : {name} belongs with this firmware and is not "
+                      f"fetched: python tools/fetch_firmware.py --only {name}")
         flash, efuse = build_images(args.firmware,
                                     args.builddir / args.firmware.stem,
-                                    mac, args.overlay)
+                                    mac, overlays)
     # A device created with --psram-octal keeps forcing it; created without,
     # it takes the image's mode like a bare run (ADR 0144).
     forced = ("octal" if args.psram_octal else "quad" if args.psram_quad
