@@ -26,6 +26,7 @@ from tools import mkflash  # noqa: E402
 from emu import board  # noqa: E402
 from emu import board_tdeck  # noqa: E402
 from emu.devices import lora  # noqa: E402
+from emu.devices.air import HOST as AIR_LOOPBACK, air_host  # noqa: E402
 from emu.bus import BusServer, IrqChannel  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -537,12 +538,22 @@ def main(argv: list[str] | None = None) -> int:
         # gained an argument the other did not, that quietly dropped it back to
         # a build with no air -- the radio options did nothing on it and nothing
         # said so (ADR 0052).
+        if args.air or args.ble_air:
+            # Resolved once, so every part of this board advertises the same
+            # address (ADR 0145).
+            os.environ["BOARDEMUL_AIR_HOST"] = air_host()
+            if air_host() != AIR_LOOPBACK:
+                print(f"air-host: {air_host()}")
+        if args.ble_air:
+            # The Bluetooth core writes its file there and does not make it.
+            Path(args.ble_air).mkdir(parents=True, exist_ok=True)
         hw = hw_module.build(args.outdir, air=args.air, ble_air=args.ble_air,
                              position=where, antenna_dbi=args.antenna,
                              exponent=exponent, obstruction_db=args.obstruction,
                              gps=fix, wifi_ap=access_point,
                              air_boards=args.air_boards,
-                             air_quantum_ns=args.air_quantum_us * 1000)
+                             air_quantum_ns=args.air_quantum_us * 1000,
+                             air_name=tag)
         if device is not None and device.has_sdcard:
             # The device's card, in place of the fresh empty one the board
             # built. Its contents go back to the folder when the run ends

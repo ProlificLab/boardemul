@@ -8,6 +8,7 @@ tells it on a board, so nothing depends on how fast the host runs.
 from __future__ import annotations
 
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -15,7 +16,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from emu.devices import lora  # noqa: E402
-from emu.devices.air import AirMedium  # noqa: E402
+from emu.devices.air import AirMedium, air_host, read_entry  # noqa: E402
 from emu.devices.sx1262 import (  # noqa: E402
     IRQ_CAD_DETECTED, IRQ_CAD_DONE, IRQ_RX_DONE, IRQ_TX_DONE, MODE_FS,
     MODE_STANDBY_RC, Sx1262,
@@ -76,8 +77,64 @@ def pair(tmp_path: Path):
 
 def test_boards_in_the_same_directory_can_hear_each_other(pair) -> None:
     sender, receiver, _ = pair
-    assert sender.air.peers() == [receiver.air.port]
-    assert receiver.air.peers() == [sender.air.port]
+    assert sender.air.peers() == [receiver.air.address]
+    assert receiver.air.peers() == [sender.air.address]
+
+
+def test_a_board_on_loopback_writes_only_its_port(tmp_path: Path) -> None:
+    """The file every air before ADR 0145 wrote, so old and new boards read
+    each other's."""
+    board = AirMedium(tmp_path, "plain")
+    try:
+        assert (tmp_path / "plain.air").read_text() == str(board.port)
+        assert read_entry("4242") == (("127.0.0.1", 4242), False)
+        assert read_entry("4242 timed") == (("127.0.0.1", 4242), True)
+    finally:
+        board.close()
+
+
+def test_a_board_elsewhere_says_where(tmp_path: Path, monkeypatch) -> None:
+    """In a container on a Docker network a board is reached at its
+    container's address, and its file says so (ADR 0145)."""
+    monkeypatch.setenv("BOARDEMUL_AIR_HOST", "127.0.0.2")
+    if not _can_bind("127.0.0.2"):
+        pytest.skip("this host cannot bind 127.0.0.2")
+    elsewhere = AirMedium(tmp_path, "elsewhere", timed=True)
+    monkeypatch.delenv("BOARDEMUL_AIR_HOST")
+    here = AirMedium(tmp_path, "here")
+    try:
+        assert (tmp_path / "elsewhere.air").read_text() == \
+            f"{elsewhere.port} timed host=127.0.0.2"
+        assert here.peers() == [("127.0.0.2", elsewhere.port)]
+        assert here.send(b"across") == 1
+        deadline = time.monotonic() + 2
+        got = []
+        while not got and time.monotonic() < deadline:
+            got = elsewhere.poll_named()
+        assert got == [("here", b"across")]
+    finally:
+        elsewhere.close()
+        here.close()
+
+
+def test_auto_is_the_address_the_hosts_name_resolves_to(monkeypatch) -> None:
+    import socket
+    monkeypatch.setenv("BOARDEMUL_AIR_HOST", "auto")
+    assert air_host() == socket.gethostbyname(socket.gethostname())
+    monkeypatch.delenv("BOARDEMUL_AIR_HOST")
+    assert air_host() == "127.0.0.1"
+
+
+def _can_bind(host: str) -> bool:
+    import socket
+    probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        probe.bind((host, 0))
+        return True
+    except OSError:
+        return False
+    finally:
+        probe.close()
 
 
 def test_a_board_on_its_own_hears_nobody(tmp_path: Path) -> None:

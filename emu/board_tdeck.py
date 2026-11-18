@@ -30,7 +30,7 @@ from emu.devices.gps import L76K
 from emu.guest_clock import GuestClock
 from emu.devices.ledc import Ledc
 from emu.devices.lcd import St7789Panel
-from emu.devices.air import AirMedium, keep_time
+from emu.devices.air import HOST as AIR_LOOPBACK, AirMedium, air_host, keep_time
 from emu.devices.es7210 import Es7210
 from emu.devices.sdcard import SdCard
 from emu.devices.spi_trace import SpiTrace
@@ -199,7 +199,8 @@ def build(outdir: Path, air: str | None = None, ble_air: str | None = None,
           obstruction_db: float = 0.0,
           gps: tuple[float, float, float] | None = None,
           wifi_ap: tuple[str, int, int, bool, str, bool] | None = None,
-          air_boards: int = 0, air_quantum_ns: int = 1_000_000) -> Board:
+          air_boards: int = 0, air_quantum_ns: int = 1_000_000,
+          air_name: str | None = None) -> Board:
     outdir = Path(outdir)
     panel = St7789Panel(outdir / "frames")
     gpio = GpioClient(outdir / "gpio.sock")
@@ -217,7 +218,10 @@ def build(outdir: Path, air: str | None = None, ble_air: str | None = None,
     # keeps it (ADR 0113).
     clock = GuestClock(outdir / "clock.sock",
                        quantum_ns=air_quantum_ns if air_boards else 0)
-    medium = AirMedium(air, outdir.name, timed=bool(air_boards)) if air else None
+    # On the air under the run's name: in a container every run's output
+    # directory is /out (ADR 0145).
+    medium = AirMedium(air, air_name or outdir.name,
+                       timed=bool(air_boards)) if air else None
     radio = Sx1262(air=medium, position=position, antenna_dbi=antenna_dbi,
                    exponent=exponent, obstruction_db=obstruction_db,
                    signal=lambda level: gpio.drive(RADIO_DIO1_PIN, level, force=True),
@@ -294,7 +298,10 @@ def build(outdir: Path, air: str | None = None, ble_air: str | None = None,
            f",frames={outdir / 'wifi.sock'}"
            if wifi_ap else ""),
         f"esp-ble-core,base=0x{BLE_CORE_BASE:x},irq={IRQ_RWBLE}"
-        + (f",air={ble_air},airname={outdir.name}" if ble_air else ""),
+        # Its address on the air, when it is not loopback (ADR 0145).
+        + (f",air={ble_air},airname={air_name or outdir.name}" if ble_air else "")
+        + (f",airhost={air_host()}" if ble_air and air_host() != AIR_LOOPBACK
+           else ""),
     ]
     frames = None
     if wifi_ap:

@@ -40,8 +40,33 @@ log = logging.getLogger("air")
 SUFFIX = ".air"
 MAX_FRAME = 512
 HOST = "127.0.0.1"
-# A board's file says its port, and "timed" if it keeps time with the others.
+# A board's file says its port, "timed" if it keeps time with the others, and
+# "host=ADDRESS" if it is reached somewhere other than HOST (ADR 0145).
 TIMED = "timed"
+HOST_WORD = "host="
+
+
+def air_host() -> str:
+    """The address this board is reached at on the air (ADR 0145):
+    BOARDEMUL_AIR_HOST, where "auto" is the address the machine's own name
+    resolves to (a container's, on its network), and unset is loopback."""
+    wanted = os.environ.get("BOARDEMUL_AIR_HOST", "").strip()
+    if not wanted:
+        return HOST
+    if wanted == "auto":
+        return socket.gethostbyname(socket.gethostname())
+    return wanted
+
+
+def read_entry(text: str) -> tuple[tuple[str, int], bool]:
+    """A board's file: its address and whether it keeps time. A file with no
+    host says loopback, as every air before ADR 0145 did."""
+    words = text.split()
+    host = HOST
+    for word in words[1:]:
+        if word.startswith(HOST_WORD):
+            host = word[len(HOST_WORD):]
+    return (host, int(words[0])), TIMED in words[1:]
 # A barrier mark: who has reached which guest time, in nanoseconds.
 MARK = struct.Struct("<4sQ")
 MARK_MAGIC = b"MARK"
@@ -61,49 +86,52 @@ class AirMedium:
         self.directory.mkdir(parents=True, exist_ok=True)
         self.name = name or f"{os.getpid()}"
         self.timed = timed
+        self.host = air_host()
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.sock.bind((HOST, 0))
+        self.sock.bind((self.host, 0))
         self.sock.setblocking(False)
         self.port = self.sock.getsockname()[1]
+        self.address = (self.host, self.port)
         self.path = self.directory / f"{self.name}{SUFFIX}"
-        self.path.write_text(f"{self.port} {TIMED}" if timed else str(self.port))
+        words = [str(self.port)] + ([TIMED] if timed else []) \
+            + ([HOST_WORD + self.host] if self.host != HOST else [])
+        self.path.write_text(" ".join(words))
         self.sent = 0
         self.received = 0
-        # The latest mark each timed peer has sent, by port (ADR 0113).
-        self.marks: dict[int, int] = {}
+        # The latest mark each timed peer has sent, by address (ADR 0113).
+        self.marks: dict[tuple[str, int], int] = {}
         self.barriers = 0
         self.waited_s = 0.0
-        self._peers: dict[int, str] = {}
+        self._peers: dict[tuple[str, int], str] = {}
         self._peers_at: float | None = None
         self._reported: tuple[float, float] | None = None
-        log.info("on the air as %s on port %d%s", self.path.name, self.port,
-                 ", keeping time with the others" if timed else "")
+        log.info("on the air as %s at %s:%d%s", self.path.name, self.host,
+                 self.port, ", keeping time with the others" if timed else "")
 
-    def _listing(self) -> list[tuple[str, int, bool]]:
-        """Everyone else present: name, port, and whether they keep time. Read
-        each time: boards come and go, and a file left behind is a board that
-        has stopped."""
+    def _listing(self) -> list[tuple[str, tuple[str, int], bool]]:
+        """Everyone else present: name, address, and whether they keep time.
+        Read each time: boards come and go, and a file left behind is a board
+        that has stopped."""
         found = []
         for entry in sorted(self.directory.glob("*" + SUFFIX)):
             if entry == self.path:
                 continue
             try:
-                words = entry.read_text().split()
-                found.append((entry.name[:-len(SUFFIX)], int(words[0]),
-                              TIMED in words[1:]))
+                address, timed = read_entry(entry.read_text())
             except (OSError, ValueError, IndexError):
                 continue        # being written, or left behind by a dead board
+            found.append((entry.name[:-len(SUFFIX)], address, timed))
         return found
 
-    def peers(self) -> list[int]:
-        """Everyone else present, by port."""
-        return [port for _name, port, _timed in self._listing()]
+    def peers(self) -> list[tuple[str, int]]:
+        """Everyone else present, by address."""
+        return [address for _name, address, _timed in self._listing()]
 
-    def timed_peers(self) -> dict[int, str]:
-        """The others keeping time on this air, by port, with their names."""
-        return {port: name for name, port, timed in self._listing() if timed}
+    def timed_peers(self) -> dict[tuple[str, int], str]:
+        """The others keeping time on this air, by address, with their names."""
+        return {address: name for name, address, timed in self._listing() if timed}
 
-    def _timed_recently(self, fresh: bool = False) -> dict[int, str]:
+    def _timed_recently(self, fresh: bool = False) -> dict[tuple[str, int], str]:
         """timed_peers(), read again at most every RELIST_S: a barrier comes
         every quantum, and the directory changes when a board starts or stops."""
         now = time.monotonic()
@@ -115,9 +143,9 @@ class AirMedium:
     def send(self, frame: bytes) -> int:
         """Hand a frame to every other board. Returns how many were told."""
         told = 0
-        for port in self.peers():
+        for address in self.peers():
             try:
-                self.sock.sendto(frame[:MAX_FRAME], (HOST, port))
+                self.sock.sendto(frame[:MAX_FRAME], address)
                 told += 1
             except OSError:
                 continue
@@ -130,29 +158,31 @@ class AirMedium:
         return [frame for _port, frame in self._drain()]
 
     def poll_named(self) -> list[tuple[str, bytes]]:
-        """Whatever has arrived, each with the board that sent it: the port it
-        came from, as that board's file in the directory names it. Who sent a
-        frame is the air's to say, not the packet's: a relayed packet carries
+        """Whatever has arrived, each with the board that sent it: the address
+        it came from, as that board's file in the directory names it. Who sent
+        a frame is the air's to say, not the packet's: a relayed packet carries
         another node's address (ADR 0141)."""
-        names = {port: name for name, port, _timed in self._listing()}
-        return [(names.get(port, f"port {port}"), frame) for port, frame in self._drain()]
+        names = {address: name for name, address, _timed in self._listing()}
+        return [(names.get(address, f"{address[0]}:{address[1]}"), frame)
+                for address, frame in self._drain()]
 
-    def _drain(self) -> list[tuple[int, bytes]]:
-        """Every datagram waiting, with the port it came from. Marks are
+    def _drain(self) -> list[tuple[tuple[str, int], bytes]]:
+        """Every datagram waiting, with the address it came from. Marks are
         taken out and kept; frames are returned."""
         frames = []
         while True:
             try:
-                data, (_host, port) = self.sock.recvfrom(MAX_FRAME)
+                data, (host, port) = self.sock.recvfrom(MAX_FRAME)
             except (BlockingIOError, InterruptedError):
                 break
             except OSError:
                 break
+            address = (host, port)
             if len(data) == MARK.size and data[:4] == MARK_MAGIC:
                 _magic, ns = MARK.unpack(data)
-                self.marks[port] = max(ns, self.marks.get(port, -1))
+                self.marks[address] = max(ns, self.marks.get(address, -1))
                 continue
-            frames.append((port, data))
+            frames.append((address, data))
         self.received += len(frames)
         return frames
 
@@ -174,26 +204,28 @@ class AirMedium:
             time.sleep(0.05)
             peers = self._timed_recently(fresh=True)
         mark = MARK.pack(MARK_MAGIC, ns)
-        for port in peers:
+        for address in peers:
             try:
-                self.sock.sendto(mark, (HOST, port))
+                self.sock.sendto(mark, address)
             except OSError:
                 continue
         got: list[tuple[str, bytes]] = []
         while True:
-            got += [(peers.get(port, str(port)), frame)
-                    for port, frame in self._drain()]
-            waiting = [port for port in peers if self.marks.get(port, -1) < ns]
+            got += [(peers.get(address, f"{address[0]}:{address[1]}"), frame)
+                    for address, frame in self._drain()]
+            waiting = [address for address in peers
+                       if self.marks.get(address, -1) < ns]
             if not waiting:
                 break
             if give_up_s is not None and time.monotonic() - started > give_up_s:
                 log.warning("barrier at %d ns gave up on %s", ns,
-                            [peers[port] for port in waiting])
+                            [peers[address] for address in waiting])
                 break
             select.select([self.sock], [], [], 0.05)
             # A peer whose file has gone has left, and is not waited for.
             present = self._timed_recently()
-            peers = {port: name for port, name in peers.items() if port in present}
+            peers = {address: name for address, name in peers.items()
+                     if address in present}
         self.barriers += 1
         self.waited_s += time.monotonic() - started
         if self.barriers % REPORT_EVERY == 0:

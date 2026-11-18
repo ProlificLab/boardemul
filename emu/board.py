@@ -286,7 +286,8 @@ def build(outdir: Path, air: str | None = None, ble_air: str | None = None,
           obstruction_db: float = 0.0,
           gps: tuple[float, float, float] | None = None,
           wifi_ap: tuple[str, int, int, bool, str, bool] | None = None,
-          air_boards: int = 0, air_quantum_ns: int = 1_000_000) -> Board:
+          air_boards: int = 0, air_quantum_ns: int = 1_000_000,
+          air_name: str | None = None) -> Board:
     """`ble_air` is accepted and does nothing here: this board has a radio and
     the T-Deck's WiFi MAC (ADR 0137), but no Bluetooth controller modelled, so
     there is no part for it to reach. Every board takes the same arguments on
@@ -311,7 +312,10 @@ def build(outdir: Path, air: str | None = None, ble_air: str | None = None,
     # The same three-part bus as the other board (ADR 0032), and for the same
     # reason: with one chip select forwarded the card and the radio were not
     # unmodelled but unreachable.
-    medium = AirMedium(air, outdir.name, timed=bool(air_boards)) if air else None
+    # On the air under the run's name: in a container every run's output
+    # directory is /out (ADR 0145).
+    medium = AirMedium(air, air_name or outdir.name,
+                       timed=bool(air_boards)) if air else None
     radio = Sx1262(air=medium, position=position, antenna_dbi=antenna_dbi,
                    exponent=exponent, obstruction_db=obstruction_db,
                    signal=lambda level: gpio.drive(RADIO_DIO1_PIN, level, force=True),

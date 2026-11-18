@@ -224,6 +224,7 @@ struct EspBleCore {
     int32_t irq_source;
     char *air;                  /* directory shared with other radios */
     char *air_name;             /* what this one is called in it */
+    char *air_host;             /* the address it is reached at (ADR 0145) */
     int air_fd;
     uint64_t sent;
     uint64_t received;
@@ -488,12 +489,47 @@ static void ble_peek(EspBleCore *s, unsigned idx)
  * It is spoken here in C rather than through the Python side, because the only
  * thing that knows a packet exists is this device: it holds the base registers
  * that say where the controller mapped it.
+ *
+ * A radio's file is its port, then words: "host=ADDRESS" when it is reached
+ * somewhere other than loopback, as a board in a container on a Docker
+ * network is (ADR 0145). The Python air writes and reads the same.
  */
+static bool ble_air_entry(const char *path, struct sockaddr_in *to)
+{
+    char text[128] = "";
+    unsigned port = 0;
+    FILE *f = fopen(path, "r");
+
+    if (!f) {
+        return false;
+    }
+    size_t n = fread(text, 1, sizeof(text) - 1, f);
+    fclose(f);
+    text[n] = 0;
+    if (sscanf(text, "%u", &port) != 1 || !port || port > 65535) {
+        return false;
+    }
+    to->sin_family = AF_INET;
+    to->sin_port = htons((uint16_t)port);
+    to->sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    char *rest = NULL;
+    for (char *word = strtok_r(text, " \t\r\n", &rest); word;
+         word = strtok_r(NULL, " \t\r\n", &rest)) {
+        if (!strncmp(word, "host=", 5) && inet_pton(AF_INET, word + 5,
+                                                   &to->sin_addr) != 1) {
+            return false;
+        }
+    }
+    return true;
+}
+
 static void ble_air_join(EspBleCore *s)
 {
     struct sockaddr_in me = { .sin_family = AF_INET };
     socklen_t len = sizeof(me);
-    char path[PATH_MAX], port[16];
+    char path[PATH_MAX], entry[96];
+    bool elsewhere = s->air_host && s->air_host[0] &&
+                     strcmp(s->air_host, "127.0.0.1");
     int fd;
 
     if (!s->air || !s->air[0]) {
@@ -505,6 +541,12 @@ static void ble_air_join(EspBleCore *s)
         return;
     }
     me.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    if (elsewhere && inet_pton(AF_INET, s->air_host, &me.sin_addr) != 1) {
+        warn_report("esp-ble-core: airhost %s is not an IPv4 address",
+                    s->air_host);
+        close(fd);
+        return;
+    }
     me.sin_port = 0;
     if (bind(fd, (struct sockaddr *)&me, sizeof(me)) < 0 ||
         getsockname(fd, (struct sockaddr *)&me, &len) < 0) {
@@ -516,12 +558,17 @@ static void ble_air_join(EspBleCore *s)
 
     snprintf(path, sizeof(path), "%s/%s.air", s->air,
              s->air_name && s->air_name[0] ? s->air_name : "ble");
-    snprintf(port, sizeof(port), "%u", ntohs(me.sin_port));
+    if (elsewhere) {
+        snprintf(entry, sizeof(entry), "%u host=%s", ntohs(me.sin_port),
+                 s->air_host);
+    } else {
+        snprintf(entry, sizeof(entry), "%u", ntohs(me.sin_port));
+    }
     FILE *f = fopen(path, "w");
     if (f) {
-        fputs(port, f);
+        fputs(entry, f);
         fclose(f);
-        info_report("esp-ble-core: on the air as %s on port %s", path, port);
+        info_report("esp-ble-core: on the air as %s at %s", path, entry);
     }
 }
 
@@ -540,8 +587,6 @@ static void ble_air_send(EspBleCore *s, const uint8_t *frame, size_t length)
     while ((entry = readdir(dir))) {
         char path[PATH_MAX], own[PATH_MAX];
         struct sockaddr_in to = { .sin_family = AF_INET };
-        unsigned port = 0;
-        FILE *f;
 
         const char *dot = strrchr(entry->d_name, '.');
         if (!dot || strcmp(dot, ".air")) {
@@ -553,19 +598,11 @@ static void ble_air_send(EspBleCore *s, const uint8_t *frame, size_t length)
             continue;                   /* a radio does not hear itself */
         }
         snprintf(path, sizeof(path), "%s/%s", s->air, entry->d_name);
-        f = fopen(path, "r");
-        if (!f) {
-            continue;
+        if (ble_air_entry(path, &to) &&
+            sendto(s->air_fd, frame, length, 0,
+                   (struct sockaddr *)&to, sizeof(to)) < 0) {
+            /* A radio that has gone leaves its file behind for a moment. */
         }
-        if (fscanf(f, "%u", &port) == 1 && port) {
-            to.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-            to.sin_port = htons((uint16_t)port);
-            if (sendto(s->air_fd, frame, length, 0,
-                       (struct sockaddr *)&to, sizeof(to)) < 0) {
-                /* A radio that has gone leaves its file behind for a moment. */
-            }
-        }
-        fclose(f);
     }
     closedir(dir);
     s->sent++;
@@ -1050,6 +1087,7 @@ static Property ble_props[] = {
     DEFINE_PROP_INT32("irq", EspBleCore, irq_source, 8),
     DEFINE_PROP_STRING("air", EspBleCore, air),
     DEFINE_PROP_STRING("airname", EspBleCore, air_name),
+    DEFINE_PROP_STRING("airhost", EspBleCore, air_host),
     DEFINE_PROP_END_OF_LIST(),
 };
 
