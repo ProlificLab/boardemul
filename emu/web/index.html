@@ -617,7 +617,12 @@ function consolePush(el, line) {
   consoleLines.push(line);
   if (consoleLines.length > 80) consoleLines.shift();
   if (el.classList.contains("open")) {
-    el.innerHTML = consoleLines.map(l => `<div>${l}</div>`).join("");
+    // As text: these lines are the guest's, and the guest writes no HTML here.
+    el.replaceChildren(...consoleLines.map(l => {
+      const div = document.createElement("div");
+      div.textContent = l;
+      return div;
+    }));
     el.scrollTop = el.scrollHeight;
   } else {
     el.textContent = consoleLines[consoleLines.length - 1];
