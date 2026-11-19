@@ -52,14 +52,21 @@ joins and the API server.
 
 **Good**
 
-- A Meshtastic node on BoardEmul is reachable by Meshtastic's own clients:
-  set its WiFi to the run's network from its own screen once (the flash
-  keeps it), forward 4403, and point the client at `localhost`.
 - Any firmware that serves TCP on WiFi, a web page or a debug port, is
-  reachable the same way.
+  reachable from the host: forward its port and connect to `localhost`.
+- For Meshtastic that is its TCP API on 4403, once the node is on the run's
+  network; see the first cost below for how far that has been seen.
 
 **Costs, accepted**
 
+- **Not yet seen end to end with Meshtastic** (2026-11-19). The forward is
+  tested against the access point's model (`tests/test_wifi_ap.py`), and
+  the network side of a run was set up as decided. Meshtastic's own
+  interface, driven through the page, opened its WiFi dialog and took the
+  network's name, and the setting never reached flash: its link to the
+  firmware's main loop showed "Resync …" and stayed there, so the node never
+  went on WiFi. Finding why is its own investigation; until then the
+  Meshtastic road is open in principle, not shown in practice.
 - The node has to be on WiFi, which on Meshtastic turns its Bluetooth off.
   On BoardEmul Bluetooth carries no data anyway (ADR 0157).
 - One station is forwarded to: the first that holds a lease. A run has one
