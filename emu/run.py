@@ -99,6 +99,9 @@ class RunResult:
     # firmware used it. This is the list the next piece of hardware to model
     # comes off (ADR 0053).
     unmodelled: dict = field(default_factory=dict)
+    # What the host on the USB OTG cable saw (ADR 0166).
+    usb_otg: str = ""
+    usb_otg_bytes: int = 0
 
 
 def find_qemu(explicit: str | None = None) -> Path:
@@ -393,11 +396,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--audio", action="store_true",
                     help="write what the speaker plays to WAV files in the "
                          "run's audio/ directory, one per stream (ADR 0146)")
-    ap.add_argument("--serial-tcp", default=None, metavar="PORT[:uart|usb]",
+    ap.add_argument("--serial-tcp", default=None, metavar="PORT[:uart|usb|otg]",
                     help="put a serial port on this TCP port of the host's "
-                         "loopback, the USB port unless one is named, for "
-                         "the host's own tools: a terminal, a script "
-                         "(ADR 0158)")
+                         "loopback, the USB Serial/JTAG port unless one is "
+                         "named, for the host's own tools: a terminal, a "
+                         "script (ADRs 0158, 0166)")
     ap.add_argument("--mic", default=None, metavar="FILE.wav",
                     help="the microphone hears this PCM WAV file, from its "
                          "start at each capture (ADR 0146)")
@@ -479,11 +482,13 @@ def main(argv: list[str] | None = None) -> int:
         # published on the host's loopback only (ADR 0158).
         tcp_port, _, which = args.serial_tcp.partition(":")
         which = which or "usb"
-        if which not in ("uart", "usb") or not tcp_port.isdigit():
-            raise SystemExit("--serial-tcp is PORT, PORT:uart or PORT:usb")
+        if which not in ("uart", "usb", "otg") or not tcp_port.isdigit():
+            raise SystemExit("--serial-tcp is PORT, PORT:uart, PORT:usb or PORT:otg")
         bind = "0.0.0.0" if os.environ.get("BOARDEMUL_BIND_ALL") else "127.0.0.1"
-        bridge = SerialBridge(which, int(tcp_port), uart if which == "uart" else usb,
-                              serial_input, bind=bind)
+        # The OTG port's log is the board's, written as the host reads it
+        # (ADR 0166).
+        logs = {"uart": uart, "usb": usb, "otg": args.outdir / f"{tag}.otg.log"}
+        bridge = SerialBridge(which, int(tcp_port), logs[which], serial_input, bind=bind)
     cmd = build_argv(qemu, flash, efuse, uart, qlog, args.trace, psram_mb,
                      psram_octal=psram_octal, seed=seed,
                      reboot=args.reboot, usb=usb, serial_in=serial_input.paths)
@@ -650,6 +655,9 @@ def main(argv: list[str] | None = None) -> int:
                 # What was loaded, so an unchanged card is not written back.
                 card_loaded = hashlib.sha256(bytes(sd.image)).hexdigest()
         hw.serial_in = serial_input
+        if hw.usb_otg is not None:
+            # Typed to the OTG port: the host on its cable sends it (ADR 0166).
+            serial_input.route("otg", hw.usb_otg.type_bytes)
         hw.start()
         server = BusServer(args.outdir / f"{tag}.bus.sock", hw.regions)
         irq = IrqChannel(args.outdir / f"{tag}.irq.sock")
@@ -771,12 +779,17 @@ def main(argv: list[str] | None = None) -> int:
     result.radio = radio_stats
     result.backlight = backlight_stats
     result.unmodelled = unmodelled_stats
+    if hw is not None and hw.usb_otg is not None:
+        result.usb_otg = hw.usb_otg.summary()
+        result.usb_otg_bytes = hw.usb_otg.bytes_in
 
     manifest = args.outdir / f"{tag}.manifest.json"
     manifest.write_text(json.dumps(asdict(result), indent=2))
 
     print(f"result  : {reason} after {wall:.1f}s, {result.uart_bytes} bytes of UART, "
           f"{result.usb_bytes} of USB")
+    if result.usb_otg and result.usb_otg_bytes:
+        print(f"          {result.usb_otg}")
     print(f"manifest: {manifest}\n")
     if interrupted:
         return 0

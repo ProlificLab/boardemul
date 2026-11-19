@@ -359,6 +359,8 @@
           <div class="seg" id="c-port" role="group" aria-label="Serial port">
             <button type="button" class="on" onclick="setPort(this, 'uart')">UART</button>
             <button type="button" onclick="setPort(this, 'usb')">USB</button>
+            <button type="button" onclick="setPort(this, 'otg')"
+                    title="The USB OTG port: Meshtastic's log and API on the T-Deck">OTG</button>
           </div>
           <input id="c-line" autocomplete="off" spellcheck="false"
                  placeholder="Type to the serial port — Enter sends the line"
@@ -447,7 +449,7 @@
     </div>
     <div class="group">
       <h4>Host tools</h4>
-      <p class="why">A serial port on a TCP port of this computer, for a terminal or a script. The USB Serial/JTAG port unless you add <code>:uart</code>.</p>
+      <p class="why">A serial port on a TCP port of this computer, for a terminal or a script. The USB Serial/JTAG port unless you add <code>:uart</code>, or <code>:otg</code> for the USB OTG port, where Meshtastic's API is on the T-Deck.</p>
       <div class="field"><label for="s-tcp">TCP port</label>
         <input type="text" id="s-tcp" placeholder="none, or e.g. 5555" autocomplete="off"></div>
     </div>
@@ -1065,7 +1067,8 @@ function setPort(btn, port) {
   btn.classList.add("on");
   uartAfter = 0;
   consoleLines.length = 0;
-  $("uart").textContent = `[    0] the ${port === "usb" ? "USB serial port" : "UART"}…`;
+  const names = { uart: "UART", usb: "USB Serial/JTAG port", otg: "USB OTG port (TinyUSB)" };
+  $("uart").textContent = `[    0] the ${names[port] || port}…`;
 }
 async function sendLine(e) {
   e.preventDefault();

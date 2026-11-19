@@ -25,6 +25,9 @@ class SerialInput:
     def __init__(self, outdir: Path):
         self.paths: dict[str, Path] = {}
         self._fds: dict[str, int] = {}
+        # Ports that are a model in this process rather than a pipe QEMU reads:
+        # the USB OTG controller's CDC port (ADR 0166).
+        self._routes: dict[str, object] = {}
         if not hasattr(os, "mkfifo"):
             return                  # a host where no run starts (ADR 0140)
         for port in PORTS:
@@ -41,8 +44,15 @@ class SerialInput:
         the rest, which is a serial line's own way of losing input."""
         return self.write_bytes(port, text.encode("utf-8"))
 
+    def route(self, port: str, take) -> None:
+        """Send what is typed to `port` to `take(data)` instead of a pipe."""
+        self._routes[port] = take
+
     def write_bytes(self, port: str, data: bytes) -> int:
         """Send raw bytes to a port, as a host tool does (ADR 0158)."""
+        if port in self._routes:
+            self._routes[port](bytes(data))
+            return len(data)
         fd = self._fds.get(port)
         if fd is None:
             log.warning("no serial port %r to type into", port)

@@ -72,7 +72,7 @@ RUN_FLAGS = {
     # (ADR 0164); may be given more than once.
     "--wifi-forward": True,
 }
-SERIAL_TCP = re.compile(r"(\d{4,5})(:(uart|usb))?\Z")
+SERIAL_TCP = re.compile(r"(\d{4,5})(:(uart|usb|otg))?\Z")
 WIFI_FORWARD = re.compile(r"(\d{4,5}):(\d{1,5})\Z")
 # The settings that put a port on the host's loopback, and how to read it.
 PUBLISHED = {"--serial-tcp": lambda v: v.partition(":")[0],
@@ -110,7 +110,7 @@ def check_settings(args) -> tuple[str, ...]:
                 found = SERIAL_TCP.match(value)
                 if not found or not 1024 <= int(found.group(1)) <= 65535:
                     raise DeviceError("--serial-tcp takes a port from 1024 to "
-                                      f"65535, then :uart or :usb, not {value!r}")
+                                      f"65535, then :uart, :usb or :otg, not {value!r}")
             if flag == "--wifi-forward":
                 found = WIFI_FORWARD.match(value)
                 if (not found or not 1024 <= int(found.group(1)) <= 65535

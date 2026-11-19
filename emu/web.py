@@ -39,6 +39,9 @@ from emu import device as device_folder  # noqa: E402
 from emu.skin import InputWriter, LETTER_KEYS, KEYSYMS, TDeckTyping  # noqa: E402
 
 WEB_DIR = Path(__file__).resolve().parent / "web"
+# The serial ports a run has: the UART, the USB Serial/JTAG port, and the CDC
+# port on the USB OTG controller (ADRs 0156, 0166).
+SERIAL_PORTS = ("uart", "usb", "otg")
 # Where RunHandle puts each run's directory, by device.
 LOGS = REPO_ROOT / "logs"
 UPLOADS = ".uploads"
@@ -773,8 +776,8 @@ class Handler(BaseHTTPRequestHandler):
                     writer.ball(bool(event.get("press", True)))
             elif kind == "serial":
                 port = str(event.get("port", "uart"))
-                if port not in ("uart", "usb"):
-                    raise Refused(400, "port is uart or usb")
+                if port not in SERIAL_PORTS:
+                    raise Refused(400, "port is uart, usb or otg")
                 writer.serial(port, str(event.get("text", "")))
         self._json({"accepted": True})
 
@@ -810,9 +813,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def _uart(self, handle: device_folder.RunHandle, after: int,
               port: str = "uart") -> None:
-        """One serial port's log: the UART's, or the USB port's (ADR 0156)."""
-        if port not in ("uart", "usb"):
-            raise Refused(400, "port is uart or usb")
+        """One serial port's log: the UART's, the USB Serial/JTAG port's
+        (ADR 0156), or the USB OTG port's (ADR 0166)."""
+        if port not in SERIAL_PORTS:
+            raise Refused(400, "port is uart, usb or otg")
         path = handle.outdir / f"{handle.device.name}.{port}.log"
         try:
             text = path.read_text(errors="replace")
