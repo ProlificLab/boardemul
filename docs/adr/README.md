@@ -163,3 +163,4 @@ superseded ADR is marked superseded and points forward.
 | [0155](0155-a-device-can-be-cloned-with-a-mac-of-its-own.md) | A device can be cloned, with a MAC of its own | Accepted (adds to 0133, 0149) |
 | [0156](0156-a-person-types-into-the-serial-ports.md) | The page reads both serial ports, and a person can type into them | Accepted (adds to 0100, 0135) |
 | [0157](0157-bluetooth-stops-at-a-link-that-stays-up.md) | Bluetooth stops at a link that stays up, and this is the road past it | Accepted (after 0044–0051) |
+| [0158](0158-a-serial-port-is-reachable-over-tcp.md) | A device's serial port is reachable over TCP, for the host's tools | Accepted (adds to 0156) |
