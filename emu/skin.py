@@ -230,6 +230,12 @@ class InputWriter:
         """Text typed into a serial port, "uart" or "usb" (ADR 0156)."""
         self._emit({"type": "serial", "port": port, "text": text})
 
+    def text(self, text: str) -> None:
+        """Characters for the T-Deck's keyboard to type, each as the chord
+        that types it on the device; the board's keypad presses them
+        (ADR 0127)."""
+        self._emit({"type": "text", "text": text})
+
 
 class TDeckTyping:
     """How a mouse and the host's keyboard press the T-Deck's keys (ADR 0127).

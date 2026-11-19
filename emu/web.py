@@ -105,7 +105,9 @@ class KeyBridge:
 
     def text(self, text: str) -> None:
         if self.typing is not None:
-            self.typing.type_text(text)
+            # The board's keypad types it, chord by chord, as it reads the
+            # run's input file (ADR 0127); TDeckTyping has no text of its own.
+            self.writer.text(text)
             return
         for char in text:
             if len(char) == 1 and char.upper() in LETTER_KEYS:

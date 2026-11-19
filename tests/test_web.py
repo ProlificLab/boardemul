@@ -192,6 +192,24 @@ def test_the_tdeck_takes_typing_pressed_and_released(server):
         shutil.rmtree(Path(run["outdir"]).parent, ignore_errors=True)
 
 
+def test_text_for_the_tdeck_goes_to_its_keypad(server):
+    """A "text" event, which scripts send, reaches the board's keypad as the
+    same event: it types each character as its chord (ADR 0127)."""
+    client, devices, _s = server
+    _tdeck(client, devices, name="writer")
+    status, run, _h = call(client, "POST", "/api/devices/writer/start")
+    status, body, _h = call(client, "POST", "/api/runs/writer/input",
+                            {"events": [{"type": "text", "text": "Hi!"}]})
+    try:
+        assert status == 200, body
+        last = (Path(run["outdir"]) / "input.jsonl").read_text().splitlines()[-1]
+        assert json.loads(last) == {"type": "text", "text": "Hi!"}
+    finally:
+        call(client, "POST", "/api/devices/writer/stop")
+        import shutil
+        shutil.rmtree(Path(run["outdir"]).parent, ignore_errors=True)
+
+
 def test_input_to_a_run_that_is_not_there_404s(server):
     client, _d, _s = server
     status, body, _h = call(client, "POST", "/api/runs/ghost/input",
