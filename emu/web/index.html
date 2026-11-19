@@ -1283,16 +1283,18 @@ function keyUp(name) {
     // Alt+B passes through as the chord; the guest drives its own backlight,
     // and the state poll above lights the drawn keyboard when it does.
     if (e.key === "Shift") shiftHeld = true;
-    if (e.key.length === 1 || ["Enter", "BackSpace", "Space"].includes(e.key))
+    // e.code names the physical key, so its release finds what its press did
+    // however Shift moved between them.
+    if (e.key.length === 1 || ["Enter", "Backspace"].includes(e.key))
       if (!e.ctrlKey || e.altKey || e.metaKey) {
         e.preventDefault();
-        send({ type: "hostkey", keysym: e.key, char: e.key, down: true });
+        send({ type: "hostkey", keysym: e.key, char: e.key, code: e.code, down: true });
       }
   });
 document.addEventListener("keyup", e => {
   if (e.target.closest && e.target.closest("input, textarea, select")) return;
   if ($("view-run").style.display !== "none" && e.key)
-    send({ type: "hostkey", keysym: e.key, char: e.key, down: false });
+    send({ type: "hostkey", keysym: e.key, char: e.key, code: e.code, down: false });
   if (e.key === "Shift") shiftHeld = false;
 });
 

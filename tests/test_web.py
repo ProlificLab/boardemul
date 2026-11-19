@@ -156,6 +156,42 @@ def test_start_run_and_send_input(server, tmp_path):
     assert status == 200
 
 
+def test_the_tdeck_takes_typing_pressed_and_released(server):
+    """ADR 0127's chords through the page: a capital is Shift and the letter,
+    and both come back up when the key does, even if Shift was let go first
+    and the browser named the release in lower case. Enter and Backspace
+    arrive under the browser's names."""
+    client, devices, _s = server
+    _tdeck(client, devices, name="typist")
+    status, run, _h = call(client, "POST", "/api/devices/typist/start")
+    events = [
+        {"type": "hostkey", "keysym": "N", "char": "N", "code": "KeyN", "down": True},
+        {"type": "hostkey", "keysym": "n", "char": "n", "code": "KeyN", "down": False},
+        {"type": "hostkey", "keysym": "n", "char": "n", "code": "KeyN", "down": True},
+        {"type": "hostkey", "keysym": "n", "char": "n", "code": "KeyN", "down": False},
+        {"type": "hostkey", "keysym": "Enter", "char": "Enter", "code": "Enter", "down": True},
+        {"type": "hostkey", "keysym": "Enter", "char": "Enter", "code": "Enter", "down": False},
+        {"type": "hostkey", "keysym": "Backspace", "char": "Backspace",
+         "code": "Backspace", "down": True},
+        {"type": "hostkey", "keysym": "Backspace", "char": "Backspace",
+         "code": "Backspace", "down": False},
+    ]
+    status, _b, _h = call(client, "POST", "/api/runs/typist/input", {"events": events})
+    assert status == 200
+    log = (Path(run["outdir"]) / "input.jsonl").read_text()
+    keys = [(e["key"], e["down"]) for e in map(json.loads, log.splitlines())
+            if e["type"] == "key"]
+    try:
+        assert keys == [("LSHIFT", True), ("N", True), ("N", False), ("LSHIFT", False),
+                        ("N", True), ("N", False),
+                        ("ENTER", True), ("ENTER", False),
+                        ("DEL", True), ("DEL", False)], keys
+    finally:
+        call(client, "POST", "/api/devices/typist/stop")
+        import shutil
+        shutil.rmtree(Path(run["outdir"]).parent, ignore_errors=True)
+
+
 def test_input_to_a_run_that_is_not_there_404s(server):
     client, _d, _s = server
     status, body, _h = call(client, "POST", "/api/runs/ghost/input",

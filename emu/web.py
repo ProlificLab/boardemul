@@ -60,6 +60,12 @@ FRAME_POLL_SECONDS = 25.0
 # the Max's plainer mapping, both writing through the run's InputWriter.
 
 
+# The browser's KeyboardEvent.key for keys whose Tk keysym differs; the chord
+# logic and KEYSYMS were written against Tk's (ADR 0127).
+BROWSER_KEYSYMS = {"Enter": "Return", "Backspace": "BackSpace",
+                   "Control": "Control_L", "Alt": "Alt_L", " ": "space"}
+
+
 class KeyBridge:
     """Host key events in, device key events out, for one run."""
 
@@ -72,11 +78,21 @@ class KeyBridge:
         """A drawn cap or a named device key, pressed as it is."""
         self.writer.key(name, down)
 
-    def host(self, keysym: str, char: str, down: bool) -> None:
-        """A key on the user's keyboard, as the browser reported it."""
+    def host(self, keysym: str, char: str, down: bool, code: str = "") -> None:
+        """A key on the user's keyboard, as the browser reported it.
+
+        `code` names the physical key (KeyN), the same at its press and its
+        release whatever Shift did in between, so a release finds the chord
+        its press made; a client that sends none falls back on the key's
+        name. The browser's names for Enter and Backspace become the Tk
+        keysyms the chord logic was written against (ADR 0127)."""
+        keysym = BROWSER_KEYSYMS.get(keysym, keysym)
         if self.typing is not None:
-            (self.typing.host_press if down else self.typing.host_release)(
-                keysym, char, hash((keysym, char)) & 0xFFFF)
+            keycode = hash(code or keysym) & 0xFFFF
+            if down:
+                self.typing.host_press(keysym, char, keycode)
+            else:
+                self.typing.host_release(keycode)
             return
         # The Max: a plainer mapping, as the Tk window's _keysym did.
         name = None
@@ -741,7 +757,8 @@ class Handler(BaseHTTPRequestHandler):
                 writer.key(str(event["key"]), bool(event.get("down", True)))
             elif kind == "hostkey":
                 bridge.host(str(event.get("keysym", "")), str(event.get("char", "")),
-                            bool(event.get("down", True)))
+                            bool(event.get("down", True)),
+                            str(event.get("code", "")))
             elif kind == "text":
                 bridge.text(str(event.get("text", "")))
             elif kind == "trackball":
