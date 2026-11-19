@@ -201,6 +201,10 @@
     font-family: inherit; font-size: 14px; outline: none;
   }
   .field input[type=text]:focus { border-color: var(--primary); }
+  .field select { width: 100%; background: #0c0e10; border: 1px solid var(--outline);
+                  border-radius: 10px; color: var(--ink); padding: 10px 12px;
+                  font-family: inherit; font-size: 14px; outline: none; }
+  .field select:focus { border-color: var(--primary); }
   .seg { display: flex; background: #101214; border-radius: 999px; padding: 4px; }
   .seg button { flex: 1; border: none; background: transparent; color: var(--ink-dim);
                 padding: 8px 0; border-radius: 999px; cursor: pointer;
@@ -397,6 +401,20 @@
         <div class="field"><label for="s-at">Place, x,y in metres</label>
           <input type="text" id="s-at" placeholder="0,0" autocomplete="off"></div>
       </div>
+      <div class="pair">
+        <div class="field"><label for="s-env">Between the devices</label>
+          <select id="s-env">
+            <option value="">free space</option>
+            <option value="open">open ground</option>
+            <option value="suburban">suburban</option>
+            <option value="urban">urban</option>
+            <option value="indoor">indoors</option>
+          </select></div>
+        <div class="field"><label for="s-ant">Antenna gain, dBi</label>
+          <input type="text" id="s-ant" placeholder="0" autocomplete="off"></div>
+      </div>
+      <div class="field"><label for="s-obs">Anything else in the way, dB</label>
+        <input type="text" id="s-obs" placeholder="0" autocomplete="off"></div>
       <div class="field" id="s-ble-field"><label for="s-ble">Bluetooth air name</label>
         <input type="text" id="s-ble" placeholder="leave empty for none" autocomplete="off"></div>
     </div>
@@ -672,6 +690,9 @@ function openSettings(name) {
   $("s-air").value = m["--air"] || "";
   $("s-at").value = m["--at"] || "";
   $("s-ble").value = m["--ble-air"] || "";
+  $("s-env").value = m["--environment"] && m["--environment"] !== "free-space" ? m["--environment"] : "";
+  $("s-ant").value = m["--antenna"] || "";
+  $("s-obs").value = m["--obstruction"] || "";
   $("s-ssid").value = (m["--wifi-ap"] || "").split(",")[0];
   $("s-pass").value = m["--wifi-pass"] || "";
   $("s-uplink").checked = !!m["--wifi-uplink"];
@@ -688,6 +709,9 @@ function settingsFromSheet() {
   const out = [], val = id => $(id).value.trim();
   if (val("s-air")) out.push("--air", val("s-air").toLowerCase());
   if (val("s-at")) out.push("--at", val("s-at"));
+  if (val("s-env")) out.push("--environment", val("s-env"));
+  if (val("s-ant")) out.push("--antenna", val("s-ant"));
+  if (val("s-obs")) out.push("--obstruction", val("s-obs"));
   if (val("s-ble")) out.push("--ble-air", val("s-ble").toLowerCase());
   if (val("s-ssid")) {
     out.push("--wifi-ap", val("s-ssid"));
