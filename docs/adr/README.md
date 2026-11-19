@@ -165,4 +165,5 @@ superseded ADR is marked superseded and points forward.
 | [0157](0157-bluetooth-stops-at-a-link-that-stays-up.md) | Bluetooth stops at a link that stays up, and this is the road past it | Accepted (after 0044–0051) |
 | [0158](0158-a-serial-port-is-reachable-over-tcp.md) | A device's serial port is reachable over TCP, for the host's tools | Accepted (adds to 0156) |
 | [0160](0160-a-device-is-made-from-the-firmware-library.md) | A device is made from the firmware library | Accepted (adds to 0135, 0147) |
+| [0161](0161-the-cores-take-turns-every-millisecond.md) | The cores take turns every millisecond | Accepted (adds to 0041) |
 | [0162](0162-a-version-a-changelog-and-a-check-on-every-push.md) | BoardEmul has a version, a changelog and a check on every push | Accepted |

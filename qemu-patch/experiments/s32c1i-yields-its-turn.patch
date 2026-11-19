@@ -1,0 +1,29 @@
+diff --git a/target/xtensa/translate.c b/target/xtensa/translate.c
+index b511e86..49f1aa0 100644
+--- a/target/xtensa/translate.c
++++ b/target/xtensa/translate.c
+@@ -2157,6 +2157,24 @@ static void translate_s32c1i(DisasContext *dc, const OpcodeArg arg[],
+     gen_check_atomctl(dc, addr);
+     tcg_gen_atomic_cmpxchg_i32(arg[0].out, addr, cpu_SR[SCOMPARE1],
+                                tmp, dc->cring, mop);
++    /*
++     * With one thread running the vCPUs in turn, a compare that fails means
++     * the word belongs to another vCPU, and that vCPU cannot release it
++     * until it runs. Give it the turn now rather than spin out this one:
++     * a spinlock's waiter otherwise takes half the host from its holder.
++     * Not under -icount, whose budgets end each turn already, nor when the
++     * next instruction is a loop end or a debug instruction count is due,
++     * whose bookkeeping happens after this.
++     */
++    if (!(tb_cflags(dc->base.tb) & (CF_PARALLEL | CF_USE_ICOUNT)) &&
++        !dc->icount && dc->base.pc_next != dc->lend) {
++        TCGLabel *taken = gen_new_label();
++
++        tcg_gen_brcond_i32(TCG_COND_EQ, arg[0].out, cpu_SR[SCOMPARE1], taken);
++        tcg_gen_movi_i32(cpu_pc, dc->base.pc_next);
++        gen_exception(dc, EXCP_YIELD);
++        gen_set_label(taken);
++    }
+ }
+ 
+ static void translate_s32e(DisasContext *dc, const OpcodeArg arg[],

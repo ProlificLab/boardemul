@@ -49,6 +49,11 @@ STRAP_MODE = 0x04  # SPI flash boot
 
 TRACE_EVENTS = ("memory_region_ops_read", "memory_region_ops_write")
 
+# How long one core runs before the other gets the host, in microseconds of
+# virtual time (ADR 0161); BOARDEMUL_CORE_SLICE_US overrides it, 0 turns the
+# shorter turn off and leaves QEMU's 100 ms.
+CORE_SLICE_US = 1000
+
 # How long the UART may stay silent before we call it stalled. The guest polls
 # a status bit that never sets, so it will never terminate on its own.
 DEFAULT_STALL_SECONDS = 8.0
@@ -491,6 +496,11 @@ def main(argv: list[str] | None = None) -> int:
     # configuration that crashes; it is here so the defect can be worked on
     # rather than only avoided.
     cmd += ["-accel", "tcg,thread=" + os.environ.get("BOARDEMUL_TCG_THREADS", "single")]
+    # On that one thread the cores take turns; a core waiting on the other
+    # spins out its whole turn, 100 ms by QEMU's default. This turn is shorter
+    # (ADR 0161). It does nothing under -icount or on two threads.
+    cmd += ["-device", "esp-core-slice,period_us="
+            + os.environ.get("BOARDEMUL_CORE_SLICE_US", str(CORE_SLICE_US))]
     if args.icount:
         # 2^2 ns per instruction, 250 MIPS nominal; the vCPU sleeps when the
         # guest idles. Instruction counting requires the single thread above.

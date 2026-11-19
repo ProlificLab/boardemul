@@ -34,6 +34,8 @@
 #include "qapi/error.h"
 #include "qom/object.h"
 #include "hw/misc/esp_board_glue.h"
+#include "hw/core/cpu.h"
+#include "sysemu/cpu-timers.h"
 
 #include <sys/socket.h>
 #include <sys/un.h>
@@ -221,9 +223,89 @@ static const TypeInfo clock_info = {
     .class_init = clock_class_init,
 };
 
+/*
+ * How long one core runs before the other gets its turn (ADR 0161).
+ *
+ * Under one translation thread (ADR 0041) QEMU runs the two cores in turn and
+ * moves to the next one when the running core halts or every 100 ms of
+ * virtual time (TCG_KICK_PERIOD). The S3's cores hand work to each other
+ * through spinlocks and flags in shared memory, and on silicon the wait for
+ * the other core lasts as long as the other core takes, microseconds. Here
+ * the other core is not running at all, so the waiting core spins out the
+ * rest of its 100 ms: a Meshtastic boot spent nine emulated instructions in
+ * ten in two such loops.
+ *
+ * This shortens the turn. On a virtual-clock timer every period it makes the
+ * running core leave its translated code, as QEMU's own kick does, and the
+ * next core runs. Nothing changes under several translation threads, where
+ * the cores already run at once, or under -icount, whose budgets end each
+ * turn at the next timer deadline already and whose interleaving the
+ * deterministic runs depend on (ADR 0115).
+ */
+
+#define TYPE_ESP_CORE_SLICE "esp-core-slice"
+OBJECT_DECLARE_SIMPLE_TYPE(EspCoreSlice, ESP_CORE_SLICE)
+
+struct EspCoreSlice {
+    DeviceState parent_obj;
+
+    uint32_t period_us;
+    QEMUTimer *timer;
+    uint64_t turns;
+};
+
+static void slice_tick(void *opaque)
+{
+    EspCoreSlice *s = opaque;
+    CPUState *cs;
+
+    CPU_FOREACH(cs) {
+        if (qatomic_read(&cs->running)) {
+            cpu_exit(cs);
+            s->turns++;
+        }
+    }
+    timer_mod_ns(s->timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL)
+                 + (int64_t)s->period_us * SCALE_US);
+}
+
+static void slice_realize(DeviceState *dev, Error **errp)
+{
+    EspCoreSlice *s = ESP_CORE_SLICE(dev);
+
+    if (!s->period_us || qemu_tcg_mttcg_enabled() || icount_enabled()) {
+        return;
+    }
+    s->timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, slice_tick, s);
+    timer_mod_ns(s->timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL)
+                 + (int64_t)s->period_us * SCALE_US);
+}
+
+static Property slice_props[] = {
+    DEFINE_PROP_UINT32("period_us", EspCoreSlice, period_us, 1000),
+    DEFINE_PROP_END_OF_LIST(),
+};
+
+static void slice_class_init(ObjectClass *klass, void *data)
+{
+    DeviceClass *dc = DEVICE_CLASS(klass);
+
+    dc->realize = slice_realize;
+    device_class_set_props(dc, slice_props);
+    set_bit(DEVICE_CATEGORY_MISC, dc->categories);
+}
+
+static const TypeInfo slice_info = {
+    .name = TYPE_ESP_CORE_SLICE,
+    .parent = TYPE_DEVICE,
+    .instance_size = sizeof(EspCoreSlice),
+    .class_init = slice_class_init,
+};
+
 static void clock_register_types(void)
 {
     type_register_static(&clock_info);
+    type_register_static(&slice_info);
 }
 
 type_init(clock_register_types)

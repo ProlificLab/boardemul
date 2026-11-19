@@ -193,3 +193,24 @@ The missing invalidation still looks like a real hazard on its own, and it may
 yet matter to something other than that crash. It has not been reported
 upstream, because a hazard nobody has seen misbehave is a weaker report than
 the three already filed.
+
+### `s32c1i-yields-its-turn.patch` — more instructions, a slower boot
+
+Under one translation thread the two cores take turns (ADR 0041). A
+profile of a Meshtastic boot with QEMU's `hotblocks` plugin
+(`tools/hot_profile.sh`) found nine emulated instructions in ten in two
+loops of one core waiting on the other: `spinlock_acquire`'s `S32C1I`
+retry, 532 million times in 90 s, and a flag poll after an IPC call.
+
+This makes an `S32C1I` whose compare fails end the vCPU's turn
+(`EXCP_YIELD`, as ARM's `YIELD` does under round-robin), when the run has
+neither several threads nor `-icount`. It does what it says: the spinlock
+loop leaves the profile, and the firmware's ordinary blocks ran about four
+times as often in the same 90 s.
+
+**The boot did not get faster.** `tools/speed.sh`, three runs each, the
+time to the home screen: 49 s as built, 54 s with this, 63 s with this and
+ADR 0161's 1 ms turn together, 39 s with the 1 ms turn alone. A turn handed
+over on every failed compare goes to a core that is often waiting too, and
+the boot's milestones follow the guest's real-time waits more than its
+instruction count. ADR 0161 keeps the turn and not this.
