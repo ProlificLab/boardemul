@@ -31,7 +31,7 @@ RUNTIME_IMAGE = "boardemul-runtime"
 # built from, so a clone that has moved on can tell (ADR 0159).
 SOURCES_LABEL = "org.boardemul.sources"
 PROBES = ("restart_probe", "matrix_reset_probe", "cpenable_probe", "audio_probe",
-          "serial_probe", "sleep_probe")
+          "serial_probe", "sleep_probe", "otg_probe")
 
 
 @dataclass
