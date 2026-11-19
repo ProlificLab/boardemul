@@ -73,3 +73,40 @@ def test_a_line_typed_into_the_uart_reaches_the_firmware(probed) -> None:
 def test_a_line_typed_into_the_usb_port_reaches_the_firmware(probed) -> None:
     _run, outdir = probed
     assert "probe: usb heard: hello usb" in _log(outdir, "usb"), _log(outdir, "usb")[-800:]
+
+
+# -- the same port, from a host tool over TCP (ADR 0158) ------------------------
+
+
+def _free_port() -> int:
+    import socket
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        return probe.getsockname()[1]
+
+
+def test_a_host_tool_talks_to_the_usb_port_over_tcp(tmp_path) -> None:
+    import socket
+    port = _free_port()
+    heard = []
+
+    def talk(outdir: Path) -> None:
+        deadline = time.monotonic() + 90
+        while "probe: usb listening" not in _log(outdir, "usb"):
+            if time.monotonic() > deadline:
+                return
+            time.sleep(0.5)
+        with socket.create_connection(("127.0.0.1", port), timeout=10) as conn:
+            conn.sendall(b"hello tcp\n")
+            got = b""
+            deadline = time.monotonic() + 30
+            while b"heard: hello tcp" not in got and time.monotonic() < deadline:
+                try:
+                    got += conn.recv(256)
+                except socket.timeout:
+                    break
+            heard.append(got)
+
+    run_emulator(tmp_path / "run", firmware=FIRMWARE_SERIAL_PROBE, board="tdeck",
+                 timeout=120, extra=("--serial-tcp", str(port)), script=talk)
+    assert heard and b"probe: usb heard: hello tcp" in heard[0], heard

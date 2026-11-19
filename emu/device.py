@@ -60,7 +60,10 @@ RUN_FLAGS = {
     # What the speaker plays, to WAV files in the run's own directory (ADR
     # 0146). --mic names a file, so it stays on the command line.
     "--audio": False,
+    # A serial port on the host's loopback, for its own tools (ADR 0158).
+    "--serial-tcp": True,
 }
+SERIAL_TCP = re.compile(r"(\d{4,5})(:(uart|usb))?\Z")
 # The named airs, and the band each lives under.
 NAMED_AIRS = {"--air": "lora", "--ble-air": "ble"}
 AIR_NAME = re.compile(r"[a-z0-9][a-z0-9-]{0,31}\Z")
@@ -90,6 +93,11 @@ def check_settings(args) -> tuple[str, ...]:
             if flag in NAMED_AIRS and not AIR_NAME.match(value):
                 raise DeviceError(f"{flag} takes an air's name (lower-case "
                                   f"letters, digits and dashes), not {value!r}")
+            if flag == "--serial-tcp":
+                found = SERIAL_TCP.match(value)
+                if not found or not 1024 <= int(found.group(1)) <= 65535:
+                    raise DeviceError("--serial-tcp takes a port from 1024 to "
+                                      f"65535, then :uart or :usb, not {value!r}")
             out.append(value)
             i += 1
     return tuple(out)
@@ -596,6 +604,11 @@ def container_command(root: Path, outdir: Path, extra: tuple[str, ...] = (),
     # board reached at its container's address there (ADR 0145).
     air = (["-v", f"{AIR_VOLUME}:{AIR_MOUNT}", "--network", AIR_NETWORK,
             "-e", "BOARDEMUL_AIR_HOST=auto"] if uses_air(extra) else [])
+    # A serial port on TCP, published on the host's loopback only (ADR 0158).
+    for i, flag in enumerate(extra[:-1]):
+        if flag == "--serial-tcp":
+            port = extra[i + 1].partition(":")[0]
+            air += ["-p", f"127.0.0.1:{port}:{port}", "-e", "BOARDEMUL_BIND_ALL=1"]
     return (["docker", "run", "--rm", "--name", name or container_name(root, outdir),
              "--stop-signal", "SIGINT"]
             + mount(REPO_ROOT, "/work") + mount(root, "/device") + mount(outdir, "/out")

@@ -407,6 +407,12 @@
         <input type="text" id="s-gps" placeholder="none" autocomplete="off"></div>
     </div>
     <div class="group">
+      <h4>Host tools</h4>
+      <p class="why">A serial port on a TCP port of this computer, for a terminal or a script. The USB Serial/JTAG port unless you add <code>:uart</code>.</p>
+      <div class="field"><label for="s-tcp">TCP port</label>
+        <input type="text" id="s-tcp" placeholder="none, or e.g. 4403" autocomplete="off"></div>
+    </div>
+    <div class="group">
       <h4>Running</h4>
       <label class="check"><input type="checkbox" id="s-reboot"> Restart after a panic, as the board does</label>
       <label class="check"><input type="checkbox" id="s-icount"> Count the guest's time in instructions (Bluetooth needs it)</label>
@@ -659,6 +665,7 @@ function openSettings(name) {
   $("s-pass").value = m["--wifi-pass"] || "";
   $("s-uplink").checked = !!m["--wifi-uplink"];
   $("s-gps").value = m["--gps"] || "";
+  $("s-tcp").value = m["--serial-tcp"] || "";
   $("s-reboot").checked = !!m["--reboot"];
   $("s-icount").checked = !!m["--icount"];
   $("s-audio").checked = !!m["--audio"];
@@ -677,6 +684,7 @@ function settingsFromSheet() {
     if ($("s-uplink").checked) out.push("--wifi-uplink");
   }
   if (val("s-gps")) out.push("--gps", val("s-gps"));
+  if (val("s-tcp")) out.push("--serial-tcp", val("s-tcp"));
   if ($("s-reboot").checked) out.push("--reboot");
   if ($("s-icount").checked) out.push("--icount");
   if ($("s-audio").checked) out.push("--audio");

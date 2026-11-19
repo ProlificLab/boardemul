@@ -28,7 +28,7 @@ from emu import board  # noqa: E402
 from emu import board_tdeck  # noqa: E402
 from emu.devices import lora  # noqa: E402
 from emu.devices.air import HOST as AIR_LOOPBACK, air_host  # noqa: E402
-from emu.serial_input import SerialInput  # noqa: E402
+from emu.serial_input import SerialBridge, SerialInput  # noqa: E402
 from emu.bus import BusServer, IrqChannel  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -382,6 +382,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--audio", action="store_true",
                     help="write what the speaker plays to WAV files in the "
                          "run's audio/ directory, one per stream (ADR 0146)")
+    ap.add_argument("--serial-tcp", default=None, metavar="PORT[:uart|usb]",
+                    help="put a serial port on this TCP port of the host's "
+                         "loopback, the USB port unless one is named, for "
+                         "the host's own tools: a terminal, a script "
+                         "(ADR 0158)")
     ap.add_argument("--mic", default=None, metavar="FILE.wav",
                     help="the microphone hears this PCM WAV file, from its "
                          "start at each capture (ADR 0146)")
@@ -457,6 +462,17 @@ def main(argv: list[str] | None = None) -> int:
     seed = rng_seed(mac)
     # What a person types into the serial ports (ADR 0156).
     serial_input = SerialInput(args.outdir)
+    bridge = None
+    if args.serial_tcp:
+        # Loopback, unless the run is in the build container, whose port is
+        # published on the host's loopback only (ADR 0158).
+        tcp_port, _, which = args.serial_tcp.partition(":")
+        which = which or "usb"
+        if which not in ("uart", "usb") or not tcp_port.isdigit():
+            raise SystemExit("--serial-tcp is PORT, PORT:uart or PORT:usb")
+        bind = "0.0.0.0" if os.environ.get("BOARDEMUL_BIND_ALL") else "127.0.0.1"
+        bridge = SerialBridge(which, int(tcp_port), uart if which == "uart" else usb,
+                              serial_input, bind=bind)
     cmd = build_argv(qemu, flash, efuse, uart, qlog, args.trace, psram_mb,
                      psram_octal=psram_octal, seed=seed,
                      reboot=args.reboot, usb=usb, serial_in=serial_input.paths)
@@ -619,6 +635,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"soc     : {', '.join(hw_module.SOC_DEVICES)}")
     print(f"uart    : {uart}")
     print(f"usb     : {usb}")
+    if bridge is not None:
+        print(f"serial  : the {bridge.port} port on tcp port {bridge.address[1]} "
+              "(ADR 0158)")
     started = time.monotonic()
     interrupted = False
     try:
@@ -650,6 +669,8 @@ def main(argv: list[str] | None = None) -> int:
                     device_folder.save_sdcard(device, sd.image)
             hw.stop()
         faulthandler.cancel_dump_traceback_later()
+        if bridge is not None:
+            bridge.close()
         serial_input.close()
 
     radio_stats: dict = {}
