@@ -164,3 +164,4 @@ superseded ADR is marked superseded and points forward.
 | [0156](0156-a-person-types-into-the-serial-ports.md) | The page reads both serial ports, and a person can type into them | Accepted (adds to 0100, 0135) |
 | [0157](0157-bluetooth-stops-at-a-link-that-stays-up.md) | Bluetooth stops at a link that stays up, and this is the road past it | Accepted (after 0044–0051) |
 | [0158](0158-a-serial-port-is-reachable-over-tcp.md) | A device's serial port is reachable over TCP, for the host's tools | Accepted (adds to 0156) |
+| [0160](0160-a-device-is-made-from-the-firmware-library.md) | A device is made from the firmware library | Accepted (adds to 0135, 0147) |
