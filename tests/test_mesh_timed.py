@@ -101,8 +101,14 @@ def two_airs(tmp_path_factory, configured_filesystem: Path) -> dict:
         deadline = time.monotonic() + RUN_SECONDS
         while time.monotonic() < deadline and len(stopped) < len(AIRS):
             for air, work in works.items():
-                if air not in stopped and any(HEARD.search(_log(work, node))
-                                              for node in NODES):
+                # Stopped on what the tests below look for -- a packet heard,
+                # and every node having sent -- not a packet heard and a few
+                # seconds of the host's time, which is no fixed amount of the
+                # guest's: an air was stopped 0.26 guest seconds before its
+                # second node spoke.
+                logs = [_log(work, node) for node in NODES]
+                if (air not in stopped and any(HEARD.search(text) for text in logs)
+                        and all(SENT.search(text) for text in logs)):
                     time.sleep(GRACE_SECONDS)
                     for node in NODES:
                         running[(air, node)].terminate()
