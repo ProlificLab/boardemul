@@ -55,7 +55,8 @@ can scrub back through the run's frames.
 On Windows the page and the browser stay on Windows and each run moves into
 the build container, because the board models need Unix sockets and QEMU is
 built there as a Linux program (ADR 0140): Docker Desktop has to be running,
-with the image and QEMU built as above. `BOARDEMUL_IMAGE` names another image; `BOARDEMUL_RUN_IN=native` or
+with the runtime image `python boardemul.py` builds, or the development image
+and QEMU built as above. `BOARDEMUL_IMAGE` names another image; `BOARDEMUL_RUN_IN=native` or
 `container` overrides the choice. The server serves only its own page and a
 run takes per-run settings from it, never a program or a path (ADR 0139).
 
