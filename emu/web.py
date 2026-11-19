@@ -391,6 +391,14 @@ class Handler(BaseHTTPRequestHandler):
                      "running": d.name in self.server.state.runs}
                     for d in device_folder.all_devices(self.server.state.devices)]})
 
+            if segs[1] == "firmware" and len(segs) == 2:
+                # The pinned images a device can be made from (the library).
+                from tools import fetch_firmware
+                return self._json({"images": [
+                    {"name": e["name"], "board": e["board"], "role": e.get("role", ""),
+                     "file": Path(e["path"]).name,
+                     "present": fetch_firmware.state(e) == "ok"}
+                    for e in fetch_firmware.load() if "board" in e]})
             if segs[1] == "doctor" and len(segs) == 2:
                 # What this machine lacks, by the doctor's own checks (ADR 0153).
                 from tools import doctor
@@ -560,6 +568,16 @@ class Handler(BaseHTTPRequestHandler):
     def _create(self) -> None:
         body = self._body()
         firmware = body.get("firmware", "")
+        if body.get("image"):
+            # A pinned image, by its manifest name: the page names it, the
+            # server knows where it is (ADR 0139).
+            from tools import fetch_firmware
+            entry = next((e for e in fetch_firmware.load()
+                          if e["name"] == body["image"] and "board" in e), None)
+            if entry is None or fetch_firmware.state(entry) != "ok":
+                return self._json({"error": f"no fetched image {body['image']!r}"}, 400)
+            firmware = str(fetch_firmware.FIRMWARE / entry["path"])
+            body.setdefault("board", entry["board"])
         if not firmware or not Path(firmware).is_file():
             return self._json({"error": f"no firmware at {firmware!r}"}, 400)
         if device_folder.folder(self.server.state.devices,

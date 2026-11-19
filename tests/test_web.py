@@ -539,3 +539,25 @@ def test_the_console_reads_either_port_and_takes_typing(server):
     assert status == 200
     last = (outdir / "input.jsonl").read_text().splitlines()[-1]
     assert json.loads(last) == {"type": "serial", "port": "usb", "text": "ls\n"}
+
+
+def test_a_device_is_made_from_the_firmware_library(server, monkeypatch, tmp_path):
+    """The page names a pinned image; the server knows its file and board."""
+    from tools import fetch_firmware
+    image = tmp_path / "fw" / "mesh.bin"
+    image.parent.mkdir()
+    image.write_bytes(FIRMWARE_BYTES)
+    monkeypatch.setattr(fetch_firmware, "FIRMWARE", image.parent)
+    monkeypatch.setattr(fetch_firmware, "load", lambda *_a: [
+        {"name": "mesh", "board": "tdeck", "path": "mesh.bin", "role": "A node. More."},
+        {"name": "fs", "path": "fs.bin"}])
+    monkeypatch.setattr(fetch_firmware, "state",
+                        lambda e, root=None: "ok" if e["name"] == "mesh" else "missing")
+    client, _devices, _s = server
+    status, body, _h = call(client, "GET", "/api/firmware")
+    assert body["images"] == [{"name": "mesh", "board": "tdeck", "role": "A node. More.",
+                               "file": "mesh.bin", "present": True}]
+    status, made, _h = call(client, "POST", "/api/devices", {"name": "node", "image": "mesh"})
+    assert status == 201 and made["board"] == "tdeck"
+    status, body, _h = call(client, "POST", "/api/devices", {"name": "x", "image": "fs"})
+    assert status == 400

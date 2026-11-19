@@ -233,6 +233,16 @@
                  white-space: nowrap; color: var(--ink); font-variant-numeric: tabular-nums; }
   .snap .when { color: var(--ink-faint); font-size: 11.5px; font-variant-numeric: tabular-nums; }
   .snap .btn { padding: 4px 10px; font-size: 12px; }
+  .library { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }
+  .library button { text-align: left; background: #101214; color: var(--ink);
+                    border: 1px solid var(--outline); border-radius: 10px; padding: 8px 12px;
+                    cursor: pointer; font-family: inherit; display: flex; flex-direction: column; gap: 2px; }
+  .library button b { font-size: 13px; }
+  .library button span { font-size: 11.5px; color: var(--ink-dim); }
+  .library button.on { border-color: var(--primary); background: var(--primary-container);
+                       color: var(--on-primary-container); }
+  .library button.on span { color: var(--on-primary-container); }
+  .library button:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
   .sheet .card.wide { width: 520px; max-height: calc(100vh - 48px); overflow-y: auto; }
   .group { border-top: 1px solid var(--outline); padding-top: 14px; margin-top: 4px; }
   .group h4 { margin: 0 0 4px; font-size: 13px; font-weight: 600; color: var(--ink); }
@@ -364,6 +374,7 @@
         <button onclick="seg(this,'tdeck')">T-Deck</button>
       </div></div>
     <div class="field"><label>Firmware</label>
+      <div class="library" id="f-library" role="listbox" aria-label="Fetched firmware"></div>
       <div class="drop" id="f-drop"><b id="f-drop-label">Drop a .bin here</b> or click to browse
         <div style="font-size:11.5px">assembled once into the device's own flash</div></div>
       <input type="file" id="f-file" accept=".bin" style="display:none"></div>
@@ -733,7 +744,43 @@ async function doClone() {
 
 /* ================= create / remove ================= */
 let sheetBoard = "tdeck-max", sheetFile = null;
-function openSheet() { $("sheet").classList.add("open"); sheetOk(); }
+let sheetImage = null;
+const BOARD_NAMES = { "tdeck-max": "T-Deck Max", "tdeck": "T-Deck" };
+async function openSheet() {
+  $("sheet").classList.add("open");
+  sheetImage = null;
+  sheetOk();
+  // The pinned images already fetched: pick one instead of a file.
+  const data = await api("/api/firmware").catch(() => ({ images: [] }));
+  const el = $("f-library");
+  el.innerHTML = "";
+  for (const image of data.images.filter(i => i.present)) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.setAttribute("role", "option");
+    const title = document.createElement("b");
+    title.textContent = `${image.file} · ${BOARD_NAMES[image.board] || image.board}`;
+    const role = document.createElement("span");
+    role.textContent = image.role.split(". ")[0];
+    b.append(title, role);
+    b.onclick = () => pickImage(b, image);
+    el.appendChild(b);
+  }
+}
+function pickImage(btn, image) {
+  const again = sheetImage === image.name;
+  for (const b of document.querySelectorAll("#f-library button")) b.classList.remove("on");
+  sheetImage = again ? null : image.name;
+  if (!again) {
+    btn.classList.add("on");
+    sheetFile = null;
+    $("f-drop-label").textContent = "Drop a .bin here";
+    const segBtn = [...document.querySelectorAll("#f-board button")]
+      .find(x => x.textContent === BOARD_NAMES[image.board]);
+    if (segBtn) seg(segBtn, image.board);
+  }
+  sheetOk();
+}
 function closeSheet() { $("sheet").classList.remove("open"); }
 function seg(btn, board) {
   sheetBoard = board;
@@ -741,15 +788,31 @@ function seg(btn, board) {
   btn.classList.add("on");
 }
 function sheetOk() {
-  $("f-ok").disabled = !$("f-name").value.trim() || !sheetFile;
+  $("f-ok").disabled = !$("f-name").value.trim() || !(sheetFile || sheetImage);
 }
 function chooseFile(files) {
   sheetFile = files[0] || null;
+  if (sheetFile) {
+    sheetImage = null;
+    for (const b of document.querySelectorAll("#f-library button")) b.classList.remove("on");
+  }
   $("f-drop-label").textContent = sheetFile ? sheetFile.name : "Drop a .bin here";
   sheetOk();
 }
 async function create() {
   try {
+    if (sheetImage) {
+      // A pinned image, by name; the server knows where it is.
+      const made = await api("/api/devices", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: $("f-name").value.trim(), image: sheetImage }),
+      });
+      closeSheet();
+      await refresh();
+      snack(`${made.name} created — its storage lives in devices/${made.name}/`);
+      start(made.name);
+      return;
+    }
     const up = await fetch(`/api/firmware?name=${encodeURIComponent(sheetFile.name)}`,
                            { method: "POST", body: sheetFile,
                              headers: { "Content-Type": "application/octet-stream" } });
