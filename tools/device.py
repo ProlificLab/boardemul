@@ -201,14 +201,28 @@ def cmd_clone(args) -> int:
 
 
 def cmd_start(args) -> int:
+    """Run the device in this terminal, as the page runs it: its settings,
+    then this start's arguments, on this host or in the build container,
+    whichever this host does (ADRs 0140, 0145)."""
     device = _get(devices_dir(args.dir), args.name)
-    # The device's own settings, its named airs beside the folders, then
-    # whatever this start adds (ADR 0145).
-    kept = device_folder.place_airs(device.settings,
-                                    device_folder.local_air_base(device.root))
-    cmd = [sys.executable, str(REPO_ROOT / "emu" / "run.py"),
-           "--device", str(device.root)] + list(kept) + args.run_args
-    return subprocess.run(cmd, cwd=REPO_ROOT).returncode
+    run_args = [a for a in args.run_args if a != "--"]
+    handle = device_folder.RunHandle(device, extra=tuple(run_args))
+    try:
+        cmd = handle.command()
+    except RuntimeError as exc:
+        raise SystemExit(str(exc))
+    where = f"in the build container {handle.container}" if handle.container else "here"
+    print(f"starting {device.name} {where}; output in {handle.outdir}", flush=True)
+    try:
+        return subprocess.run(cmd, cwd=REPO_ROOT).returncode
+    except FileNotFoundError:
+        raise SystemExit("docker is not on PATH: start Docker Desktop") from None
+    except KeyboardInterrupt:
+        # Stopped from this terminal: the run's own interrupt, delivered inside.
+        if handle.container:
+            subprocess.run(["docker", "stop", "--signal", "SIGINT", "--time", "30",
+                            handle.container], capture_output=True)
+        return 130
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -643,22 +643,27 @@ class RunHandle:
         # Set when the run is in the build container, to stop it by name.
         self.container: str | None = None
 
-    def start(self) -> None:
+    def command(self) -> list[str]:
+        """The command that runs this device, on this host or in the build
+        container, whichever this host does (ADR 0140): the device's own
+        settings, then this run's (ADR 0145)."""
         import subprocess
-        # The device's own settings, then this run's (ADR 0145).
         settings = tuple(self.device.settings) + tuple(self.extra)
         if runs_natively():
-            cmd = launch_command(self.device.root, self.outdir, settings)
-        else:
-            self.container = container_name(self.device.root, self.outdir)
-            if uses_air(settings):
-                try:
-                    ensure_air_network()
-                except (OSError, subprocess.CalledProcessError) as exc:
-                    raise RuntimeError(f"could not make the Docker network "
-                                       f"{AIR_NETWORK}: {exc}") from None
-            cmd = container_command(self.device.root, self.outdir, settings,
-                                    self.container)
+            return launch_command(self.device.root, self.outdir, settings)
+        self.container = container_name(self.device.root, self.outdir)
+        if uses_air(settings):
+            try:
+                ensure_air_network()
+            except (OSError, subprocess.CalledProcessError) as exc:
+                raise RuntimeError(f"could not make the Docker network "
+                                   f"{AIR_NETWORK}: {exc}") from None
+        return container_command(self.device.root, self.outdir, settings,
+                                 self.container)
+
+    def start(self) -> None:
+        import subprocess
+        cmd = self.command()
         flags = subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == "win32" else 0
         # The child's console lands in its own run directory: a run.py that
         # dies at startup must say why where the run can be read (ADR 0133).
