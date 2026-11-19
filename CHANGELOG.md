@@ -3,6 +3,40 @@
 What changed for someone running BoardEmul, newest first. The reasons are in
 `docs/adr/`, numbered as below.
 
+## 1.1.0 — 2026-11-19
+
+**Faster**
+- The two cores take turns of a millisecond instead of QEMU's tenth of a
+  second: Meshtastic reaches its home screen about a fifth sooner (0161).
+
+**Reaching a device**
+- A port of this computer can reach a TCP port of the device over its WiFi,
+  set in the settings sheet (`8080:80`, or `4403:4403` for Meshtastic's
+  API). Meshtastic itself has not yet been seen joining the run's network
+  from its own interface, so its apps are not yet shown connecting (0164).
+- A run's logs download as one zip that names the BoardEmul version, the
+  QEMU it was built from and the device's settings, for a report (0163).
+- The device list shows every running device's screen, live.
+
+**Fixes**
+- Light sleep wakes: on its timer, and on the pins the firmware chose, such
+  as the T-Deck's trackball under Meshtastic. A node that light-slept used to
+  stay on its last picture for good (0165).
+- Two devices made from the library no longer share a MAC, and so a
+  Meshtastic node number (0155).
+- Keys typed on the page are released: a letter typed twice reached the
+  T-Deck once, and Enter and Backspace did nothing (0127).
+- A device made from the page or `device.py create` restarts after a panic,
+  as the board does (0145).
+- `python boardemul.py` rebuilds the runtime image when its QEMU sources
+  change, and the image carries every library QEMU links (0159). A second
+  start while one runs stops and says the port is in use; on Windows it used
+  to share the port with the first, and requests went to either.
+- A device's SD card is written back whole or not at all: a run stopped
+  while writing it could leave it cut short and the device unable to start
+  (0133).
+- Text sent to a T-Deck through the scripting API is typed, not refused.
+
 ## 1.0.0 — 2026-11-19
 
 The first version for operators.
