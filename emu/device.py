@@ -566,8 +566,22 @@ def load_sdcard(device: Device, expected_bytes: int) -> bytearray:
     return bytearray(image)
 
 
-def save_sdcard(device: Device, image: bytearray) -> None:
-    device.sdcard.write_bytes(bytes(image))
+def save_sdcard(device: Device, image: bytearray,
+                 loaded_sha256: str | None = None) -> bool:
+    """Put the card back in the folder at the end of a run (ADR 0133).
+
+    Written beside the card and renamed over it, so a run stopped while it
+    writes leaves the old card whole: a stop that the container's own grace
+    period cut short once left 8 MB of a 32 MB card, and the device could not
+    start again. Skipped when the run left the card as it found it, given
+    the digest of what was loaded. Returns whether it wrote."""
+    data = bytes(image)
+    if loaded_sha256 is not None and hashlib.sha256(data).hexdigest() == loaded_sha256:
+        return False
+    part = device.sdcard.with_name(device.sdcard.name + ".part")
+    part.write_bytes(data)
+    os.replace(part, device.sdcard)
+    return True
 
 
 # A window-started run stops when its user stops it, not when a ceiling does

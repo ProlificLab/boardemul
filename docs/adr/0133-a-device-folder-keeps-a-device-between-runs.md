@@ -1,6 +1,7 @@
 # ADR 0133 — A device folder keeps a device between runs
 
-**Status:** Accepted — 2026-10-09.
+**Status:** Accepted — 2026-10-09. Amended 2026-11-19: how the card is
+written back (decision 4).
 
 ## Context
 
@@ -49,7 +50,12 @@ equivalent here.
    QEMU's mtd drive already takes `flash.bin` by name; guest writes to it
    (NVS, preferences, a filesystem) land in the file, so a stop-and-start
    finds them. The card is the emulator's: its image is loaded from
-   `sdcard.img` at start and written back when the run ends, changed or not.
+   `sdcard.img` at start and written back when the run ends, if the run
+   changed it. *(Amended 2026-11-19.)* It is written beside the card and
+   renamed over it, so a run stopped while it writes leaves the old card
+   whole: a stop the container's grace period cut short had left 8 MB of a
+   32 MB card, and the device could not start again. A run that failed to
+   load the card never writes the board's empty one over it.
    That this write-through actually happens is the slow test's to measure,
    not this ADR's to assume.
 

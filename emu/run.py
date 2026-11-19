@@ -588,6 +588,9 @@ def main(argv: list[str] | None = None) -> int:
     tail = None
     irq: IrqChannel | None = None
     hw: board.Board | None = None
+    # The digest of the device's card as loaded; None until it is, so a run
+    # that failed to load it never writes the board's empty card over it.
+    card_loaded: str | None = None
     if args.bus:
         logging.basicConfig(filename=args.outdir / f"{tag}.bus.log", filemode="w",
                             level=logging.DEBUG if args.verbose else logging.INFO,
@@ -644,6 +647,8 @@ def main(argv: list[str] | None = None) -> int:
                        if isinstance(d, SdCard)), None)
             if sd is not None:
                 sd.image[:] = device_folder.load_sdcard(device, len(sd.image))
+                # What was loaded, so an unchanged card is not written back.
+                card_loaded = hashlib.sha256(bytes(sd.image)).hexdigest()
         hw.serial_in = serial_input
         hw.start()
         server = BusServer(args.outdir / f"{tag}.bus.sock", hw.regions)
@@ -700,8 +705,8 @@ def main(argv: list[str] | None = None) -> int:
                 from emu.devices.sdcard import SdCard
                 sd = next((d for d in hw.spi.devices.values()
                            if isinstance(d, SdCard)), None)
-                if sd is not None:
-                    device_folder.save_sdcard(device, sd.image)
+                if sd is not None and card_loaded is not None:
+                    device_folder.save_sdcard(device, sd.image, card_loaded)
             hw.stop()
         faulthandler.cancel_dump_traceback_later()
         if bridge is not None:

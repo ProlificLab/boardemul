@@ -164,6 +164,29 @@ def test_the_cards_contents_come_back_round(tmp_path, firmware, fake_build):
 # -- flashing and removing ----------------------------------------------------
 
 
+def test_a_card_is_renamed_into_place_and_not_rewritten_unchanged(tmp_path, firmware,
+                                                                fake_build, monkeypatch):
+    """ADR 0133, amended: a save interrupted mid-write leaves the old card
+    whole, and a run that left the card alone does not write it."""
+    import hashlib
+    real_replace = device_folder.os.replace
+    device = device_folder.create(tmp_path / "devices", "pocket", firmware)
+    old = bytes(device.sdcard.read_bytes())
+    loaded = hashlib.sha256(old).hexdigest()
+    assert device_folder.save_sdcard(device, bytearray(old), loaded) is False
+
+    def interrupted(src, dst):
+        raise OSError("stopped while it wrote")
+    monkeypatch.setattr(device_folder.os, "replace", interrupted)
+    with pytest.raises(OSError):
+        device_folder.save_sdcard(device, bytearray(b"\x5a" * len(old)), loaded)
+    assert device.sdcard.read_bytes() == old, "the old card is whole"
+    monkeypatch.setattr(device_folder.os, "replace", real_replace)
+    assert device_folder.save_sdcard(device, bytearray(b"\x5a" * len(old)), loaded)
+    assert device.sdcard.read_bytes()[:2] == b"\x5a\x5a"
+    assert not device.sdcard.with_name(device.sdcard.name + ".part").exists()
+
+
 def test_reflash_keeps_the_card_and_updates_the_record(tmp_path, firmware,
                                                        fake_build):
     devices = tmp_path / "devices"
