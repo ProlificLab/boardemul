@@ -352,10 +352,18 @@ class Station:
 class AccessPoint:
     """Answers what the station sends, and beacons between times."""
 
-    def __init__(self, network: Network, uplink: "Uplink | None" = None):
+    def __init__(self, network: Network, uplink: "Uplink | None" = None,
+                 forwarder: "Uplink | None" = None):
         self.network = network
         # The NAT to the real internet, or None for an island (ADR 0097).
         self.uplink = uplink
+        # The host's sockets: the NAT's, or those of ports of the host
+        # forwarded into the LAN (ADR 0164), one engine for both.
+        self.host = uplink or forwarder
+        # A forwarded client's flow, by the connection key it was given here,
+        # and the next gateway port such a connection comes from.
+        self.forward_keys: dict[object, tuple] = {}
+        self.forward_port = 49152
         # UDP flows out through it, by the key the uplink knows them by, and
         # DNS questions it is answering for the station.
         self.nat_udp: dict[tuple, dict] = {}
@@ -1061,6 +1069,10 @@ class AccessPoint:
 
         key = (client_ip, client_port, SERVER_IP, server_port)
         entry = self.conns.get(key)
+        if entry is not None and entry.get("nat"):
+            # A connection a forwarded port opened to the station (ADR 0164):
+            # spliced to a host socket like one through the uplink.
+            return self._nat_segment(key, entry, seq, ack, flags, window, payload)
         if entry is None:
             if not (flags & tcp.SYN) or server_port not in SERVICES:
                 # No connection for it to go to: a port nothing serves, or one
@@ -1177,8 +1189,10 @@ class AccessPoint:
 
     def _tcp_forget(self, key: tuple, entry: dict) -> None:
         self.conns.pop(key, None)
-        if entry.get("nat") and self.uplink is not None:
-            self.uplink.tcp_close(key)
+        if entry.get("nat") and self.host is not None:
+            flow = entry.get("flow", key)
+            self.forward_keys.pop(flow, None)
+            self.host.tcp_close(flow)
 
     # ------------------------------------------------------------ the uplink
 
@@ -1249,6 +1263,15 @@ class AccessPoint:
                      _dotted(src_ip), cport, _dotted(dst_ip), dport)
             self.uplink.tcp_open(key, (_dotted(dst_ip), dport))
             return None
+        return self._nat_segment(key, entry, seq, ack, flags, window, payload)
+
+    def _nat_segment(self, key: tuple, entry: dict, seq: int, ack: int,
+                     flags: int, window: int, payload: bytes) -> None:
+        """A segment from the station on a connection spliced to a host socket:
+        one through the uplink (ADR 0097), or one a forwarded port opened
+        (ADR 0164). What the station sends goes to the host socket, and its
+        close is passed on as a shutdown."""
+        flow = entry.get("flow", key)
         conn = entry["conn"]
         if conn is None:
             if flags & tcp.RST:                  # given up before we answered
@@ -1256,17 +1279,18 @@ class AccessPoint:
             return None                          # else a SYN retransmitted
         out = conn.on_segment(seq, ack, flags, window, payload, self.clock)
         if flags & tcp.RST:
-            log.info("uplink: tcp to %s:%d reset by the client",
-                     _dotted(dst_ip), dport)
+            log.info("tcp %s:%d <-> %s:%d reset by the station",
+                     _dotted(entry["client_ip"]), entry["client_port"],
+                     _dotted(entry["server_ip"]), entry["server_port"])
             self._tcp_forget(key, entry)
             return None
         data = conn.read()
         if data:
-            self.uplink.tcp_send(key, data)
+            self.host.tcp_send(flow, data)
         if not entry["fin_passed"] and conn.state in (
                 tcp.CLOSE_WAIT, tcp.LAST_ACK, tcp.CLOSING, tcp.TIME_WAIT):
             entry["fin_passed"] = True           # the guest is done sending
-            self.uplink.tcp_shutdown(key)
+            self.host.tcp_shutdown(flow)
         out += conn.pump(self.clock)
         for seg in out:
             self.outbox.append(self._tcp_frame(entry, seg))
@@ -1285,7 +1309,7 @@ class AccessPoint:
         room = TCP_BUFFER - len(conn.send_buf)
         if room <= 0:
             return
-        data, finished = self.uplink.tcp_take(key, room)
+        data, finished = self.host.tcp_take(entry.get("flow", key), room)
         if data:
             conn.write(data)
         if finished:
@@ -1294,10 +1318,15 @@ class AccessPoint:
 
     def _uplink_events(self) -> None:
         """Turn what came back through the uplink into frames for the station."""
-        if self.uplink is None:
+        if self.host is None:
             return
-        for event in self.uplink.events():
+        for event in self.host.events():
             kind = event[0]
+            if kind == "tcp-accepted":
+                self._forward_open(*event[1:])
+                continue
+            if kind == "tcp-reset" and event[1] in self.forward_keys:
+                event = (kind, self.forward_keys[event[1]]) + tuple(event[2:])
             if kind == "udp":
                 _, flow, (rip, rport), payload = event
                 info = self.nat_udp.get(flow)
@@ -1334,6 +1363,8 @@ class AccessPoint:
             elif kind == "tcp-reset":
                 _, key, reason = event
                 entry = self.conns.pop(key, None)
+                if entry is not None:
+                    self.forward_keys.pop(entry.get("flow"), None)
                 if entry is None or entry["conn"] is None:
                     continue
                 log.info("uplink: tcp to %s:%d broke on the host (%s); "
@@ -1344,6 +1375,37 @@ class AccessPoint:
                     self.outbox.append(self._tcp_frame(entry, seg))
             elif kind == "resolved":
                 self._nat_dns_answer(*event[1:])
+
+    def _forward_open(self, flow: object, device_port: int,
+                      peer: tuple) -> None:
+        """A client of a forwarded port (ADR 0164): open a connection from the
+        gateway to the station's port, which the client's socket is then
+        spliced to. With no station holding an address there is nobody to
+        reach, and the client is closed."""
+        station = next((s for s in self.stations.values()
+                        if s.associated and s.ip is not None), None)
+        if station is None:
+            log.info("forward: a client for port %d, and no station has an "
+                     "address yet; closing it", device_port)
+            self._count("forward with no station")
+            self.host.tcp_close(flow)
+            return
+        server_port = self.forward_port
+        self.forward_port = 49152 + (self.forward_port - 49152 + 1) % 16384
+        key = (station.ip, device_port, SERVER_IP, server_port)
+        self.tcp_isn = (self.tcp_isn + 0x10000) & 0xFFFFFFFF
+        conn = tcp.Connection(iss=self.tcp_isn)
+        entry = {"conn": conn, "nat": True, "flow": flow, "station": station,
+                 "client_ip": station.ip, "client_port": device_port,
+                 "server_ip": SERVER_IP, "server_port": server_port,
+                 "fin_passed": False, "eof_passed": False}
+        self.conns[key] = entry
+        self.forward_keys[flow] = key
+        self._count("forward opened")
+        log.info("forward: %s:%d -> %s:%d", peer[0], peer[1],
+                 _dotted(station.ip), device_port)
+        for seg in conn.connect(self.clock):
+            self.outbox.append(self._tcp_frame(entry, seg))
 
     def _nat_dns_answer(self, key: tuple, name: str,
                         ips: list[str] | None) -> None:
@@ -1381,6 +1443,24 @@ class AccessPoint:
         return self.data_protected(station.address, b"\x08\x06", reply)
 
 
+def build_access_point(wifi_ap: tuple) -> AccessPoint:
+    """The access point a run's options describe: (ssid, beacon_ms, channel,
+    wpa2, passphrase, uplink, forwards, bind). `forwards` is a sequence of
+    (host port, device port) (ADR 0164), listened on at `bind`. The host's
+    sockets are one engine whether they serve the NAT (ADR 0097), the
+    forwards, or both; the frame channel starts and stops it."""
+    nat = len(wifi_ap) > 5 and bool(wifi_ap[5])
+    forwards = tuple(wifi_ap[6]) if len(wifi_ap) > 6 and wifi_ap[6] else ()
+    bind = wifi_ap[7] if len(wifi_ap) > 7 and wifi_ap[7] else "127.0.0.1"
+    host = Uplink() if nat or forwards else None
+    for host_port, device_port in forwards:
+        host.listen(host_port, device_port, bind)
+    return AccessPoint(Network(
+        ssid=wifi_ap[0], channel=wifi_ap[2] or 1, wpa2=wifi_ap[3],
+        passphrase=wifi_ap[4] if len(wifi_ap) > 4 else "",
+        beacon_ms=wifi_ap[1]), uplink=host if nat else None, forwarder=host)
+
+
 class FrameChannel:
     """The socket the device asks down. One connection, one peer, one thread."""
 
@@ -1402,13 +1482,13 @@ class FrameChannel:
         self._listener.bind(self.path)
         self._listener.listen(1)
         threading.Thread(target=self._serve, name="wifi-ap", daemon=True).start()
-        if self.point.uplink is not None:
-            self.point.uplink.start()
+        if self.point.host is not None:
+            self.point.host.start()
 
     def stop(self) -> None:
         self._stop.set()
-        if self.point.uplink is not None:
-            self.point.uplink.stop()
+        if self.point.host is not None:
+            self.point.host.stop()
         for sock in (self._conn, self._listener):
             if sock is not None:
                 try:

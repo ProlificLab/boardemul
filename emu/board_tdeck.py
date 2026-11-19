@@ -35,8 +35,7 @@ from emu.devices.air import HOST as AIR_LOOPBACK, AirMedium, air_host, keep_time
 from emu.devices.es7210 import Es7210
 from emu.devices.sdcard import SdCard
 from emu.devices.spi_trace import SpiTrace
-from emu.devices.wifi_ap import AccessPoint, FrameChannel, Network
-from emu.uplink import Uplink
+from emu.devices.wifi_ap import FrameChannel, build_access_point
 from emu.devices.sx1262 import Sx1262
 from emu.devices.tdeck_i2c import GT911, TRACKBALL_KEYS, TDeckKeyboard
 from emu.devices.tdeck_trackball import NOTCH, PINS as TRACKBALL_PINS, Trackball
@@ -324,11 +323,8 @@ def build(outdir: Path, air: str | None = None, ble_air: str | None = None,
         # this socket; it does not know what a beacon is (ADR 0064).
         # And, if asked for, the NAT that takes its traffic past the LAN
         # (ADR 0097); the frame channel starts and stops it.
-        uplink = Uplink() if len(wifi_ap) > 5 and wifi_ap[5] else None
-        frames = FrameChannel(outdir / "wifi.sock", AccessPoint(Network(
-            ssid=wifi_ap[0], channel=wifi_ap[2] or 1, wpa2=wifi_ap[3],
-            passphrase=wifi_ap[4] if len(wifi_ap) > 4 else "",
-            beacon_ms=wifi_ap[1]), uplink=uplink))
+        # And the ports of the host forwarded into the LAN (ADR 0164).
+        frames = FrameChannel(outdir / "wifi.sock", build_access_point(wifi_ap))
     board = Board(regions=regions, gpio=gpio, spi=spi, i2c0=i2c0, i2c1=i2c1,
                   panel=panel, gps=receiver, devices=devices, frames=frames,
                   clock=clock)

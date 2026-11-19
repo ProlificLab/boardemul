@@ -24,6 +24,8 @@ Events, as tuples:
     ("tcp-reset", flow, reason)             an open connection broke
     ("resolved", flow, name, ips)           ips: a list (empty = no such name),
                                             or None (the lookup itself failed)
+    ("tcp-accepted", flow, port, peer)      a client of a forwarded port, for
+                                            the device's `port` (ADR 0164)
 TCP bytes from the remote end are pulled with `tcp_take`, not sent as events,
 so the peer can take no more than the guest has room for.
 """
@@ -105,11 +107,39 @@ class Uplink:
                                             thread_name_prefix="uplink-dns")
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        # Ports of the host forwarded into the LAN (ADR 0164): the listening
+        # socket, the host port and the device port it reaches.
+        self._listeners: list[tuple[socket.socket, int, int]] = []
+        self._accepted = 0
 
     # ------------------------------------------------------------ lifecycle
 
+    def listen(self, host_port: int, device_port: int,
+               bind: str = "127.0.0.1") -> None:
+        """Take connections on `host_port` for the device's `device_port`
+        (ADR 0164). Bound here, before `start`, so a port already in use
+        stops the run as it starts rather than later; accepted on this
+        module's thread, each a ("tcp-accepted", flow, device_port, peer)
+        event and then a TCP flow like any other."""
+        if self._thread is not None:
+            raise RuntimeError("listen before start")
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            sock.bind((bind, host_port))
+        except OSError:
+            sock.close()
+            raise
+        sock.listen(4)
+        sock.setblocking(False)
+        self._listeners.append((sock, host_port, device_port))
+        log.info("forward: host port %d reaches the device's port %d",
+                 host_port, device_port)
+
     def start(self) -> None:
         self._sel.register(self._wake_r, selectors.EVENT_READ)
+        for index, (sock, _host, _device) in enumerate(self._listeners):
+            self._sel.register(sock, selectors.EVENT_READ, ("listen", index))
         self._thread = threading.Thread(target=self._run, name="uplink",
                                         daemon=True)
         self._thread.start()
@@ -123,6 +153,7 @@ class Uplink:
         self._resolver.shutdown(wait=False, cancel_futures=True)
         for sock in ([u.sock for u in self._udp.values()]
                      + [t.sock for t in self._tcp.values()]
+                     + [listener for listener, _h, _d in self._listeners]
                      + [self._wake_r, self._wake_w]):
             try:
                 sock.close()
@@ -210,6 +241,8 @@ class Uplink:
                 kind, flow = key.data
                 if kind == "udp":
                     self._udp_readable(flow)
+                elif kind == "listen":
+                    self._accept(flow)
                 else:
                     self._tcp_ready(flow, mask)
             self._drain_commands()
@@ -366,6 +399,27 @@ class Uplink:
         if not tcp.outbuf and tcp.shutdown and not tcp.shut:
             tcp.sock.shutdown(socket.SHUT_WR)
             tcp.shut = True
+
+    def _accept(self, index: int) -> None:
+        """A client of a forwarded port: a TCP flow already connected on the
+        host's side, which the peer now opens on the device's (ADR 0164)."""
+        listener, host_port, device_port = self._listeners[index]
+        while True:
+            try:
+                client, peer = listener.accept()
+            except (BlockingIOError, InterruptedError):
+                return
+            except OSError as exc:
+                log.info("forward: accept on %d failed: %s", host_port, exc)
+                return
+            client.setblocking(False)
+            self._accepted += 1
+            flow = ("forward", host_port, self._accepted)
+            self._tcp[flow] = _Tcp(client, peer, time.monotonic(), connected=True)
+            with self._lock:
+                self._inbound[flow] = _Inbound()
+            self._interest(flow)
+            self._events.put(("tcp-accepted", flow, device_port, peer))
 
     def _tcp_fail(self, flow: object, reason: str) -> None:
         self._events.put(("tcp-failed", flow, reason))

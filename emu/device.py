@@ -65,8 +65,15 @@ RUN_FLAGS = {
     "--audio": False,
     # A serial port on the host's loopback, for its own tools (ADR 0158).
     "--serial-tcp": True,
+    # A port of the host's loopback reaching one of the device's over WiFi
+    # (ADR 0164); may be given more than once.
+    "--wifi-forward": True,
 }
 SERIAL_TCP = re.compile(r"(\d{4,5})(:(uart|usb))?\Z")
+WIFI_FORWARD = re.compile(r"(\d{4,5}):(\d{1,5})\Z")
+# The settings that put a port on the host's loopback, and how to read it.
+PUBLISHED = {"--serial-tcp": lambda v: v.partition(":")[0],
+             "--wifi-forward": lambda v: v.partition(":")[0]}
 # The named airs, and the band each lives under.
 NAMED_AIRS = {"--air": "lora", "--ble-air": "ble"}
 AIR_NAME = re.compile(r"[a-z0-9][a-z0-9-]{0,31}\Z")
@@ -101,6 +108,12 @@ def check_settings(args) -> tuple[str, ...]:
                 if not found or not 1024 <= int(found.group(1)) <= 65535:
                     raise DeviceError("--serial-tcp takes a port from 1024 to "
                                       f"65535, then :uart or :usb, not {value!r}")
+            if flag == "--wifi-forward":
+                found = WIFI_FORWARD.match(value)
+                if (not found or not 1024 <= int(found.group(1)) <= 65535
+                        or not 1 <= int(found.group(2)) <= 65535):
+                    raise DeviceError("--wifi-forward takes HOSTPORT:DEVICEPORT, "
+                                      f"the host port from 1024, not {value!r}")
             out.append(value)
             i += 1
     return tuple(out)
@@ -616,11 +629,14 @@ def container_command(root: Path, outdir: Path, extra: tuple[str, ...] = (),
     # board reached at its container's address there (ADR 0145).
     air = (["-v", f"{AIR_VOLUME}:{AIR_MOUNT}", "--network", AIR_NETWORK,
             "-e", "BOARDEMUL_AIR_HOST=auto"] if uses_air(extra) else [])
-    # A serial port on TCP, published on the host's loopback only (ADR 0158).
-    for i, flag in enumerate(extra[:-1]):
-        if flag == "--serial-tcp":
-            port = extra[i + 1].partition(":")[0]
-            air += ["-p", f"127.0.0.1:{port}:{port}", "-e", "BOARDEMUL_BIND_ALL=1"]
+    # A serial port on TCP (ADR 0158) and ports forwarded over WiFi (ADR 0164),
+    # published on the host's loopback only.
+    published = [PUBLISHED[flag](extra[i + 1])
+                 for i, flag in enumerate(extra[:-1]) if flag in PUBLISHED]
+    for port in published:
+        air += ["-p", f"127.0.0.1:{port}:{port}"]
+    if published:
+        air += ["-e", "BOARDEMUL_BIND_ALL=1"]
     return (["docker", "run", "--rm", "--name", name or container_name(root, outdir),
              "--stop-signal", "SIGINT"]
             + mount(REPO_ROOT, "/work") + mount(root, "/device") + mount(outdir, "/out")

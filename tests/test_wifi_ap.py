@@ -473,3 +473,89 @@ def test_a_local_name_is_never_sent_to_the_internet(uplinked) -> None:
     air = uplinked.take(_udp_frame(5353, _dns_query("nothing-here.local")), 1, 100)
     assert int.from_bytes(_udp_payload(air.frame)[2:4], "big") & 0x0F == 3
     assert uplinked.counts.get("dns forwarded") is None
+
+
+# --------------------------------------------- a port of the host, forwarded
+# ADR 0164. A client on the host's loopback reaches the station's port: the
+# gateway opens the connection to the station and splices the two.
+
+
+@pytest.fixture
+def forwarded():
+    host = Uplink()
+    host.listen(0, 4403)                       # any free port of the host
+    port = host._listeners[0][0].getsockname()[1]
+    host.start()
+    point = AccessPoint(Network(ssid="x", channel=1, beacon_ms=10 ** 9,
+                                wpa2=True, passphrase="p"), forwarder=host)
+    yield point, port
+    host.stop()
+
+
+def _addressed(point: AccessPoint) -> None:
+    _seat(point, STATION)
+    point.stations[STATION].ip = CLIENT_IP
+
+
+def _from_station(sport: int, dport: int, seq: int, ack: int, flags: int,
+                  payload: bytes = b"") -> bytes:
+    return _sta_frame(tcp_segment(CLIENT_IP, SERVER_IP, sport, dport, seq, ack,
+                                  flags, window=64000, payload=payload))
+
+
+def test_a_client_of_a_forwarded_port_reaches_the_stations_port(forwarded) -> None:
+    point, port = forwarded
+    _addressed(point)
+    client = socket.create_connection(("127.0.0.1", port), timeout=5)
+    try:
+        client.sendall(b"want config")
+        syn = _parse(_until(point, lambda f: bool(_parse(f)["flags"] & SYN)))
+        assert syn["flags"] == SYN and syn["dport"] == 4403
+        gateway_port, isn = syn["sport"], syn["seq"]
+        point.take(_from_station(4403, gateway_port, 900, isn + 1, SYN | ACK),
+                   1, 20_000)
+        data = _parse(_until(point, lambda f: bool(_parse(f)["payload"])))
+        assert data["payload"] == b"want config", "the client's bytes reach it"
+        point.take(_from_station(4403, gateway_port, 901, isn + 12, ACK | PSH,
+                                 b"config!"), 1, 20_100)
+        assert client.recv(100) == b"config!", "and its answer the client"
+        client.shutdown(socket.SHUT_WR)
+        fin = _parse(_until(point, lambda f: bool(_parse(f)["flags"] & FIN)))
+        assert fin["dport"] == 4403, "the client's close reaches the station"
+    finally:
+        client.close()
+    assert not point.uplink, "a forward routes nothing out to the internet"
+
+
+def test_a_forward_to_a_port_the_station_refuses_closes_the_client(forwarded) -> None:
+    point, port = forwarded
+    _addressed(point)
+    client = socket.create_connection(("127.0.0.1", port), timeout=5)
+    try:
+        syn = _parse(_until(point, lambda f: bool(_parse(f)["flags"] & SYN)))
+        point.take(_from_station(4403, syn["sport"], 0, syn["seq"] + 1,
+                                 tcp.RST | ACK), 1, 20_000)
+        assert not point.conns
+        try:
+            assert client.recv(100) == b""
+        except ConnectionResetError:
+            pass
+    finally:
+        client.close()
+
+
+def test_with_no_station_on_the_lan_a_client_is_closed(forwarded) -> None:
+    point, port = forwarded
+    client = socket.create_connection(("127.0.0.1", port), timeout=5)
+    try:
+        deadline = time.monotonic() + 5
+        while not point.counts.get("forward with no station"):
+            assert time.monotonic() < deadline, point.counts
+            point.tick(1, 10_000)
+            time.sleep(0.01)
+        try:
+            assert client.recv(100) == b""
+        except ConnectionResetError:
+            pass
+    finally:
+        client.close()

@@ -169,3 +169,4 @@ superseded ADR is marked superseded and points forward.
 | [0161](0161-the-cores-take-turns-every-millisecond.md) | The cores take turns every millisecond | Accepted (adds to 0041) |
 | [0162](0162-a-version-a-changelog-and-a-check-on-every-push.md) | BoardEmul has a version, a changelog and a check on every push | Accepted |
 | [0163](0163-a-runs-logs-download-as-one-file.md) | A run's logs download as one file, saying what they ran on | Accepted (adds to 0135, 0162) |
+| [0164](0164-a-host-port-reaches-the-device-over-wifi.md) | A port of the host reaches a TCP port of the device over WiFi | Accepted (takes ADR 0158's second road; adds to 0089, 0097) |

@@ -373,6 +373,12 @@ def main(argv: list[str] | None = None) -> int:
                          "real internet through this host's sockets, and look "
                          "names up through its resolver (ADR 0097). Off by "
                          "default: guest traffic then never leaves the machine")
+    ap.add_argument("--wifi-forward", action="append", default=[],
+                    metavar="HOSTPORT:DEVICEPORT",
+                    help="listen on HOSTPORT of this machine's loopback and "
+                         "connect each client to DEVICEPORT of the station on "
+                         "the access point, e.g. 4403:4403 for Meshtastic's "
+                         "TCP API (ADR 0164). May be given more than once")
     ap.add_argument("--ble-air", default=None, metavar="DIR",
                     help="share a directory so this board's Bluetooth can be "
                          "heard by others; a different band from --air, so a "
@@ -537,10 +543,22 @@ def main(argv: list[str] | None = None) -> int:
         if args.air_quantum_us <= 0:
             raise SystemExit("--air-quantum-us must be positive")
 
-    access_point: tuple[str, int, int, bool, str, bool] | None = None
+    access_point: tuple | None = None
     if args.wifi_uplink and not args.wifi_ap:
         raise SystemExit("--wifi-uplink connects an access point to the "
                          "internet; --wifi-ap says there is one")
+    if args.wifi_forward and not args.wifi_ap:
+        raise SystemExit("--wifi-forward reaches the station on an access "
+                         "point; --wifi-ap says there is one")
+    forwards = []
+    for spec in args.wifi_forward:
+        host_port, _, device_port = spec.partition(":")
+        if not (host_port.isdigit() and device_port.isdigit()
+                and 1024 <= int(host_port) <= 65535
+                and 1 <= int(device_port) <= 65535):
+            raise SystemExit(f"--wifi-forward is HOSTPORT:DEVICEPORT, the host "
+                             f"port from 1024, not {spec!r}")
+        forwards.append((int(host_port), int(device_port)))
     if args.wifi_ap:
         parts = args.wifi_ap.split(",")
         if not parts[0]:
@@ -558,7 +576,11 @@ def main(argv: list[str] | None = None) -> int:
                         int(parts[1]) if len(parts) > 1 and parts[1] else 100,
                         int(parts[2]) if len(parts) > 2 and parts[2] else 1,
                         bool(args.wifi_wpa2), args.wifi_pass or "",
-                        bool(args.wifi_uplink))
+                        bool(args.wifi_uplink), tuple(forwards),
+                        # Loopback, unless in the build container, whose
+                        # ports are published on the host's loopback only.
+                        "0.0.0.0" if os.environ.get("BOARDEMUL_BIND_ALL")
+                        else "127.0.0.1")
     elif args.wifi_wpa2:
         raise SystemExit("--wifi-wpa2 says how the access point is secured; "
                          "--wifi-ap says there is one")
@@ -641,6 +663,9 @@ def main(argv: list[str] | None = None) -> int:
               f"channel {access_point[2]}"
               + (", WPA2-PSK" if access_point[3] else ", open")
               + (", uplinked to the internet" if access_point[5] else ""))
+        for host_port, device_port in access_point[6]:
+            print(f"forward : localhost:{host_port} reaches the device's "
+                  f"port {device_port} over WiFi")
     if hw_module.SOC_DEVICES:
         print(f"soc     : {', '.join(hw_module.SOC_DEVICES)}")
     print(f"uart    : {uart}")

@@ -398,13 +398,9 @@ def build(outdir: Path, air: str | None = None, ble_air: str | None = None,
     frames = None
     if wifi_ap:
         # The network, and the peer that answers for it (ADR 0064).
-        from emu.devices.wifi_ap import AccessPoint, FrameChannel, Network
-        from emu.uplink import Uplink
-        uplink = Uplink() if len(wifi_ap) > 5 and wifi_ap[5] else None
-        frames = FrameChannel(outdir / "wifi.sock", AccessPoint(Network(
-            ssid=wifi_ap[0], channel=wifi_ap[2] or 1, wpa2=wifi_ap[3],
-            passphrase=wifi_ap[4] if len(wifi_ap) > 4 else "",
-            beacon_ms=wifi_ap[1]), uplink=uplink))
+        # With the NAT and the forwarded ports, if asked for (ADRs 0097, 0164).
+        from emu.devices.wifi_ap import FrameChannel, build_access_point
+        frames = FrameChannel(outdir / "wifi.sock", build_access_point(wifi_ap))
 
     return Board(regions=regions, gpio=gpio, spi=spi, i2c0=i2c0, i2c1=i2c1,
                  panel=panel, gps=receiver, gps_uart=2, modem=modem, clock=clock,

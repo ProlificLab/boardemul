@@ -436,6 +436,8 @@
           <input type="text" id="s-pass" placeholder="open network" autocomplete="off"></div>
       </div>
       <label class="check"><input type="checkbox" id="s-uplink"> Reach the real internet through this computer</label>
+      <div class="field"><label for="s-fwd">Ports of this computer that reach the device</label>
+        <input type="text" id="s-fwd" placeholder="none, or e.g. 4403:4403 for Meshtastic's apps" autocomplete="off"></div>
     </div>
     <div class="group">
       <h4>Satellites</h4>
@@ -447,7 +449,7 @@
       <h4>Host tools</h4>
       <p class="why">A serial port on a TCP port of this computer, for a terminal or a script. The USB Serial/JTAG port unless you add <code>:uart</code>.</p>
       <div class="field"><label for="s-tcp">TCP port</label>
-        <input type="text" id="s-tcp" placeholder="none, or e.g. 4403" autocomplete="off"></div>
+        <input type="text" id="s-tcp" placeholder="none, or e.g. 5555" autocomplete="off"></div>
     </div>
     <div class="group">
       <h4>Running</h4>
@@ -724,6 +726,9 @@ function openSettings(name) {
   $("s-ssid").value = (m["--wifi-ap"] || "").split(",")[0];
   $("s-pass").value = m["--wifi-pass"] || "";
   $("s-uplink").checked = !!m["--wifi-uplink"];
+  // Repeatable, so read from the list rather than the map (ADR 0164).
+  const list = d.settings || [];
+  $("s-fwd").value = list.flatMap((f, i) => f === "--wifi-forward" ? [list[i + 1]] : []).join(", ");
   $("s-gps").value = m["--gps"] || "";
   $("s-tcp").value = m["--serial-tcp"] || "";
   $("s-reboot").checked = !!m["--reboot"];
@@ -745,6 +750,8 @@ function settingsFromSheet() {
     out.push("--wifi-ap", val("s-ssid"));
     if (val("s-pass")) out.push("--wifi-wpa2", "--wifi-pass", val("s-pass"));
     if ($("s-uplink").checked) out.push("--wifi-uplink");
+    for (const pair of val("s-fwd").split(/[\s,]+/).filter(Boolean))
+      out.push("--wifi-forward", pair.includes(":") ? pair : `${pair}:${pair}`);
   }
   if (val("s-gps")) out.push("--gps", val("s-gps"));
   if (val("s-tcp")) out.push("--serial-tcp", val("s-tcp"));

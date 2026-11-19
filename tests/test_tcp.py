@@ -283,3 +283,75 @@ def test_the_receive_side_wraps_past_2_to_the_32() -> None:
     out = conn.on_segment(0xFFFFFFF1, 5001, ACK | PSH, WINDOW, bytes(20), now=1)
     assert conn.read() == bytes(20)
     assert _acks(out)[-1].ack == 5, "the acknowledgement wraps with it"
+
+
+# -- the active open (ADR 0164) ----------------------------------------------
+
+
+def test_the_active_open_sends_a_syn_and_establishes_on_its_syn_ack():
+    conn = Connection(iss=7000)
+    [syn] = conn.connect(now=0)
+    assert syn.flags == SYN and syn.seq == 7000 and syn.mss == tcp.DEFAULT_MSS
+    assert conn.state == tcp.SYN_SENT
+    out = conn.on_segment(3000, 7001, SYN | ACK, WINDOW, b"", now=5)
+    assert conn.established
+    assert [(s.flags, s.seq, s.ack) for s in out] == [(ACK, 7001, 3001)]
+    conn.write(b"hello")
+    [data] = conn.pump(now=6)
+    assert data.payload == b"hello" and data.seq == 7001
+    conn.on_segment(3001, 7006, ACK | PSH, WINDOW, b"world", now=7)
+    assert conn.read() == b"world"
+
+
+def test_data_written_before_the_answer_goes_with_the_handshake_ack():
+    conn = Connection(iss=7000)
+    conn.connect(now=0)
+    conn.write(b"early")
+    assert conn.pump(now=1) == []                 # nothing before SYN-SENT ends
+    out = conn.on_segment(3000, 7001, SYN | ACK, WINDOW, b"", now=2)
+    assert [s.payload for s in out if s.payload] == [b"early"]
+
+
+def test_a_reset_that_acknowledges_the_syn_refuses_the_connection():
+    conn = Connection(iss=7000)
+    conn.connect(now=0)
+    assert conn.on_segment(0, 7001, RST | ACK, 0, b"", now=1) == []
+    assert conn.closed and conn.on_tick(now=10_000) == []
+
+
+def test_a_reset_that_does_not_acknowledge_the_syn_is_ignored():
+    conn = Connection(iss=7000)
+    conn.connect(now=0)
+    conn.on_segment(0, 1234, RST | ACK, 0, b"", now=1)
+    assert conn.state == tcp.SYN_SENT
+
+
+def test_an_ack_of_something_never_sent_is_answered_with_a_reset():
+    conn = Connection(iss=7000)
+    conn.connect(now=0)
+    [rst] = conn.on_segment(3000, 4242, SYN | ACK, WINDOW, b"", now=1)
+    assert rst.flags == RST and rst.seq == 4242
+    assert conn.state == tcp.SYN_SENT
+
+
+def test_the_syn_is_sent_again_until_it_is_answered():
+    conn = Connection(iss=7000)
+    conn.connect(now=0)
+    assert conn.on_tick(now=tcp.RTO_MS - 1) == []
+    [again] = conn.on_tick(now=tcp.RTO_MS)
+    assert again.flags == SYN and again.seq == 7000
+
+
+def test_a_syn_without_an_ack_is_a_simultaneous_open():
+    conn = Connection(iss=7000)
+    conn.connect(now=0)
+    [syn_ack] = conn.on_segment(3000, 0, SYN, WINDOW, b"", now=1)
+    assert syn_ack.flags == SYN | ACK and syn_ack.ack == 3001
+    conn.on_segment(3001, 7001, ACK, WINDOW, b"", now=2)
+    assert conn.established
+
+
+def test_aborting_before_the_answer_sends_nothing():
+    conn = Connection(iss=7000)
+    conn.connect(now=0)
+    assert conn.abort() is None and conn.closed

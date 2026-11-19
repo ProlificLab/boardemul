@@ -14,9 +14,10 @@ checked without any of that (the way `wpa2` is). The peer serialises a `Segment`
 into an IPv4/TCP datagram and a data frame; a service reads the stream with
 `read`, answers with `write`, and ends it with `close`.
 
-Two things shape the design. First, this is always the *passive* opener: the
-firmware connects to us, so a connection begins in LISTEN and the first thing it
-ever sees is a SYN. Second, the peer can put only one frame on the air per guest
+Two things shape the design. First, this is nearly always the *passive*
+opener: the firmware connects to us, so a connection begins in LISTEN and the
+first thing it sees is a SYN. The one exception is a port of the host forwarded
+into the LAN (ADR 0164), which opens actively with `connect`. Second, the peer can put only one frame on the air per guest
 event (ADR 0064), so nothing here sends on its own -- every method returns the
 segments to send and the caller decides when. The guest's millisecond clock,
 passed in on every call, is the only clock there is; the retransmission timer
@@ -44,6 +45,7 @@ ACK = 0x10
 # here so that a service closing first is also correct.
 CLOSED = "CLOSED"
 LISTEN = "LISTEN"
+SYN_SENT = "SYN_SENT"                   # the active open (ADR 0164)
 SYN_RECEIVED = "SYN_RECEIVED"
 ESTABLISHED = "ESTABLISHED"
 CLOSE_WAIT = "CLOSE_WAIT"
@@ -201,7 +203,8 @@ class Connection:
         """End the connection at once with a reset -- what the uplink does when
         the remote end behind it breaks (ADR 0097). Nothing is left to send or
         to wait for. None if there was never a connection to reset."""
-        if self.state in (CLOSED, LISTEN):
+        if self.state in (CLOSED, LISTEN, SYN_SENT):
+            # Nothing at the other end holds a connection to reset.
             self.state = CLOSED
             return None
         self.state = CLOSED
@@ -210,11 +213,59 @@ class Connection:
         return Segment(seq=self.snd_nxt, ack=self.rcv_nxt, flags=RST | ACK,
                        window=0)
 
+    def connect(self, now: int) -> list[Segment]:
+        """Open the connection from this end (RFC 9293 §3.10.1): send the SYN,
+        carrying our MSS, and wait in SYN-SENT for the answer. A port of the
+        host forwarded into the LAN is the one place this end connects
+        (ADR 0164). The SYN is retransmitted by the timer like any segment
+        not yet acknowledged."""
+        syn = Segment(seq=self.iss, ack=0, flags=SYN, window=self._rcv_wnd(),
+                      mss=self.mss)
+        self.unacked.append(_Sent(syn, now))
+        self.snd_nxt = _sub(self.iss + 1, 0)
+        self.state = SYN_SENT
+        return [syn]
+
     # ------------------------------------------------------------- the engine
+
+    def _on_syn_sent(self, seq: int, ack: int, flags: int, window: int,
+                     now: int) -> list[Segment]:
+        """The answer to our SYN, by RFC 9293 §3.10.7.3."""
+        acceptable = bool(flags & ACK) and ack == self.snd_nxt
+        if flags & ACK and not acceptable:
+            # It acknowledges something we never sent: reset it, unless it is
+            # itself a reset.
+            return [] if flags & RST else [Segment(seq=ack, ack=0, flags=RST,
+                                                   window=0)]
+        if flags & RST:
+            if acceptable:
+                self.state = CLOSED             # refused: nothing listens there
+                self.unacked.clear()
+            return []
+        if not flags & SYN:
+            return []
+        self.irs = seq
+        self.rcv_nxt = _sub(seq + 1, 0)
+        self.snd_wnd = window
+        if acceptable:
+            self.snd_una = ack
+            self.unacked = [s for s in self.unacked if not s.seg.flags & SYN]
+            self.rto = RTO_MS
+            self.state = ESTABLISHED
+            return _coalesce([self._ack()] + self.pump(now))
+        # A SYN without an acknowledgement: both ends opened at once. Answer it
+        # as the passive end would, and our SYN rides on the SYN-ACK.
+        syn_ack = Segment(seq=self.iss, ack=self.rcv_nxt, flags=SYN | ACK,
+                          window=self._rcv_wnd(), mss=self.mss)
+        self.unacked = [_Sent(syn_ack, now)]
+        self.state = SYN_RECEIVED
+        return [syn_ack]
 
     def on_segment(self, seq: int, ack: int, flags: int, window: int,
                    payload: bytes, now: int) -> list[Segment]:
         """Process one inbound segment and return what to send in reply."""
+        if self.state == SYN_SENT:
+            return self._on_syn_sent(seq, ack, flags, window, now)
         if flags & RST:
             # The peer has torn it down; drop everything and go quiet.
             self.state = CLOSED
