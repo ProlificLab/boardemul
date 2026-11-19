@@ -47,8 +47,10 @@ and pick its board, T-Deck Max or T-Deck. The pinned images:
   type on your keyboard: capitals and symbols are pressed as the device's
   own chords. On the T-Deck the mouse wheel rolls the trackball, and
   pressing on the ball clicks it;
-- the serial console. Switch between the UART and the USB port, and type a
-  line into it: Enter sends it;
+- the serial console. Switch between the UART, the USB Serial/JTAG port and
+  the USB OTG port, and type a line into it: Enter sends it. A firmware
+  built with TinyUSB's serial port, Meshtastic on the T-Deck among them,
+  talks on the OTG port (ADR 0166);
 - what the speaker played, when the device's settings ask for sound;
 - a scrubber through every frame of the run;
 - a download button for the run's logs: one zip of both serial ports, the
@@ -114,6 +116,42 @@ These need the device stopped.
    gives: each run's bus log (`logs/devices/NAME/N/NAME.bus.log`) has a line
    `sx1262: heard a … packet at … dBm` for every packet it received.
 
+## Meshtastic's API from this computer
+
+On the T-Deck, Meshtastic's client API is on its USB OTG port, as on the
+real device through a cable (ADR 0166). Put that port on a TCP port in
+*Settings* → *Host tools* (`5555:otg`), start the device, and once it has
+booted:
+
+    python tools/mesh_api.py 127.0.0.1:5555 info
+    python tools/mesh_api.py 127.0.0.1:5555 wifi NETWORK PASSWORD
+
+`info` prints the node number, its WiFi settings and its display mode.
+`wifi` sets the network the node joins, as the apps' WiFi page does; the
+node saves it and restarts. A device made from the page restarts by itself
+(*Restart after a panic*, on by default); a run started with `emu/run.py`
+needs `--reboot`, or it ends there.
+
+To reach the node over WiFi instead, as the apps do on port 4403:
+
+1. In *Settings*, give it an access point (with a password: WPA2) and
+   forward `4403:4403` in *Host tools*.
+2. Set its WiFi as above, and its display mode to the classic screen:
+
+       python tools/mesh_api.py 127.0.0.1:5555 display-mode default
+
+   Under its colour interface Meshtastic 2.7 serves no API over WiFi, on a
+   real T-Deck as here.
+3. Its first boot on WiFi makes a TLS certificate, which takes minutes;
+   later boots reuse it. Joining takes a few minutes more. When the run's
+   log says `Obtained IP address`, then `API server listen on TCP port
+   4403`:
+
+       python tools/mesh_api.py 127.0.0.1:4403 info
+
+   answers over the node's WiFi, and so does any client of Meshtastic's TCP
+   API pointed at `localhost`.
+
 ## Scripting
 
 Everything the page does goes through a small HTTP API on the same port,
@@ -162,7 +200,7 @@ From a shell, `python tools/device.py` does the same for folders: `create`,
 | | |
 | --- | --- |
 | a device's storage | `devices/NAME/` |
-| a run's output | `logs/devices/NAME/N/`: `frames/`, `NAME.uart.log`, `NAME.usb.log`, `audio/`, `console.log` |
+| a run's output | `logs/devices/NAME/N/`: `frames/`, `NAME.uart.log`, `NAME.usb.log`, `NAME.otg.log`, `audio/`, `console.log` |
 | why a run ended | the run's `console.log`, also shown in the page when it ends |
 
 ## Limits
@@ -171,8 +209,12 @@ Each of these is decided and recorded in an ADR, not forgotten:
 
 - Bluetooth advertises and holds a connection, and carries no data (ADR
   0157). Phones cannot pair with a node.
-- Meshtastic's own client API is not reachable: on the T-Deck it runs over
-  the USB OTG controller, which is not modelled (ADR 0158).
+- Meshtastic's on-screen interface keeps asking its own node for the
+  configuration and never finishes ("Resync"): on a guest clock that follows
+  the host's, the transfer outlasts the interface's own timeout. Its client
+  API, on the USB OTG port and over WiFi, is not affected (ADRs 0164, 0166).
+- Meshtastic takes minutes to join WiFi, silently, where a board takes
+  seconds; why is not yet known (ADR 0164).
 - On the Max, the audio codec answers its identity only. The modem answers
   the factory test and has no SIM.
 - GPS always has a fix at the position you give.

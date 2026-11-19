@@ -3,6 +3,21 @@
 What changed for someone running BoardEmul, newest first. The reasons are in
 `docs/adr/`, numbered as below.
 
+## Unreleased
+
+**Reaching a device**
+- The ESP32-S3's USB OTG port works, with a host on its cable: a firmware
+  whose serial port is TinyUSB's (Meshtastic on the T-Deck among them) is
+  enumerated and opened, its output goes to `NAME.otg.log` and the page's
+  console, and what you type reaches it. Meshtastic's client API answers
+  there, and `--serial-tcp PORT:otg` puts it on a TCP port (0166).
+- `tools/mesh_api.py` speaks Meshtastic's API on such a port: it reads a
+  node's settings, sets the WiFi network it joins and its display mode.
+- Meshtastic is reached over WiFi, end to end: set through its USB port, a
+  T-Deck node joins the run's WPA2 network and its TCP API answers on
+  `localhost:4403` through `--wifi-forward`. It needs the classic display
+  mode, as on the real device (0164).
+
 ## 1.1.0 — 2026-11-19
 
 **Faster**

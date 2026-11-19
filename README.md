@@ -94,6 +94,15 @@ three; so does `device.py snapshot|restore|card`. A stopped device can also
 be cloned, flash, card and settings, with a MAC of its own, so one node set
 up through its dialog becomes a mesh of them (ADR 0155).
 
+Meshtastic's client API is reachable from this computer, as through a
+cable and over WiFi. On the T-Deck its serial port is TinyUSB's, on the
+chip's USB OTG controller, which is modelled with a host on its cable (ADR
+0166): its log is in the page's console, and `tools/mesh_api.py` reads and
+changes its settings over `--serial-tcp 5555:otg`. Set that way onto the
+run's WPA2 access point and its classic screen, a node joins, takes an
+address, and answers on `localhost:4403` through `--wifi-forward 4403:4403`
+(ADR 0164).
+
 **Working on the Max:** the boot chain, flash and eFuses; PSRAM; the e-paper
 panel; touch, the three touch keys and the keyboard; the LoRa radio on chip
 select 3 (ADR 0102); the SD card; I2C0/I2C1 with the board's parts, the fuel

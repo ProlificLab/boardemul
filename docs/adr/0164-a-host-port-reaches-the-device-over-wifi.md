@@ -55,18 +55,31 @@ joins and the API server.
 - Any firmware that serves TCP on WiFi, a web page or a debug port, is
   reachable from the host: forward its port and connect to `localhost`.
 - For Meshtastic that is its TCP API on 4403, once the node is on the run's
-  network; see the first cost below for how far that has been seen.
+  network and on its classic screen; see the first cost below.
 
 **Costs, accepted**
 
-- **Not yet seen end to end with Meshtastic** (2026-11-19). The forward is
-  tested against the access point's model (`tests/test_wifi_ap.py`), and
-  the network side of a run was set up as decided. Meshtastic's own
-  interface, driven through the page, opened its WiFi dialog and took the
-  network's name, and the setting never reached flash: its link to the
-  firmware's main loop showed "Resync …" and stayed there, so the node never
-  went on WiFi. Finding why is its own investigation; until then the
-  Meshtastic road is open in principle, not shown in practice.
+- **Seen end to end with Meshtastic, 2026-11-19, in two conditions of its
+  own.** Through its serial API on the USB OTG port (ADR 0166,
+  `tools/mesh_api.py`) a T-Deck node took a WiFi network, saved it and
+  restarted; it completed WPA2's four-way handshake with the run's access
+  point and took 192.168.4.2 by DHCP; and its TCP API then answered on
+  `localhost:4403` through this forward, with its node number and settings.
+  - Its colour interface does not serve the API. Under display mode COLOR
+    Meshtastic 2.7 starts neither its web server nor its TCP API on WiFi
+    (`src/mesh/wifi/WiFiAPClient.cpp`, `onNetworkConnected`), so the forward
+    met a reset until the node was set to the classic screen
+    (`mesh_api.py … display-mode default`). A real T-Deck does the same.
+  - Its first boot on WiFi generates a TLS certificate, 140 to 940 s of
+    guest time in the runs made, kept in flash afterwards. A device folder
+    (ADR 0133) pays it once.
+  - From its first attempt to join to the handshake took about 200 s of
+    guest time in every run, without a word in its log or a frame the
+    access point saw; why is not yet known.
+  The earlier note, that the setting never reached flash from the page's
+  interface ("Resync …"), stands for the interface: its link to the main
+  loop re-requests the configuration every few seconds of guest time and
+  never finishes, on a guest clock that follows the host's.
 - The node has to be on WiFi, which on Meshtastic turns its Bluetooth off.
   On BoardEmul Bluetooth carries no data anyway (ADR 0157).
 - One station is forwarded to: the first that holds a lease. A run has one
