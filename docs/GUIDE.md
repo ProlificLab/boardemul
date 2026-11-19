@@ -52,6 +52,10 @@ and pick its board, T-Deck Max or T-Deck. The pinned images:
 
 The T-Deck's screen dims and darkens as the firmware drives its backlight.
 
+**Watch several at once.** Back on the device list, every running device's
+card shows its screen, refreshed every second and a half, so a mesh of
+boards can be watched side by side. Click a screen to open that run.
+
 **Stop it** with ■ Stop. What the firmware saved is in the device's flash
 and card for the next start.
 
