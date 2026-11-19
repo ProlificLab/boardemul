@@ -519,6 +519,7 @@ struct EspWifiMac {
     unsigned backlog_count;
     int64_t mark_at;
     uint32_t ring;              /* what the driver handed us */
+    bool said_no_ring;          /* the wait for it has been logged */
     unsigned deliveries;
     unsigned taken;
     unsigned repeat;
@@ -1046,8 +1047,12 @@ static void wifi_deliver(void *opaque)
     }
     if (!s->ring) {
         /* The driver hands the ring over while it starts its station, which is
-         * well after this device is created. Said once, then waited for. */
-        if (!s->deliveries) {
+         * well after this device is created. Said once, then waited for: a
+         * firmware that never starts its station retries here for the whole
+         * run, and the test this used to be gated on (no deliveries yet) stays
+         * true throughout, which wrote this line about 150 times a second. */
+        if (!s->said_no_ring) {
+            s->said_no_ring = true;
             qemu_log_mask(LOG_UNIMP, "esp-wifi-mac: no receive ring handed "
                           "over yet; waiting%c", 10);
         }
