@@ -39,7 +39,8 @@ RUN missing="$(ldd /usr/local/bin/qemu-system-xtensa | grep 'not found' || true)
         echo "QEMU needs libraries this stage does not install:"; echo "$missing"; exit 1; \
     fi \
     && qemu-system-xtensa -machine help | grep -q '^esp32s3 ' \
-    && qemu-system-xtensa -device help | grep -q 'esp-core-slice'
+    && qemu-system-xtensa -device help | grep -q 'esp-core-slice' \
+    && qemu-system-xtensa -device help | grep -q 'esp-usb-otg'
 # What it was built from, so that a clone which has moved on rebuilds it:
 # tools/doctor.py's sources_digest(), which boardemul.py passes (ADR 0159).
 ARG BOARDEMUL_SOURCES=unknown
