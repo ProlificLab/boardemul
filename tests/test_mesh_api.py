@@ -55,8 +55,38 @@ def test_my_info_and_network_config_are_described() -> None:
     assert m.describe(my_info) == {"my_node_num": 0xA1B2C3D4}
     network = m.field_varint(1, 1) + m.field_bytes(3, "lab") + m.field_bytes(4, "pw")
     config = m.field_bytes(m.FROMRADIO_CONFIG, m.field_bytes(m.CONFIG_NETWORK, network))
-    assert m.describe(config) == {"network": {"wifi_enabled": True, "wifi_ssid": "lab",
-                                              "wifi_psk_set": True}}
+    described = m.describe(config)
+    assert described["network"] == {"wifi_enabled": True, "wifi_ssid": "lab",
+                                     "wifi_psk_set": True}
+    assert described["raw_network"] == network
+    display = m.field_varint(m.DISPLAY_MODE, 3)
+    config = m.field_bytes(m.FROMRADIO_CONFIG, m.field_bytes(m.CONFIG_DISPLAY, display))
+    assert m.describe(config)["display_mode"] == "color"
+
+
+def test_a_change_keeps_the_rest_of_the_section() -> None:
+    """Meshtastic replaces a whole section on set_config: the NTP server, and
+    a field this tool does not know (99), must survive a WiFi change."""
+    network = (m.field_varint(1, 0) + m.field_bytes(5, "pool.ntp.org")
+               + m.field_bytes(99, b"future") + m.field_bytes(3, "old"))
+    body = m.first(m.first(m.first(m.first(
+        m.set_wifi(1, "lab", "pw", network), m.TORADIO_PACKET),
+        m.PACKET_DECODED), m.DATA_PAYLOAD), m.ADMIN_SET_CONFIG)
+    sent = m.first(body, m.CONFIG_NETWORK)
+    assert m.first(sent, 5) == b"pool.ntp.org"
+    assert m.first(sent, 99) == b"future"
+    assert [v for n, _k, v in m.fields(sent) if n == 3] == [b"lab"]
+    assert m.first(sent, 1) == 1 and m.first(sent, 4) == b"pw"
+
+
+def test_the_display_mode_is_set_within_its_section() -> None:
+    display = m.field_varint(1, 30) + m.field_varint(m.DISPLAY_MODE, 3)
+    body = m.first(m.first(m.first(m.first(
+        m.set_display_mode(1, m.DISPLAY_MODES["default"], display), m.TORADIO_PACKET),
+        m.PACKET_DECODED), m.DATA_PAYLOAD), m.ADMIN_SET_CONFIG)
+    sent = m.first(body, m.CONFIG_DISPLAY)
+    assert m.first(sent, 1) == 30
+    assert m.first(sent, m.DISPLAY_MODE) == 0
 
 
 def test_a_lone_start_octet_in_the_log_is_not_lost() -> None:

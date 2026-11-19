@@ -12,9 +12,13 @@ With a device's OTG port on TCP (`--serial-tcp 5555:otg`, ADR 0166):
     python tools/mesh_api.py 127.0.0.1:5555 info
     python tools/mesh_api.py 127.0.0.1:5555 wifi SSID PSK
 
-`info` asks for the node's configuration and prints its node number and
-network settings; `wifi` sets the network settings as the apps' WiFi page
-does, after which the node saves them and restarts.
+`info` asks for the node's configuration and prints its node number, network
+settings and display mode; `wifi` sets the network the node joins as the
+apps' WiFi page does, and `display-mode` the display mode. Each changes only
+its own fields of the section the node sent, then the node saves it and
+restarts. Under display mode `color` (the T-Deck's colour interface)
+Meshtastic 2.7 offers no TCP API on WiFi; `display-mode default` is the
+classic screen, under which it does.
 """
 
 from __future__ import annotations
@@ -39,8 +43,13 @@ PACKET_FROM, PACKET_TO, PACKET_DECODED, PACKET_ID = 1, 2, 4, 6
 DATA_PORTNUM, DATA_PAYLOAD, DATA_WANT_RESPONSE = 1, 2, 3
 ADMIN_APP = 6
 ADMIN_SET_CONFIG = 34
-CONFIG_NETWORK = 4
+CONFIG_NETWORK, CONFIG_DISPLAY = 4, 5
 NETWORK_WIFI_ENABLED, NETWORK_SSID, NETWORK_PSK = 1, 3, 4
+DISPLAY_MODE = 8
+# DisplayConfig.DisplayMode. COLOR selects the colour interface (the "MUI"),
+# under which Meshtastic 2.7 starts neither its web server nor its TCP API
+# on WiFi (src/mesh/wifi/WiFiAPClient.cpp, onNetworkConnected).
+DISPLAY_MODES = {"default": 0, "twocolor": 1, "inverted": 2, "color": 3}
 
 
 # -- protobuf, as far as needed ---------------------------------------------
@@ -119,15 +128,58 @@ def want_config(nonce: int) -> bytes:
     return field_varint(TORADIO_WANT_CONFIG, nonce)
 
 
-def set_wifi(node: int, ssid: str, psk: str, enabled: bool = True) -> bytes:
-    network = (field_varint(NETWORK_WIFI_ENABLED, int(enabled))
-               + field_bytes(NETWORK_SSID, ssid) + field_bytes(NETWORK_PSK, psk))
-    admin = field_bytes(ADMIN_SET_CONFIG, field_bytes(CONFIG_NETWORK, network))
+def patch(message: bytes, replacements: dict[int, bytes]) -> bytes:
+    """`message` with every occurrence of the given fields dropped and their
+    new encodings appended; every other field kept as it was, unknown ones
+    included. Meshtastic replaces a whole config section on set_config, so a
+    change is made to the section the node sent, never to an empty one."""
+    out, pos = bytearray(), 0
+    while pos < len(message):
+        start = pos
+        key, pos = _read_varint(message, pos)
+        number, kind = key >> 3, key & 7
+        if kind == 0:
+            _value, pos = _read_varint(message, pos)
+        elif kind == 1:
+            pos += 8
+        elif kind == 2:
+            length, pos = _read_varint(message, pos)
+            pos += length
+        elif kind == 5:
+            pos += 4
+        else:
+            raise ValueError(f"wire type {kind} at {start}")
+        if number not in replacements:
+            out += message[start:pos]
+    for encoded in replacements.values():
+        out += encoded
+    return bytes(out)
+
+
+def set_config(node: int, section: int, body: bytes) -> bytes:
+    """A ToRadio carrying an AdminMessage set_config for one section, to the
+    node itself."""
+    admin = field_bytes(ADMIN_SET_CONFIG, field_bytes(section, body))
     data = (field_varint(DATA_PORTNUM, ADMIN_APP) + field_bytes(DATA_PAYLOAD, admin)
             + field_varint(DATA_WANT_RESPONSE, 1))
     packet = (field_fixed32(PACKET_TO, node) + field_bytes(PACKET_DECODED, data)
               + field_fixed32(PACKET_ID, random.getrandbits(32)))
     return field_bytes(TORADIO_PACKET, packet)
+
+
+def set_wifi(node: int, ssid: str, psk: str, network: bytes = b"",
+             enabled: bool = True) -> bytes:
+    """Join `ssid`, keeping the rest of the node's network section."""
+    body = patch(network, {NETWORK_WIFI_ENABLED: field_varint(NETWORK_WIFI_ENABLED, int(enabled)),
+                           NETWORK_SSID: field_bytes(NETWORK_SSID, ssid),
+                           NETWORK_PSK: field_bytes(NETWORK_PSK, psk)})
+    return set_config(node, CONFIG_NETWORK, body)
+
+
+def set_display_mode(node: int, mode: int, display: bytes = b"") -> bytes:
+    """Change the display mode, keeping the rest of the display section."""
+    return set_config(node, CONFIG_DISPLAY,
+                      patch(display, {DISPLAY_MODE: field_varint(DISPLAY_MODE, mode)}))
 
 
 class Reader:
@@ -170,8 +222,15 @@ def describe(message: bytes) -> dict:
         if number == FROMRADIO_MY_INFO:
             out["my_node_num"] = first(value, MYINFO_NODE_NUM)
         elif number == FROMRADIO_CONFIG:
+            display = first(value, CONFIG_DISPLAY)
+            if display is not None:
+                out["raw_display"] = display
+                mode = first(display, DISPLAY_MODE, 0)
+                out["display_mode"] = next(
+                    (name for name, n in DISPLAY_MODES.items() if n == mode), str(mode))
             network = first(value, CONFIG_NETWORK)
             if network is not None:
+                out["raw_network"] = network
                 out["network"] = {
                     "wifi_enabled": bool(first(network, NETWORK_WIFI_ENABLED, 0)),
                     "wifi_ssid": first(network, NETWORK_SSID, b"").decode(errors="replace"),
@@ -235,10 +294,14 @@ def main(argv: list[str] | None = None) -> int:
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("address", help="HOST:PORT of the serial port's TCP bridge")
     sub = ap.add_subparsers(dest="command", required=True)
-    sub.add_parser("info", help="print the node number and network settings")
+    sub.add_parser("info", help="print the node number, network settings and "
+                                "display mode")
     wifi = sub.add_parser("wifi", help="set the WiFi network the node joins")
     wifi.add_argument("ssid")
     wifi.add_argument("psk")
+    display = sub.add_parser("display-mode", help="set the display mode; 'color' is "
+                             "the colour interface, which offers no TCP API on WiFi")
+    display.add_argument("mode", choices=sorted(DISPLAY_MODES))
     ap.add_argument("--timeout", type=float, default=60)
     args = ap.parse_args(argv)
 
@@ -247,9 +310,17 @@ def main(argv: list[str] | None = None) -> int:
     if "my_node_num" not in state:
         print("the node did not answer with its configuration", file=sys.stderr)
         return 1
-    print(f"node !{state['my_node_num']:08x}; network {state.get('network')}")
+    print(f"node !{state['my_node_num']:08x}; network {state.get('network')}; "
+          f"display mode {state.get('display_mode')}")
+    change = None
     if args.command == "wifi":
-        node.send(set_wifi(state["my_node_num"], args.ssid, args.psk))
+        change = set_wifi(state["my_node_num"], args.ssid, args.psk,
+                          state.get("raw_network", b""))
+    elif args.command == "display-mode":
+        change = set_display_mode(state["my_node_num"], DISPLAY_MODES[args.mode],
+                                  state.get("raw_display", b""))
+    if change is not None:
+        node.send(change)
         state = node.receive(lambda s: "rebooted" in s, seconds=args.timeout)
         print("sent; the node " + ("restarted" if state.get("rebooted")
                                    else "has not said it restarted"))
