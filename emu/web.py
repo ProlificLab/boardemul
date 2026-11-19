@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
 import threading
@@ -37,6 +38,8 @@ from emu import device as device_folder  # noqa: E402
 from emu.skin import InputWriter, LETTER_KEYS, KEYSYMS, TDeckTyping  # noqa: E402
 
 WEB_DIR = Path(__file__).resolve().parent / "web"
+# Where RunHandle puts each run's directory, by device.
+LOGS = REPO_ROOT / "logs"
 UPLOADS = ".uploads"
 # The most a firmware upload may carry: four times the largest flash these
 # boards have (ADR 0139).
@@ -198,6 +201,52 @@ def audio_streams(outdir: Path) -> list[dict]:
                       "rate": rate, "channels": channels,
                       "bytes": path.stat().st_size})
     return found
+
+
+def latest_run_dir(name: str, logs: Path | None = None) -> Path | None:
+    """The highest-numbered run directory a device has, where RunHandle
+    puts them, or None if it never ran."""
+    runs = (logs or LOGS) / "devices" / name
+    numbered = [p for p in runs.iterdir() if p.is_dir() and p.name.isdigit()] \
+        if runs.is_dir() else []
+    return max(numbered, key=lambda p: int(p.name), default=None)
+
+
+def run_logs_zip(device, outdir: Path) -> bytes:
+    """The run's directory as a zip, with what it ran on (ADR 0163).
+
+    Regular files only: the sockets and pipes a run keeps beside its logs
+    are no use off this machine, and a file that cannot be read now (one
+    being replaced) is left out rather than failing the whole download."""
+    import io
+    import platform
+    import zipfile
+    from emu.version import VERSION
+    from tools import doctor
+    where = ("on this host" if device_folder.runs_natively()
+             else "in the container " + (os.environ.get("BOARDEMUL_IMAGE")
+                                         or device_folder.DEFAULT_IMAGE))
+    about = (f"BoardEmul {VERSION}\n"
+             f"QEMU sources {doctor.sources_digest()}\n"
+             f"host {platform.system()} {platform.release()}, "
+             f"Python {platform.python_version()}, runs start {where}\n"
+             f"device {device.name}, run {outdir.name}\n")
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("boardemul.txt", about)
+        manifest = device.root / device_folder.MANIFEST
+        if manifest.is_file():
+            zf.write(manifest, "device.json")
+        for path in sorted(outdir.rglob("*")):
+            # A socket made in the container shows on a Windows host as an
+            # empty regular file; by its name, it is not a log.
+            if path.suffix == ".sock" or not path.is_file():
+                continue
+            try:
+                zf.writestr(path.relative_to(outdir).as_posix(), path.read_bytes())
+            except OSError:
+                continue
+    return buf.getvalue()
 
 
 def device_json(device) -> dict:
@@ -416,6 +465,23 @@ class Handler(BaseHTTPRequestHandler):
                     return self._json({"error": f"{device.name} has no card"}, 404)
                 return self._file(device.sdcard, "application/octet-stream",
                                   download=f"{device.name}-card.img")
+            if segs[1] == "devices" and len(segs) == 4 and segs[3] == "logs.zip":
+                # The latest run, as one file for a report (ADR 0163).
+                device = self._device(segs[2])
+                handle = self.server.state.handle(device.name)
+                outdir = handle.outdir if handle is not None else latest_run_dir(device.name)
+                if outdir is None:
+                    return self._json({"error": f"{device.name} has not run yet"}, 404)
+                body = run_logs_zip(device, outdir)
+                self.send_response(200)
+                self.send_header("Content-Type", "application/zip")
+                self.send_header("Content-Disposition", 'attachment; filename='
+                                 f'"{device.name}-run-{outdir.name}.zip"')
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                self.wfile.write(body)
+                return
 
             if segs[1] == "skin" and len(segs) == 3:
                 board = segs[2].removesuffix(".png")

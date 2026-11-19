@@ -168,3 +168,4 @@ superseded ADR is marked superseded and points forward.
 | [0160](0160-a-device-is-made-from-the-firmware-library.md) | A device is made from the firmware library | Accepted (adds to 0135, 0147) |
 | [0161](0161-the-cores-take-turns-every-millisecond.md) | The cores take turns every millisecond | Accepted (adds to 0041) |
 | [0162](0162-a-version-a-changelog-and-a-check-on-every-push.md) | BoardEmul has a version, a changelog and a check on every push | Accepted |
+| [0163](0163-a-runs-logs-download-as-one-file.md) | A run's logs download as one file, saying what they ran on | Accepted (adds to 0135, 0162) |

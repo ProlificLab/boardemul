@@ -48,7 +48,12 @@ and pick its board, T-Deck Max or T-Deck. The pinned images:
 - the serial console. Switch between the UART and the USB port, and type a
   line into it: Enter sends it;
 - what the speaker played, when the device's settings ask for sound;
-- a scrubber through every frame of the run.
+- a scrubber through every frame of the run;
+- a download button for the run's logs: one zip of both serial ports, the
+  bus and QEMU logs, the input you gave and the frames, with the BoardEmul
+  version and the device's settings in it. Attach it to a problem report
+  (ADR 0163). It is the device's latest run, so it still works once the
+  run is stopped.
 
 The T-Deck's screen dims and darkens as the firmware drives its backlight.
 
@@ -119,6 +124,7 @@ and a run's input is a file of JSON lines.
 | `GET` / `POST /api/devices/NAME/snapshots` | lists, or takes one: `{"label"}` |
 | `POST /api/devices/NAME/snapshots/LABEL/restore` | restores one |
 | `GET` / `POST /api/devices/NAME/card` | downloads, or replaces, the card image |
+| `GET /api/devices/NAME/logs.zip` | the device's latest run's logs, with what it ran on |
 | `GET /api/runs/NAME/frame` | the latest panel image, as PNG |
 | `GET /api/runs/NAME/uart?port=uart\|usb&after=N` | a serial port's lines from line N |
 | `POST /api/runs/NAME/input` | input events, below |

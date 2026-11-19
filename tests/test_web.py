@@ -447,6 +447,52 @@ def test_a_running_device_is_not_snapshotted(server):
     assert status == 409 and "stop it first" in body["error"]
 
 
+def test_a_runs_logs_download_as_one_zip_that_names_its_build(server, tmp_path,
+                                                                monkeypatch):
+    """ADR 0163: live, and after the run is stopped."""
+    import io
+    import shutil
+    import zipfile
+    from emu.version import VERSION
+    client, devices, _s = server
+    _tdeck(client, devices, name="zipped")
+    status, body, _h = call(client, "GET", "/api/devices/zipped/logs.zip")
+    assert status == 404 and "has not run" in body["error"]
+    monkeypatch.setattr(web, "LOGS", tmp_path / "nowhere")   # nothing else there
+    call(client, "POST", "/api/devices/zipped/start", {})
+    outdir = Path(call(client, "GET", "/api/runs")[1]["runs"][0]["outdir"])
+    try:
+        (outdir / "zipped.uart.log").write_text("[  100][I] hello\n")
+        (outdir / "zipped.bus.sock").write_bytes(b"")
+        (outdir / "frames").mkdir()
+        (outdir / "frames" / "frame-001.png").write_bytes(b"\x89PNG")
+        status, data, headers = call(client, "GET", "/api/devices/zipped/logs.zip")
+        assert status == 200 and headers["Content-Type"] == "application/zip"
+        assert f'"zipped-run-{outdir.name}.zip"' in headers["Content-Disposition"]
+        names = set(zipfile.ZipFile(io.BytesIO(data)).namelist())
+        assert {"boardemul.txt", "device.json", "zipped.uart.log",
+                "frames/frame-001.png"} <= names
+        assert "zipped.bus.sock" not in names
+        about = zipfile.ZipFile(io.BytesIO(data)).read("boardemul.txt").decode()
+        assert f"BoardEmul {VERSION}" in about and "QEMU sources" in about
+
+        call(client, "POST", "/api/devices/zipped/stop", {})
+        monkeypatch.setattr(web, "LOGS", outdir.parent.parent.parent)
+        status, data, _h = call(client, "GET", "/api/devices/zipped/logs.zip")
+        assert status == 200
+        assert "zipped.uart.log" in zipfile.ZipFile(io.BytesIO(data)).namelist()
+    finally:
+        shutil.rmtree(outdir.parent, ignore_errors=True)
+
+
+def test_the_latest_run_is_the_highest_number(tmp_path):
+    runs = tmp_path / "devices" / "node"
+    for n in ("1", "2", "10", "notes"):
+        (runs / n).mkdir(parents=True)
+    assert web.latest_run_dir("node", tmp_path).name == "10"
+    assert web.latest_run_dir("other", tmp_path) is None
+
+
 def test_the_card_goes_out_and_comes_in(server):
     client, devices, _s = server
     _tdeck(client, devices)
