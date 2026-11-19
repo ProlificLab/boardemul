@@ -673,6 +673,8 @@ class Handler(BaseHTTPRequestHandler):
             Path(firmware), board=body.get("board", "tdeck-max"),
             psram_octal=bool(body.get("psram_octal", False)),
             overlays=tuple(body.get("overlays", ())))
+        # It restarts after a panic, as the board does (ADR 0145, decision 6).
+        device = device_folder.set_settings(device, device_folder.OPERATOR_SETTINGS)
         self._json(device_json(device), 201)
 
     def _device(self, name: str):

@@ -37,6 +37,9 @@ SDCARD = "sdcard.img"
 # The MAC a device is given when it is the first in its folder; the next
 # ones count up from it (ADR 0155, decision 5).
 DEFAULT_MAC = "02:54:44:4D:00:01"
+# What a device made from the page or `device.py create` starts with: it
+# restarts after a panic, as the board does (ADR 0145, decision 6).
+OPERATOR_SETTINGS = ("--reboot",)
 
 # Boards that have a card, with the size their board module builds; both
 # today build the same one, and the folder says so rather than assuming.

@@ -410,7 +410,17 @@ def test_settings_are_held_to_the_same_list(server):
     status, body, _h = call(client, "POST", "/api/devices/pocket/settings",
                             {"settings": ["--qemu", "/bin/sh"]})
     assert status == 400
-    assert json.loads((devices / "pocket" / "device.json").read_text())["settings"] == []
+    # Left as they were: what a device made from the page starts with.
+    assert json.loads((devices / "pocket" / "device.json").read_text())["settings"] \
+        == list(device_folder.OPERATOR_SETTINGS)
+
+
+def test_a_device_made_from_the_page_restarts_after_a_panic(server):
+    """ADR 0145, decision 6: as the board does, until it is unticked."""
+    client, devices, _s = server
+    _pocket(client, devices)
+    status, body, _h = call(client, "GET", "/api/devices")
+    assert body["devices"][0]["settings"] == ["--reboot"]
 
 
 def test_settings_for_a_device_that_is_not_there_404(server):

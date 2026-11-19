@@ -2,7 +2,7 @@
 
 **Status:** Accepted — 2026-11-18. Amends ADRs 0036, 0045 (the air's
 addresses), 0133 (the device manifest) and 0139 (the settings a page may
-pass).
+pass). Amended 2026-11-19: decision 6.
 
 ## Context
 
@@ -72,6 +72,15 @@ at every start. A device here should do the same.
    password, WPA2), a GPS position, the air's name and the device's place on
    it, and the instruction-counted clock. Saving it writes the manifest; the
    next start uses it.
+
+6. **A device made by an operator restarts after a panic** (amended
+   2026-11-19). The page and `tools/device.py create` give a new device
+   `--reboot` among its settings, because a board restarts after a panic and
+   a run without it ends instead: a Meshtastic node that hit ADR 0099's
+   canary simply stopped, which is not what the board does. It is one tick
+   in the settings sheet to take away. A device made directly with
+   `emu.device.create`, as the tests do, starts with none, so a test still
+   ends on a panic it did not forgive.
 
 ## Measured
 

@@ -57,6 +57,8 @@ def cmd_create(args) -> int:
             devices, args.name, _firmware_arg(args), board=args.board,
             mac=args.mac, psram_mb=args.psram, psram_octal=args.psram_octal,
             overlays=tuple(args.overlay))
+        # It restarts after a panic, as the board does (ADR 0145, decision 6).
+        device = device_folder.set_settings(device, device_folder.OPERATOR_SETTINGS)
     except device_folder.DeviceError as exc:
         raise SystemExit(str(exc))
     print(f"created {device.root}")
