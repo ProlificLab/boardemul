@@ -83,6 +83,11 @@ ADR 0099's canary (ipc1's stack, overflowed in `spinlock_acquire` while a
 tick forces a context switch) within 17 s. How often cross-core races land
 depends on the turn, so the turn is the shortest measured without it.
 
+Measured afterwards for that panic alone (`logs/canary_rate.sh`, ten boots of
+40 s per turn, four at a time): the 1 ms turn, ten clean; QEMU's 100 ms
+turn, eight clean, one canary and one other panic. The shorter turn does
+not make the canary likelier.
+
 ## Consequences
 
 **Good**
