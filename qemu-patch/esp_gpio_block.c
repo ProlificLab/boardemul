@@ -146,6 +146,11 @@ struct EspGpioBlock {
     char *report_path;
     uint64_t report_pins;
     int report_fd;
+
+    /* ADR 0165: the RTC controller's GPIO wake-up input, high while a pin set
+     * to wake the chip is at its level; -1 before first driven. */
+    qemu_irq rtc_wakeup;
+    int rtc_wakeup_level;
 };
 
 /* One report: a pin's level and the signal routed to it, at a guest time. */
@@ -162,6 +167,34 @@ static EspGpioBlock *the_block;   /* set at realize; see esp_gpio_pin_level */
 static uint64_t gpio_levels(EspGpioBlock *s)
 {
     return (s->out_level & ~s->in_driven) | (s->in_level & s->in_driven);
+}
+
+/* GPIO_PINn_WAKEUP_ENABLE (soc/esp32s3 gpio_reg.h): the pin wakes the chip from
+ * light sleep while at the level INT_TYPE names, 4 low or 5 high. */
+#define PIN_WAKEUP_ENABLE (1u << 10)
+
+/* Tell the RTC controller whether a wake-up pin is at its level (ADR 0165). It
+ * decides whether that wakes anything: only a sleep with GPIO wake-up on. */
+static void gpio_update_wakeup(EspGpioBlock *s)
+{
+    uint64_t levels = gpio_levels(s);
+    int due = 0;
+
+    if (!s->rtc_wakeup) {
+        return;
+    }
+    for (unsigned pin = 0; pin < GPIO_PIN_COUNT && !due; pin++) {
+        uint32_t cfg = s->pin_cfg[pin];
+        uint32_t type = (cfg >> 7) & 0x7;           /* INT_TYPE, bits 9:7 */
+        int level = (levels >> pin) & 1;
+
+        due = (cfg & PIN_WAKEUP_ENABLE) &&
+              ((type == 4 && !level) || (type == 5 && level));
+    }
+    if (due != s->rtc_wakeup_level) {
+        s->rtc_wakeup_level = due;
+        qemu_set_irq(s->rtc_wakeup, due);
+    }
 }
 
 int esp_gpio_pin_level(DeviceState *dev, unsigned pin)
@@ -240,6 +273,8 @@ static void gpio_reset(void *opaque)
     }
     s->irq_level = -1;
     gpio_update_irq(s);
+    s->rtc_wakeup_level = -1;       /* say it again: the RTC may have reset */
+    gpio_update_wakeup(s);
 }
 
 /* Tell the board what a reported pin is doing (ADR 0151). A stream, not
@@ -302,6 +337,7 @@ static void gpio_levels_changed(EspGpioBlock *s, uint64_t before)
             }
         }
     }
+    gpio_update_wakeup(s);          /* a pin may wake a light sleep (ADR 0165) */
 }
 
 static uint64_t gpio_read(void *opaque, hwaddr offset, unsigned size)
@@ -382,6 +418,7 @@ static void gpio_write(void *opaque, hwaddr offset, uint64_t val, unsigned size)
             gpio_latch(s, pin, !level, level);
         }
         gpio_update_irq(s);
+        gpio_update_wakeup(s);      /* WAKEUP_ENABLE may have changed */
         return;
     }
 
@@ -613,6 +650,15 @@ static void gpio_realize(DeviceState *dev, Error **errp)
                           "esp.gpio.hi", 0x1000 - R_IN);
     memory_region_add_subregion_overlap(get_system_memory(), s->base + R_IN,
                                         &s->iomem_hi, s->priority);
+    /* The RTC controller's GPIO wake-up input, which the carried patch
+     * rtc-light-sleep.patch gives it (ADR 0165). Without the patch there is
+     * no such input and pins simply wake nothing, as before. */
+    {
+        Object *rtc = object_resolve_path_type("", "misc.esp32s3.rtc_cntl", NULL);
+        if (rtc && object_property_find(rtc, "gpio-wakeup[0]")) {
+            s->rtc_wakeup = qdev_get_gpio_in_named(DEVICE(rtc), "gpio-wakeup", 0);
+        }
+    }
     the_block = s;
 }
 
@@ -636,6 +682,7 @@ static void gpio_init(Object *obj)
     s->irq_level = -1;
     s->fd = -1;
     s->report_fd = -1;
+    s->rtc_wakeup_level = -1;
 }
 
 static void gpio_class_init(ObjectClass *klass, void *data)

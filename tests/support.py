@@ -42,6 +42,7 @@ FIRMWARE_CPENABLE_PROBE = REPO_ROOT / "firmware" / "cpenable_probe.bin"
 FIRMWARE_AUDIO_PROBE = REPO_ROOT / "firmware" / "audio_probe.bin"
 # And from tools/serial_probe (ADR 0156).
 FIRMWARE_SERIAL_PROBE = REPO_ROOT / "firmware" / "serial_probe.bin"
+FIRMWARE_SLEEP_PROBE = REPO_ROOT / "firmware" / "sleep_probe.bin"
 
 
 PNG_MAGIC = bytes([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])

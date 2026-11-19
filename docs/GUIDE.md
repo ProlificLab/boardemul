@@ -57,6 +57,11 @@ and pick its board, T-Deck Max or T-Deck. The pinned images:
 
 The T-Deck's screen dims and darkens as the firmware drives its backlight.
 
+**A device that seems frozen may be asleep.** Firmware light-sleeps as it
+does on the board, and wakes on what it chose (ADR 0165): Meshtastic wakes
+on its timer, on a packet, and on a press of the trackball, not on a touch.
+Click the trackball (or press on it with the mouse) to wake it.
+
 **Watch several at once.** Back on the device list, every running device's
 card shows its screen, refreshed every second and a half, so a mesh of
 boards can be watched side by side. Click a screen to open that run.

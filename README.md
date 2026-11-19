@@ -286,10 +286,11 @@ is what took the first board from 232,320 round trips per frame to about 44.
 
 Our C is nine files we own plus a header, copied into the QEMU tree by
 `tools/build_qemu.sh` rather than committed to it. Their tree's own
-modification is a handful of build lines in one `meson.build`, plus two
-carried patches to their own logic, each reported upstream and listed in the
-build script: an icount sleep that is not deterministic, in QEMU's core, and
-flash writes that land synchronously (both ADR 0115). Nine more were carried
+modification is a handful of build lines in one `meson.build`, plus three
+carried patches to their own logic, listed in the build script: an icount
+sleep that is not deterministic, in QEMU's core, and flash writes that land
+synchronously (both ADR 0115, reported upstream), and light sleep in the RTC
+controller's model (ADR 0165, not yet offered). Nine more were carried
 until Espressif took them into the tag we pin (ADR 0138): a GDMA transmit
 path that never reported which descriptor finished (ADR 0017); an SPI1
 dummy-cycle conversion that shifted every runtime flash read by two bytes
