@@ -1,0 +1,6 @@
+# The runtime image's build context is the repository's root, and it needs
+# two things from it (ADR 0159). Everything else -- the firmware, the logs,
+# the QEMU trees under third_party/ -- stays out.
+*
+!tools/build_qemu.sh
+!qemu-patch/

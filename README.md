@@ -10,9 +10,20 @@ design were general and which were that board's accidents.
 
 ## Getting started
 
-Three commands make a new machine ready, from the repository's root
-(ADR 0147). On Windows they run in the build container; Docker Desktop has to
-be running.
+One command, from the repository's root, with Python 3.11+ and (on Windows)
+Docker Desktop running (ADR 0159):
+
+```
+python boardemul.py
+```
+
+The first time it builds the `boardemul-runtime` image, which compiles QEMU
+once, fetches the vendor firmware `firmware/MANIFEST.toml` pins, and opens
+the page. **`docs/GUIDE.md` is the operator's guide**: devices, settings,
+snapshots and clones, a Meshtastic mesh, the scripting API, and the limits.
+
+Developing the emulator itself uses the development image and builds QEMU
+into `third_party/` (ADR 0147):
 
 ```
 docker build -t boardemul-build .devcontainer
@@ -20,10 +31,7 @@ docker run --rm -v "%CD%":/work -w /work boardemul-build bash -lc tools/build_qe
 python tools/fetch_firmware.py
 ```
 
-`fetch_firmware.py` takes each vendor image from the commit
-`firmware/MANIFEST.toml` pins it at, and keeps it only if its SHA-256
-matches. Then `python tools/doctor.py` says whether anything is missing and
-what fixes it, and `python -m emu.web` opens the front door.
+`python tools/doctor.py` says whether anything is missing and what fixes it.
 
 ## State
 
