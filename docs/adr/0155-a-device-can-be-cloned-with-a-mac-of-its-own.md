@@ -1,6 +1,7 @@
 # ADR 0155 — A device can be cloned, with a MAC of its own
 
-**Status:** Accepted — 2026-11-18. Adds to ADRs 0133 and 0149.
+**Status:** Accepted — 2026-11-18. Adds to ADRs 0133 and 0149. Amended
+2026-11-19: decision 5, a new device too.
 
 ## Context
 
@@ -34,6 +35,14 @@ by hand gets the set-up, and also the identity, which is wrong twice over:
 
 4. **Both doors have it**: `tools/device.py clone NAME NEW [--mac MAC]`, and
    a Clone button in the page, which asks for the new name.
+
+5. **A new device gets a MAC of its own too.** Making two Meshtastic devices
+   from the firmware library (ADR 0160) gave both `02:54:44:4D:00:01`, the
+   one default every new device had, and two nodes on one air with one
+   node number. A new device now takes that default if no device in the
+   folder has it, and otherwise the first free one counting up from it. A
+   MAC given by hand that another device already has is refused, as for a
+   clone.
 
 ## Consequences
 

@@ -239,7 +239,9 @@ def main(argv: list[str] | None = None) -> int:
     create.add_argument("--firmware", required=True)
     create.add_argument("--board", default="tdeck-max",
                         choices=("tdeck-max", "tdeck"))
-    create.add_argument("--mac", default="02:54:44:4D:00:01")
+    create.add_argument("--mac", default=None,
+                        help="default: the first MAC no other device in the "
+                             "folder has, from 02:54:44:4D:00:01 up (ADR 0155)")
     create.add_argument("--psram", type=int, default=8)
     create.add_argument("--psram-octal", action="store_true",
                         help="always present PSRAM as octal; without it each "

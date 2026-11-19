@@ -335,6 +335,20 @@ def test_a_clone_has_the_storage_and_a_mac_of_its_own(tmp_path, firmware, fake_b
     assert third.mac == "24:6F:28:00:00:13"             # the next free one
 
 
+def test_new_devices_each_get_a_mac_of_their_own(tmp_path, firmware, fake_build):
+    devices = tmp_path / "devices"
+    first = device_folder.create(devices, "mesh-a", firmware)
+    second = device_folder.create(devices, "mesh-b", firmware)
+    assert first.mac == device_folder.DEFAULT_MAC == "02:54:44:4D:00:01"
+    assert second.mac == "02:54:44:4D:00:02"
+    assert fake_build[-1][2] == second.mac        # the eFuses carry it
+    device_folder.remove(first)
+    assert device_folder.create(devices, "mesh-c", firmware).mac == device_folder.DEFAULT_MAC
+    with pytest.raises(device_folder.DeviceError, match="already has the MAC"):
+        device_folder.create(devices, "mesh-d", firmware, mac="02:54:44:4D:00:02")
+    assert not (devices / "mesh-d").exists()
+
+
 def test_a_clone_refuses_a_taken_mac_or_a_running_original(tmp_path, firmware,
                                                           fake_build):
     device = device_folder.create(tmp_path / "devices", "node", firmware,

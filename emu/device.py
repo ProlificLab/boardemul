@@ -34,6 +34,9 @@ MANIFEST = "device.json"
 FLASH = "flash.bin"
 EFUSE = "efuse.bin"
 SDCARD = "sdcard.img"
+# The MAC a device is given when it is the first in its folder; the next
+# ones count up from it (ADR 0155, decision 5).
+DEFAULT_MAC = "02:54:44:4D:00:01"
 
 # Boards that have a card, with the size their board module builds; both
 # today build the same one, and the folder says so rather than assuming.
@@ -163,7 +166,7 @@ def folder(devices: Path, name: str) -> Path:
 
 
 def create(devices: Path, name: str, firmware: Path, board: str = "tdeck-max",
-           mac: str = "02:54:44:4D:00:01", psram_mb: int = 8,
+           mac: str | None = None, psram_mb: int = 8,
            psram_octal: bool = False, overlays: tuple[str, ...] = (),
            build=None) -> Device:
     """Make the folder and assemble its storage once.
@@ -172,6 +175,9 @@ def create(devices: Path, name: str, firmware: Path, board: str = "tdeck-max",
     takes (firmware, outdir, mac, overlays) and returns (flash, efuse). The
     production one is `emu.run.build_images`, which is `mkflash` under
     another name.
+
+    Without a `mac` the device gets one no other device in the folder has
+    (ADR 0155, decision 5).
     """
     if build is None:
         from emu.run import build_images as build
@@ -180,6 +186,12 @@ def create(devices: Path, name: str, firmware: Path, board: str = "tdeck-max",
         raise DeviceError(f"{root} already exists; remove it first")
     if not firmware.is_file():
         raise DeviceError(f"no firmware at {firmware}")
+    taken = {_mac_int(d.mac) for d in all_devices(devices)} if devices.is_dir() else set()
+    if mac is None:
+        mac = (DEFAULT_MAC if _mac_int(DEFAULT_MAC) not in taken
+               else next_free_mac(devices, DEFAULT_MAC))
+    elif _mac_int(mac) in taken:
+        raise DeviceError(f"another device already has the MAC {mac}")
     root.mkdir(parents=True)
     try:
         if not overlays:
