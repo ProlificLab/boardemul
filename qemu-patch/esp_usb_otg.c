@@ -33,11 +33,14 @@
  *   0x02 detached                          0x82 OUT packet on endpoint n
  *   0x03 ready: reset and recovered
  *   0x04 IN packet on n; argument = its maximum packet size
- *   0x05 the OUT packet on n was taken
+ *   0x05 the OUT packet on n was taken     0x8F done: the reply to the last
+ *                                               message is complete
  *
- * Nothing on it waits for an answer, so a register access never leaves QEMU
- * (ADR 0166 says why that matters). The host holds one OUT packet per
- * endpoint at a time; until the endpoint takes it, it is NAKed, and held here.
+ * A register access never crosses it (ADR 0166 says why that matters); each
+ * message to the host waits for the host's reply to it, up to its done, so
+ * the reply lands at the message's guest instant (otg_flush). The host holds
+ * one OUT packet per endpoint at a time; until the endpoint takes it, it is
+ * NAKed, and held here.
  *
  * The bus's times are the host's, kept here on the guest's clock: 100 ms of
  * attach debounce, a 10 ms reset, 10 ms of recovery before the first SETUP
@@ -183,6 +186,9 @@ OBJECT_DECLARE_SIMPLE_TYPE(EspUsbOtg, ESP_USB_OTG)
 #define TO_HOST_TAKEN       0x05
 #define FROM_HOST_SETUP     0x81
 #define FROM_HOST_OUT       0x82
+#define FROM_HOST_DONE      0x8F
+/* Messages to the host waiting their turn (otg_flush). */
+#define OUTBOX              8
 
 /* The host's times (USB 2.0): TATTDB, TDRST, TRSTRCY. */
 #define ATTACH_DEBOUNCE_NS  (100 * 1000000LL)
@@ -224,6 +230,13 @@ typedef struct {
     uint8_t data[PKT_MAX];
 } RxEntry;
 
+/* One message on the cable, either way. */
+typedef struct {
+    uint8_t type, ep;
+    uint16_t arg, len;
+    uint8_t data[PKT_MAX];
+} OtgMsg;
+
 struct EspUsbOtg {
     DeviceState parent_obj;
 
@@ -263,6 +276,9 @@ struct EspUsbOtg {
     bool connected;
     uint8_t inbuf[2 * (MSG_HEAD + PKT_MAX)];
     unsigned inbuf_len;
+    OtgMsg outbox[OUTBOX];
+    unsigned out_head, out_count;
+    bool flushing;
     bool said_tx_full, said_rx_full, said_bad_message;
     bool trace;
     /* A core between reading a register and its next access (otg_hold). */
@@ -438,11 +454,92 @@ static void otg_update(EspUsbOtg *s)
 
 /* -- the cable ----------------------------------------------------------- */
 
+static void otg_from_host(EspUsbOtg *s, uint8_t type, int n,
+                          const uint8_t *data, unsigned len);
+
+/* The next whole message from the host: from what has already arrived, or,
+ * if `wait`, read from the cable until one has. */
+static bool otg_take(EspUsbOtg *s, bool wait, OtgMsg *m)
+{
+    for (;;) {
+        unsigned need = MSG_HEAD;
+        if (s->inbuf_len >= MSG_HEAD) {
+            unsigned len = lduw_le_p(s->inbuf + 4);
+            if (len > PKT_MAX) {
+                /* Out of step with the host: nothing after this can be read. */
+                otg_from_host(s, s->inbuf[0], 0, NULL, len);
+                s->inbuf_len = 0;
+                return false;
+            }
+            need = MSG_HEAD + len;
+            if (s->inbuf_len >= need) {
+                m->type = s->inbuf[0];
+                m->ep = s->inbuf[1];
+                m->arg = lduw_le_p(s->inbuf + 2);
+                m->len = len;
+                memcpy(m->data, s->inbuf + MSG_HEAD, len);
+                memmove(s->inbuf, s->inbuf + need, s->inbuf_len - need);
+                s->inbuf_len -= need;
+                return true;
+            }
+        }
+        if (!wait || !s->connected) {
+            return false;
+        }
+        int want = need - s->inbuf_len;
+        if (qemu_chr_fe_read_all(&s->chr, s->inbuf + s->inbuf_len, want) != want) {
+            qemu_log_mask(LOG_UNIMP, "esp-usb-otg: the cable went quiet in the "
+                          "middle of a message; the host is gone%c", 10);
+            s->connected = false;
+            s->inbuf_len = 0;
+            return false;
+        }
+        s->inbuf_len += want;
+    }
+}
+
+/* Send what is waiting, one message at a time, each followed by everything
+ * the host sends in reply, up to its DONE.
+ *
+ * So the host's reaction to an event -- the SETUP after the bus is ready, the
+ * status stage after the last IN packet, the next packet after one is taken
+ * -- lands at the guest instant of the event, not whenever the main loop
+ * next reads the cable. On a timed air every run must be the same run to the
+ * microsecond (ADR 0115), and a host answering on its own time made two runs
+ * of one air differ by 1.5 ms at their first packet. Only what a person
+ * types arrives on the host's own time, as typed input does anywhere. A
+ * reply can cause another message (a packet taken), which waits its turn in
+ * the outbox rather than nesting. */
+static void otg_flush(EspUsbOtg *s)
+{
+    OtgMsg reply;
+
+    s->flushing = true;
+    while (s->out_count) {
+        OtgMsg *m = &s->outbox[s->out_head];
+        uint8_t head[MSG_HEAD];
+        head[0] = m->type;
+        head[1] = m->ep;
+        stw_le_p(head + 2, m->arg);
+        stw_le_p(head + 4, m->len);
+        if (s->connected) {
+            qemu_chr_fe_write_all(&s->chr, head, sizeof(head));
+            if (m->len) {
+                qemu_chr_fe_write_all(&s->chr, m->data, m->len);
+            }
+        }
+        s->out_head = (s->out_head + 1) % OUTBOX;
+        s->out_count--;
+        while (otg_take(s, true, &reply) && reply.type != FROM_HOST_DONE) {
+            otg_from_host(s, reply.type, reply.ep, reply.data, reply.len);
+        }
+    }
+    s->flushing = false;
+}
+
 static void otg_tell(EspUsbOtg *s, uint8_t type, int ep, unsigned arg,
                      const uint8_t *data, unsigned len)
 {
-    uint8_t head[MSG_HEAD];
-
     otg_note(s, 't', type, len | (ep << 16));
     if (s->trace) {
         qemu_log("otg %" PRId64 " tell 0x%02x ep%d len %u%c",
@@ -451,13 +548,21 @@ static void otg_tell(EspUsbOtg *s, uint8_t type, int ep, unsigned arg,
     if (!s->connected) {
         return;
     }
-    head[0] = type;
-    head[1] = (uint8_t)ep;
-    stw_le_p(head + 2, arg);
-    stw_le_p(head + 4, len);
-    qemu_chr_fe_write_all(&s->chr, head, sizeof(head));
-    if (len) {
-        qemu_chr_fe_write_all(&s->chr, data, len);
+    if (s->out_count == OUTBOX) {
+        qemu_log_mask(LOG_UNIMP, "esp-usb-otg: the outbox is full; message "
+                      "0x%02x for endpoint %d was dropped%c", type, ep, 10);
+        return;
+    }
+    OtgMsg *m = &s->outbox[(s->out_head + s->out_count++) % OUTBOX];
+    m->type = type;
+    m->ep = (uint8_t)ep;
+    m->arg = (uint16_t)arg;
+    m->len = (uint16_t)MIN(len, PKT_MAX);
+    if (m->len) {
+        memcpy(m->data, data, m->len);
+    }
+    if (!s->flushing) {
+        otg_flush(s);
     }
 }
 
@@ -1149,25 +1254,17 @@ static int otg_can_receive(void *opaque)
 static void otg_receive(void *opaque, const uint8_t *buf, int size)
 {
     EspUsbOtg *s = opaque;
+    OtgMsg m;
 
     size = MIN(size, (int)(sizeof(s->inbuf) - s->inbuf_len));
     memcpy(s->inbuf + s->inbuf_len, buf, size);
     s->inbuf_len += size;
-    while (s->inbuf_len >= MSG_HEAD) {
-        unsigned len = lduw_le_p(s->inbuf + 4);
-        if (len > PKT_MAX) {
-            /* Out of step with the host: nothing after this can be read. */
-            otg_from_host(s, s->inbuf[0], 0, NULL, len);
-            s->inbuf_len = 0;
-            break;
+    /* What the host sends on its own: what a person typed. A DONE here
+     * answers nothing that is waiting, and is let go. */
+    while (otg_take(s, false, &m)) {
+        if (m.type != FROM_HOST_DONE) {
+            otg_from_host(s, m.type, m.ep, m.data, m.len);
         }
-        if (s->inbuf_len < MSG_HEAD + len) {
-            break;
-        }
-        otg_from_host(s, s->inbuf[0], s->inbuf[1], s->inbuf + MSG_HEAD, len);
-        memmove(s->inbuf, s->inbuf + MSG_HEAD + len,
-                s->inbuf_len - MSG_HEAD - len);
-        s->inbuf_len -= MSG_HEAD + len;
     }
     otg_update(s);
 }

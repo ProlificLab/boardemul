@@ -198,7 +198,8 @@ def test_a_device_that_answers_nonsense_stops_enumeration_and_says_so() -> None:
 
 def test_the_cable_frames_messages_both_ways() -> None:
     """Messages split anywhere on the stream are read whole, and the host's
-    answers are framed the same way."""
+    answers are framed the same way, each reaction closed by a DONE that the
+    controller waits for (ADR 0115)."""
     ours, theirs = socket.socketpair()
     cable = u.OtgCable("unused.sock")
     thread = threading.Thread(target=cable.serve, args=(ours,), daemon=True)
@@ -209,15 +210,22 @@ def test_the_cable_frames_messages_both_ways() -> None:
         theirs.sendall(stream[i:i + 1])
         time.sleep(0.001)
     theirs.settimeout(2)
-    head = b""
-    while len(head) < u.HEAD.size:
-        head += theirs.recv(u.HEAD.size - len(head))
-    kind, ep, arg, length = u.HEAD.unpack(head)
-    body = b""
-    while len(body) < length:
-        body += theirs.recv(length - len(body))
-    assert (kind, ep, length) == (u.FROM_HOST_SETUP, 0, 8)
-    assert body == struct.pack("<BBHHH", 0x80, u.GET_DESCRIPTOR, u.DESC_DEVICE << 8, 0, 64)
+
+    def message() -> tuple[int, int, bytes]:
+        head = b""
+        while len(head) < u.HEAD.size:
+            head += theirs.recv(u.HEAD.size - len(head))
+        kind, ep, _arg, length = u.HEAD.unpack(head)
+        body = b""
+        while len(body) < length:
+            body += theirs.recv(length - len(body))
+        return kind, ep, body
+
+    replies = [message() for _ in range(3)]
+    assert [kind for kind, _ep, _body in replies] == [
+        u.FROM_HOST_DONE, u.FROM_HOST_SETUP, u.FROM_HOST_DONE]
+    assert replies[1][2] == struct.pack("<BBHHH", 0x80, u.GET_DESCRIPTOR,
+                                        u.DESC_DEVICE << 8, 0, 64)
     assert cable.summary().startswith("usb otg: stopped while control")
     theirs.close()
     thread.join(timeout=2)

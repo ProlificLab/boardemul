@@ -82,8 +82,17 @@ reason that is not the controller's speed at all (decision 3).
    *attached*, *detached*, *ready* (the bus is reset and recovered), *IN
    packet on endpoint n* (with the endpoint's packet size), and *your OUT
    packet on endpoint n was taken*; the host says *SETUP* and *OUT packet on
-   endpoint n*. That is the traffic of a USB cable, and nothing on it waits
-   for an answer, so a register access never leaves QEMU.
+   endpoint n*. That is the traffic of a USB cable, so a register access
+   never leaves QEMU; only packets and the bus's states do.
+   - Each message from the controller waits for the host's reaction to it,
+     which the host closes with *done*. The host's SETUP after the bus is
+     ready, its status stage after the last IN packet, its next packet after
+     one is taken, all land at the guest instant of their cause. Without
+     this they landed whenever QEMU's main loop next read the cable, and two
+     runs of one timed air (ADR 0115) differed by 1.5 ms of guest time at
+     their first packet, in the first suite run after the cable existed.
+     Only what a person types reaches the controller on the host's own
+     time, as typed input does anywhere.
    - The bus's times are the host's and are kept by the controller on the
      guest's clock, as a host's are fixed in the specification: a 100 ms
      attach debounce (TATTDB, USB 2.0 7.1.7.3), a 10 ms reset (TDRST), and

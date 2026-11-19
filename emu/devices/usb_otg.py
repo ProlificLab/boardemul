@@ -12,7 +12,12 @@ six-octet head -- type, endpoint, a sixteen-bit argument, a sixteen-bit length
     0x02 detached                          0x82 OUT packet on endpoint n
     0x03 ready: reset and recovered
     0x04 IN packet on n; argument = its maximum packet size
-    0x05 the OUT packet on n was taken
+    0x05 the OUT packet on n was taken     0x8F done: the reply to the last
+                                                message is complete
+
+The controller waits for each DONE, so whatever the host sends in reaction
+to a message lands at that message's guest instant: a timed air stays the
+same run every time (ADR 0115). Only what a person types is sent unasked.
 
 The controller keeps the bus's times (debounce, reset, recovery) on the
 guest's clock. The host does what a host does with a full-speed device once
@@ -39,7 +44,7 @@ log = logging.getLogger("usb")
 HEAD = struct.Struct("<BBHH")
 TO_HOST_ATTACHED, TO_HOST_DETACHED, TO_HOST_READY = 0x01, 0x02, 0x03
 TO_HOST_IN, TO_HOST_TAKEN = 0x04, 0x05
-FROM_HOST_SETUP, FROM_HOST_OUT = 0x81, 0x82
+FROM_HOST_SETUP, FROM_HOST_OUT, FROM_HOST_DONE = 0x81, 0x82, 0x8F
 PKT_MAX = 1024
 
 # Standard requests and descriptor types (USB 2.0 chapter 9), CDC (PSTN).
@@ -382,19 +387,27 @@ class OtgCable:
             pass
 
     def dispatch(self, kind: int, ep: int, arg: int, data: bytes) -> None:
+        """React to a message from the controller, then say the reaction is
+        complete, which the controller is waiting for."""
         with self._lock:
-            if kind == TO_HOST_ATTACHED:
-                self.host.attached()
-            elif kind == TO_HOST_DETACHED:
-                self.host.detached()
-            elif kind == TO_HOST_READY:
-                self.host.ready()
-            elif kind == TO_HOST_IN:
-                self.host.in_packet(ep, data, arg)
-            elif kind == TO_HOST_TAKEN:
-                self.host.taken(ep)
-            else:
-                log.warning("usb: the controller sent message 0x%02x", kind)
+            try:
+                self._react(kind, ep, arg, data)
+            finally:
+                self._send(FROM_HOST_DONE, 0, b"")
+
+    def _react(self, kind: int, ep: int, arg: int, data: bytes) -> None:
+        if kind == TO_HOST_ATTACHED:
+            self.host.attached()
+        elif kind == TO_HOST_DETACHED:
+            self.host.detached()
+        elif kind == TO_HOST_READY:
+            self.host.ready()
+        elif kind == TO_HOST_IN:
+            self.host.in_packet(ep, data, arg)
+        elif kind == TO_HOST_TAKEN:
+            self.host.taken(ep)
+        else:
+            log.warning("usb: the controller sent message 0x%02x", kind)
 
     # ---------------------------------------------------- from outside
 
