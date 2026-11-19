@@ -21,6 +21,7 @@ import argparse
 import json
 import os
 import re
+import socket
 import sys
 import threading
 import time
@@ -823,6 +824,18 @@ class Handler(BaseHTTPRequestHandler):
 
 class WebServer(ThreadingHTTPServer):
     daemon_threads = True
+    # One server per port. On Windows SO_REUSEADDR lets a second socket bind a
+    # port another one is listening on, and a second start of BoardEmul split
+    # the page's requests between two servers of different ages. There the
+    # port is taken exclusively, so a second start fails and says so; on
+    # Linux and macOS SO_REUSEADDR only lets a restart reuse a port in
+    # TIME_WAIT, which is what it is for.
+    allow_reuse_address = sys.platform != "win32"
+
+    def server_bind(self):
+        if sys.platform == "win32" and hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        super().server_bind()
 
     def __init__(self, address, state: ServerState, names: tuple[str, ...] = ()):
         super().__init__(address, Handler)
@@ -854,7 +867,13 @@ def main(argv: list[str] | None = None) -> int:
                     help="do not open a browser tab")
     args = ap.parse_args(argv)
 
-    server = make_server(args.dir, args.port)
+    try:
+        server = make_server(args.dir, args.port)
+    except OSError as exc:
+        print(f"port {args.port} is in use ({exc.strerror or exc}): is BoardEmul "
+              f"already running? Its page would be http://127.0.0.1:{args.port}/; "
+              "or start this one with --port", file=sys.stderr)
+        return 1
     url = f"http://127.0.0.1:{server.server_address[1]}/"
     from emu.version import VERSION
     print(f"BoardEmul {VERSION} web interface: {url}")

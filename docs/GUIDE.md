@@ -16,7 +16,9 @@ python boardemul.py
 The first time, it builds the `boardemul-runtime` image, which compiles
 QEMU once (ten to thirty minutes), and fetches the vendor firmware the
 manifest pins (about 30 MB). Then it opens the page at
-`http://127.0.0.1:8420/`. Every later start takes seconds.
+`http://127.0.0.1:8420/`. Every later start takes seconds; after an update
+that changed QEMU's side, it rebuilds the image first and says why. A second
+start while one is running stops at once and says the port is in use.
 
 `python boardemul.py --check` says what this machine lacks and how to fix
 each thing, without changing anything. The page shows the same list in red

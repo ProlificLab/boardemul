@@ -103,8 +103,7 @@ def main(argv: list[str] | None = None) -> int:
 
     say(f"ready; runs start {'on this host' if native else 'in ' + image}")
     from emu import web
-    web.main(["--port", str(args.port)] + (["--no-open"] if args.no_open else []))
-    return 0
+    return web.main(["--port", str(args.port)] + (["--no-open"] if args.no_open else []))
 
 
 if __name__ == "__main__":

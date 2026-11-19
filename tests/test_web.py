@@ -72,6 +72,22 @@ def call(client: http.client.HTTPConnection, method: str, path: str,
     return res.status, parsed, dict(res.getheaders())
 
 
+def test_a_second_server_on_a_taken_port_fails_and_says_so(tmp_path, capsys):
+    """On Windows SO_REUSEADDR let a second start bind the same port, and the
+    page's requests went to two servers of different ages. A second server
+    must fail instead, on every platform."""
+    first = web.make_server(tmp_path / "devices", 0)
+    port = first.server_address[1]
+    try:
+        with pytest.raises(OSError):
+            web.make_server(tmp_path / "devices", port)
+        assert web.main(["--port", str(port), "--no-open",
+                         "--dir", str(tmp_path / "devices")]) == 1
+        assert f"port {port} is in use" in capsys.readouterr().err
+    finally:
+        first.server_close()
+
+
 def test_the_page_serves(server):
     client, _d, _s = server
     status, body, headers = call(client, "GET", "/")
