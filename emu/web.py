@@ -399,6 +399,9 @@ class Handler(BaseHTTPRequestHandler):
                      "file": Path(e["path"]).name,
                      "present": fetch_firmware.state(e) == "ok"}
                     for e in fetch_firmware.load() if "board" in e]})
+            if segs[1] == "version" and len(segs) == 2:
+                from emu.version import VERSION
+                return self._json({"version": VERSION})
             if segs[1] == "doctor" and len(segs) == 2:
                 # What this machine lacks, by the doctor's own checks (ADR 0153).
                 from tools import doctor
@@ -766,7 +769,8 @@ def main(argv: list[str] | None = None) -> int:
 
     server = make_server(args.dir, args.port)
     url = f"http://127.0.0.1:{server.server_address[1]}/"
-    print(f"BoardEmul web interface: {url}")
+    from emu.version import VERSION
+    print(f"BoardEmul {VERSION} web interface: {url}")
     print("Ctrl-C stops the server and every run it started.")
     if not args.no_open:
         threading.Timer(0.4, lambda: webbrowser.open(url)).start()

@@ -273,7 +273,7 @@
 <body>
 <div class="app">
   <div class="bar">
-    <span class="wordmark">BOARDEMUL</span>
+    <span class="wordmark">BOARDEMUL <span id="version"></span></span>
     <span id="viewtitle" style="display:flex; align-items:baseline; gap:12px;">
       <h1>Devices</h1><span class="count" id="count"></span>
     </span>
@@ -1250,6 +1250,7 @@ refresh().then(() => {
   if (autorun) start(autorun).catch(err => snack("auto-start: " + err.message));
 }).catch(err => snack("load failed: " + err.message));
 checkMachine();
+api("/api/version").then(v => { $("version").textContent = v.version; }).catch(() => {});
 </script>
 </body>
 </html>
