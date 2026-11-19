@@ -258,9 +258,10 @@ def test_a_segment_says_when_the_guest_sent_it(wired) -> None:
 def test_the_answer_carries_the_interrupt_line(wired) -> None:
     """A transmission's TxDone, routed to DIO1, is a rise the controller can
     schedule: the ramp from STBY_RC to TX (126 us) after the release, and with
-    nothing to send, no airtime after that (ADR 0112)."""
+    nothing to send, no airtime after that (ADR 0112). TxDone is enabled and
+    routed to DIO1, the two masks SetDioIrqParams keeps apart (ADR 0141)."""
     controller, _ = wired
-    controller.send(SEG_DUPLEX, 1, bytes([0x08, 0x00, 0x01, 0, 0, 0, 0, 0, 0]))
+    controller.send(SEG_DUPLEX, 1, bytes([0x08, 0x00, 0x01, 0x00, 0x01, 0, 0, 0, 0]))
     controller.read(9)
     controller.send(SEG_RELEASE_BUSY, 1)
     assert controller.answer()[2:] == (0, 0), "nothing is due yet"
