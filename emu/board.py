@@ -32,6 +32,7 @@ from emu.devices.modem import A7682E
 from emu.guest_clock import GuestClock
 from emu.devices.sdcard import SdCard
 from emu.devices.sx1262 import Sx1262
+from emu.devices.usb_otg import OtgCable
 from emu.i2c_link import I2CServer
 from emu.inputs import InputTail
 from emu.peripherals.gpio import GpioClient
@@ -238,6 +239,8 @@ class Board:
     modem: "SerialServer | None" = None
     # The guest's clock, for parts that keep the board's time (ADR 0104).
     clock: "GuestClock | None" = None
+    # The host on the cable to the chip's USB OTG controller (ADR 0166).
+    usb_otg: "OtgCable | None" = None
 
     def start(self) -> None:
         if self.clock:
@@ -252,13 +255,15 @@ class Board:
             self.modem.start()
         if self.frames:
             self.frames.start()
+        if self.usb_otg is not None:
+            self.usb_otg.start()
         # BUSY idles high on this panel. Set before QEMU connects; the client
         # replays it on connect, so the line is right from the first fetch.
         self.gpio.drive(EPD_BUSY_PIN, 1)
 
     def stop(self) -> None:
         for link in (self.spi, self.i2c0, self.i2c1, self.gpio,
-                     self.gps, self.modem, self.frames, self.clock):
+                     self.gps, self.modem, self.frames, self.clock, self.usb_otg):
             if link:
                 link.stop()
 
@@ -272,6 +277,9 @@ class Board:
             args += ["-device", spec]
         if self.clock:
             args += ["-device", self.clock.device()]
+        if self.usb_otg is not None:
+            # The controller is QEMU's; this end of its cable is ours.
+            args += self.usb_otg.qemu_args()
         # The order matters and is the only thing that names the port: the
         # console is given first, in build_argv, so these are the machine's
         # second and third UARTs. A port with nothing on it before one that has
@@ -402,9 +410,13 @@ def build(outdir: Path, air: str | None = None, ble_air: str | None = None,
         from emu.devices.wifi_ap import FrameChannel, build_access_point
         frames = FrameChannel(outdir / "wifi.sock", build_access_point(wifi_ap))
 
+    # The host on the cable to the chip's USB OTG controller (ADR 0166).
+    usb = OtgCable.logging_to(outdir / "otg.sock",
+                              outdir / f"{air_name or outdir.name}.otg.log")
+
     return Board(regions=regions, gpio=gpio, spi=spi, i2c0=i2c0, i2c1=i2c1,
                  panel=panel, gps=receiver, gps_uart=2, modem=modem, clock=clock,
-                 frames=frames, devices=devices)
+                 frames=frames, devices=devices, usb_otg=usb)
 
 
 def attach_input(server: BusServer, board: Board, outdir: Path) -> InputTail:
