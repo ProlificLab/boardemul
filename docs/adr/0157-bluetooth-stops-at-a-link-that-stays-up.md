@@ -2,7 +2,8 @@
 
 **Status:** Accepted — 2026-11-18. Decides where the Bluetooth model stops
 for now, after ADRs 0044–0051. Steps 1, 3 and 5 taken by ADRs 0168 and
-0169, step 4 by ADR 0171; step 2, channel hopping, remains.
+0169, step 4 by ADR 0171, and step 2's keeping of transmissions apart by
+ADR 0173; its channels remain one shared channel.
 
 ## Context
 
