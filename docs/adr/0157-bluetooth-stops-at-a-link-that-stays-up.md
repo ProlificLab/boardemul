@@ -1,7 +1,8 @@
 # ADR 0157 — Bluetooth stops at a link that stays up, and this is the road past it
 
 **Status:** Accepted — 2026-11-18. Decides where the Bluetooth model stops
-for now, after ADRs 0044–0051.
+for now, after ADRs 0044–0051. Steps 1, 3 and 5 taken by ADRs 0168 and
+0169, step 4 by ADR 0171; step 2, channel hopping, remains.
 
 ## Context
 

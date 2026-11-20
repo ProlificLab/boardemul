@@ -1,6 +1,8 @@
 # ADR 0046 — The controller can be spoken to
 
 **Status:** Accepted — 2026-09-08. A step toward a connectable peer, not one.
+Amended by ADR 0171: an advertising frame carries the advertiser's address
+between its type octet and its data, as an ADV_IND PDU does.
 
 ## Context
 

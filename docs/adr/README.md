@@ -171,3 +171,9 @@ superseded ADR is marked superseded and points forward.
 | [0163](0163-a-runs-logs-download-as-one-file.md) | A run's logs download as one file, saying what they ran on | Accepted (adds to 0135, 0162) |
 | [0164](0164-a-host-port-reaches-the-device-over-wifi.md) | A port of the host reaches a TCP port of the device over WiFi | Accepted (takes ADR 0158's second road; adds to 0089, 0097) |
 | [0165](0165-light-sleep-wakes-on-its-timer-and-its-pins.md) | Light sleep wakes on its timer and its pins | Accepted (adds to 0151) |
+| [0166](0166-the-usb-otg-port-has-a-host.md) | The USB OTG port has a host: a firmware's TinyUSB serial port is read | Accepted (takes ADR 0158's first road) |
+| [0167](0167-tests-whose-deadlines-follow-the-host-run-alone.md) | Slow tests whose firmware keeps deadlines on the host's time run alone | Accepted |
+| [0168](0168-the-bluetooth-link-transmits-what-the-controller-stages.md) | The Bluetooth link transmits what the controller stages | Accepted (step 1 of 0157) |
+| [0169](0169-a-central-reads-meshtastic-over-bluetooth.md) | A central reads Meshtastic over Bluetooth | Accepted (steps 3 and 5 of 0157) |
+| [0170](0170-a-register-access-does-not-end-a-block-without-icount.md) | A register access does not end a translation block without `-icount` | Accepted (adds a carried patch, 0017) |
+| [0171](0171-bluetooth-pairs-with-a-passkey-and-encrypts.md) | Bluetooth pairs with a passkey and encrypts the link | Accepted (step 4 of 0157; amends 0046) |
