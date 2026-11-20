@@ -4,15 +4,19 @@
 It connects to the board, keeps the link with a packet every connection
 interval, answers what the peripheral's link layer asks (its features, its
 data length), and speaks ATT over L2CAP: MTU exchange, primary services,
-characteristics, reads and writes. Standard library only.
+characteristics, reads and writes. It pairs, too (ADR 0171): LE Secure
+Connections passkey entry over the Security Manager, then the link layer's
+encryption, AES-CCM on every packet after it. Standard library only.
 
 Frames on the air are a data channel PDU's first header octet, then its
-payload (ADR 0168); the connection request is ADR 0047's. Nothing here is
-retransmitted by the link layer, which assumes delivery, so an ATT request
-that gets no answer is sent again.
+payload (ADR 0168); an advertisement is its type octet, the advertiser's
+address and its data (ADR 0171); the connection request is ADR 0047's.
+Nothing here is retransmitted by the link layer, which assumes delivery, so
+an ATT request that gets no answer is sent again.
 
     python3 tools/ble_central.py AIR_DIR services
     python3 tools/ble_central.py AIR_DIR meshtastic      # want_config, FromRadio
+    python3 tools/ble_central.py AIR_DIR meshtastic --passkey 123456
 
 Run where the board's air directory is, which is the build container for a
 run started there.
@@ -21,6 +25,7 @@ run started there.
 from __future__ import annotations
 
 import argparse
+import secrets
 import struct
 import sys
 import time
@@ -29,12 +34,29 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from emu.devices.air import AirMedium  # noqa: E402
+from tools import ble_crypto  # noqa: E402
 
 PDU_CONNECT_IND = 0x05
+TX_ADD, RX_ADD = 0x40, 0x80             # an advertising header's address types
 LLID_CONTINUE, LLID_START, LLID_CONTROL = 1, 2, 3
+LL_ENC_REQ, LL_ENC_RSP, LL_START_ENC_REQ, LL_START_ENC_RSP = 0x03, 0x04, 0x05, 0x06
+LL_REJECT_IND, LL_REJECT_EXT_IND = 0x0D, 0x11
 LL_FEATURE_REQ, LL_FEATURE_RSP, LL_VERSION_IND = 0x08, 0x09, 0x0C
 LL_PERIPHERAL_FEATURE_REQ, LL_LENGTH_REQ, LL_LENGTH_RSP = 0x0E, 0x14, 0x15
-CID_ATT = 4
+# What every link layer accepts in one packet, before or without a length
+# exchange; larger L2CAP frames go in pieces of this.
+LL_PAYLOAD = 27
+CID_ATT, CID_SMP = 4, 6
+# The Security Manager (Core Specification Vol 3, Part H, 3).
+SMP_PAIRING_REQ, SMP_PAIRING_RSP, SMP_CONFIRM, SMP_RANDOM = 0x01, 0x02, 0x03, 0x04
+SMP_PAIRING_FAILED, SMP_PUBLIC_KEY, SMP_DHKEY_CHECK = 0x05, 0x0C, 0x0D
+IO_KEYBOARD_ONLY = 0x02
+AUTH_BONDING, AUTH_MITM, AUTH_SC = 0x01, 0x04, 0x08
+SMP_FAILURES = {0x01: "passkey entry failed", 0x02: "OOB not available",
+                0x03: "authentication requirements", 0x04: "confirm value failed",
+                0x05: "pairing not supported", 0x06: "encryption key size",
+                0x08: "unspecified reason", 0x09: "repeated attempts",
+                0x0B: "DHKey check failed"}
 ATT_ERROR, ATT_MTU_REQ, ATT_MTU_RSP = 0x01, 0x02, 0x03
 ATT_READ_BY_TYPE_REQ, ATT_READ_BY_TYPE_RSP = 0x08, 0x09
 ATT_READ_REQ, ATT_READ_RSP = 0x0A, 0x0B
@@ -64,17 +86,26 @@ def uuid_text(raw: bytes) -> str:
     return f"{h[:8]}-{h[8:12]}-{h[12:16]}-{h[16:20]}-{h[20:]}"
 
 
-def connect_request() -> bytes:
-    initiator = bytes.fromhex("ccbbaa286f24")
-    advertiser = bytes.fromhex("0100000000c0")
+# The central's own address, public, least significant octet first.
+INITIATOR = bytes.fromhex("ccbbaa286f24")
+NO_ADDRESS = bytes.fromhex("0100000000c0")
+
+
+def connect_request(advertiser: bytes = NO_ADDRESS, random: bool = False) -> bytes:
+    """A CONNECT_IND from INITIATOR (public) to the advertiser heard."""
     data = (struct.pack("<I", 0xAF9AB4C3) + bytes.fromhex("555555") + bytes([3])
             + struct.pack("<HHHH", 1, INTERVAL_UNITS, 0, 72)
             + bytes.fromhex("ffffffff1f") + bytes([0x0D]))
-    return bytes([PDU_CONNECT_IND]) + initiator + advertiser + data
+    return (bytes([PDU_CONNECT_IND | (RX_ADD if random else 0)])
+            + INITIATOR + advertiser + data)
 
 
 class LinkLost(Exception):
     """The peripheral advertises again: the connection is gone."""
+
+
+class PairingError(Exception):
+    """The Security Manager or the link's encryption start failed."""
 
 
 class AttError(Exception):
@@ -96,6 +127,16 @@ class Central:
         self.heard_since_send = True          # the peripheral answered our last packet
         self.sent_at = 0.0
         self.adverts_since = 0                # advertisements heard while connected
+        self.peer: bytes | None = None        # the advertiser's address, LSO first
+        self.peer_random = False
+        # The link's encryption (ADR 0171): its session key in FIPS-197 order,
+        # the IV, and each direction's packet counter, once started.
+        self.sk: bytes | None = None
+        self.iv = b""
+        self.tx_crypt = self.rx_crypt = False
+        self.tx_count = self.rx_count = 0
+        self.mic_failures = 0
+        self.starting: tuple[bytes, bytes, bytes] | None = None   # LTK, SKDm, IVm
 
     def close(self) -> None:
         self.air.close()
@@ -106,22 +147,45 @@ class Central:
         """Wait to hear the board advertise, then ask to connect."""
         deadline = time.monotonic() + wait_s
         while time.monotonic() < deadline:
-            if self.air.poll():
+            heard = self.air.poll()
+            for frame in heard:
+                if not frame[0] & 3 and len(frame) >= 7:      # an advertisement
+                    self.peer, self.peer_random = frame[1:7], bool(frame[0] & TX_ADD)
+            if heard:
                 self.sn = self.nesn = 0
                 self.heard_since_send = True
                 self.outbox.clear()
                 self.frames.clear()
                 self.l2cap = bytearray()
-                self.air.send(connect_request())
+                self.sk, self.tx_crypt, self.rx_crypt = None, False, False
+                self.starting = None
+                self.tx_count = self.rx_count = self.mic_failures = 0
+                self.air.send(connect_request(self.peer or NO_ADDRESS, self.peer_random))
                 self.connected_at = time.monotonic()
                 self.adverts_since = 0
                 return True
             time.sleep(0.5)
         return False
 
+    def _nonce(self, counter: int, from_central: bool) -> bytes:
+        """Vol 6, Part E, 2.1: the 39-bit counter, the direction bit, the IV."""
+        return (counter | (from_central << 39)).to_bytes(5, "little") + self.iv
+
     def _send(self, llid: int, payload: bytes = b"") -> None:
-        self.air.send(bytes([llid | self.nesn << 2 | self.sn << 3]) + payload)
+        header = llid | self.nesn << 2 | self.sn << 3
+        if self.tx_crypt and payload:
+            payload = ble_crypto.ccm_encrypt(self.sk, self._nonce(self.tx_count, True),
+                                             payload, aad=bytes([header & 0xE3]))
+            self.tx_count += 1
+        self.air.send(bytes([header]) + payload)
         self.sn ^= 1
+
+    def send_l2cap(self, cid: int, pdu: bytes) -> None:
+        """An L2CAP frame, in packets no longer than any link layer accepts."""
+        frame = struct.pack("<HH", len(pdu), cid) + pdu
+        for at in range(0, len(frame), LL_PAYLOAD):
+            self.outbox.append((LLID_START if at == 0 else LLID_CONTINUE,
+                                frame[at:at + LL_PAYLOAD]))
 
     def _listen(self) -> None:
         for frame in self.air.poll():
@@ -136,8 +200,24 @@ class Central:
             self.nesn ^= 1
             self.heard_since_send = True
             body = frame[1:]
+            if self.rx_crypt and body:
+                body = ble_crypto.ccm_decrypt(self.sk, self._nonce(self.rx_count, False),
+                                              body, aad=bytes([frame[0] & 0xE3]))
+                if body is None:
+                    self.mic_failures += 1
+                    continue
+                self.rx_count += 1
             if llid == LLID_CONTROL and body:
                 self.control.append(body)
+                if body[0] == LL_ENC_RSP and self.starting and len(body) >= 13:
+                    ltk, skdm, ivm = self.starting
+                    self.sk = ble_crypto.aes_encrypt(ltk[::-1], (skdm + body[1:9])[::-1])
+                    self.iv = ivm + body[9:13]
+                elif body[0] == LL_START_ENC_REQ and self.sk:
+                    # Vol 6, Part B, 5.1.3.1: answered encrypted, and from
+                    # here on both directions are.
+                    self.tx_crypt = self.rx_crypt = True
+                    self.outbox.insert(0, (LLID_CONTROL, bytes([LL_START_ENC_RSP])))
                 if body[0] in (LL_PERIPHERAL_FEATURE_REQ, LL_FEATURE_REQ):
                     self.outbox.append((LLID_CONTROL, bytes([LL_FEATURE_RSP]) + bytes(8)))
                 elif body[0] == LL_LENGTH_REQ:
@@ -196,7 +276,7 @@ class Central:
         """Send an ATT request and return its response, sending it again if
         nothing came back; an error response raises AttError."""
         for _ in range(tries):
-            self.outbox.append((LLID_START, struct.pack("<HH", len(pdu), CID_ATT) + pdu))
+            self.send_l2cap(CID_ATT, pdu)
             end = time.monotonic() + wait_s
             while time.monotonic() < end:
                 self.step()
@@ -252,6 +332,100 @@ class Central:
                 start = declaration + 1
         return found
 
+    # -- pairing and encryption (ADR 0171) ------------------------------------
+
+    def smp_wait(self, code: int, wait_s: float = 120) -> bytes:
+        """The Security Manager's next PDU of this kind; a Pairing Failed
+        raises. Its procedures time out after thirty seconds of the
+        peripheral's time, which under -icount is longer in the wall's."""
+        end = time.monotonic() + wait_s
+        while time.monotonic() < end:
+            self.step()
+            for i, (cid, p) in enumerate(self.frames):
+                if cid != CID_SMP or not p:
+                    continue
+                del self.frames[i]
+                if p[0] == SMP_PAIRING_FAILED:
+                    reason = p[1] if len(p) > 1 else 0
+                    raise PairingError(f"pairing failed: 0x{reason:02x} "
+                                       f"({SMP_FAILURES.get(reason, '?')})")
+                if p[0] == code:
+                    return p
+                break
+        raise TimeoutError(f"no Security Manager PDU 0x{code:02x}")
+
+    def _smp_fail(self, reason: int) -> None:
+        self.send_l2cap(CID_SMP, bytes([SMP_PAIRING_FAILED, reason]))
+        self.run(1.0)
+        raise PairingError(f"pairing abandoned: 0x{reason:02x} "
+                           f"({SMP_FAILURES.get(reason, '?')})")
+
+    def pair(self, passkey: int) -> bytes:
+        """LE Secure Connections passkey entry, this side typing the passkey
+        the peripheral shows (Vol 3, Part H, 2.3.5.6.3). Returns the LTK,
+        least significant octet first."""
+        if self.peer is None:
+            raise PairingError("no advertiser address heard; pairing needs it")
+        auth = AUTH_BONDING | AUTH_MITM | AUTH_SC
+        # No keys distributed either way: Secure Connections derives the LTK.
+        preq = bytes([SMP_PAIRING_REQ, IO_KEYBOARD_ONLY, 0, auth, 16, 0, 0])
+        self.send_l2cap(CID_SMP, preq)
+        pres = self.smp_wait(SMP_PAIRING_RSP)
+        if not pres[3] & AUTH_SC:
+            self._smp_fail(0x03)
+        private, public = ble_crypto.p256_keypair()
+        pka = ble_crypto.public_key_le(public)
+        self.send_l2cap(CID_SMP, bytes([SMP_PUBLIC_KEY]) + pka)
+        pkb = self.smp_wait(SMP_PUBLIC_KEY)[1:65]
+        peer_key = ble_crypto.public_key_from_le(pkb)
+        if not ble_crypto.on_curve(peer_key):
+            self._smp_fail(0x08)
+        dhkey = ble_crypto.p256_dhkey(private, peer_key)
+        # Twenty rounds, one per bit of the passkey, each committing to a
+        # fresh nonce before revealing it.
+        for i in range(20):
+            z = 0x80 | (passkey >> i) & 1
+            na = secrets.token_bytes(16)
+            self.send_l2cap(CID_SMP, bytes([SMP_CONFIRM])
+                            + ble_crypto.f4(pka[:32], pkb[:32], na, z))
+            cb = self.smp_wait(SMP_CONFIRM)[1:17]
+            self.send_l2cap(CID_SMP, bytes([SMP_RANDOM]) + na)
+            nb = self.smp_wait(SMP_RANDOM)[1:17]
+            if ble_crypto.f4(pkb[:32], pka[:32], nb, z) != cb:
+                self._smp_fail(0x04)
+        a = ble_crypto.typed_address(INITIATOR, random=False)
+        b = ble_crypto.typed_address(self.peer, random=self.peer_random)
+        mackey, ltk = ble_crypto.f5(dhkey, na, nb, a, b)
+        r = passkey.to_bytes(16, "little")
+        io_a, io_b = bytes(preq[1:4]), bytes(pres[1:4])
+        self.send_l2cap(CID_SMP, bytes([SMP_DHKEY_CHECK])
+                        + ble_crypto.f6(mackey, na, nb, r, io_a, a, b))
+        eb = self.smp_wait(SMP_DHKEY_CHECK)[1:17]
+        if ble_crypto.f6(mackey, nb, na, r, io_b, b, a) != eb:
+            self._smp_fail(0x0B)
+        return ltk
+
+    def encrypt(self, ltk: bytes, wait_s: float = 120) -> None:
+        """The link layer's encryption start (Vol 6, Part B, 5.1.3.1) with a
+        Secure Connections LTK: no Rand, no EDIV. The session key is
+        e(LTK, SKDm || SKDs) and the IV IVm || IVs, the central's half least
+        significant in both."""
+        skdm, ivm = secrets.token_bytes(8), secrets.token_bytes(4)
+        self.control.clear()
+        self.starting = (ltk, skdm, ivm)
+        self.outbox.append((LLID_CONTROL, bytes([LL_ENC_REQ]) + bytes(10) + skdm + ivm))
+        end = time.monotonic() + wait_s
+        while time.monotonic() < end:
+            self.step()
+            for body in self.control:
+                if body[0] in (LL_REJECT_IND, LL_REJECT_EXT_IND):
+                    raise PairingError(f"encryption refused: {body.hex()}")
+                elif body[0] == LL_START_ENC_RSP and self.rx_crypt:
+                    return
+            if self.mic_failures:
+                raise PairingError("the peripheral's packets do not decrypt")
+        raise TimeoutError("the link's encryption did not start")
+
     def read(self, handle: int) -> bytes:
         return self.transact(bytes([ATT_READ_REQ]) + struct.pack("<H", handle),
                              (ATT_READ_RSP,))[1:]
@@ -261,7 +435,7 @@ class Central:
                       (ATT_WRITE_RSP,))
 
 
-def session(central: Central, command: str) -> int:
+def session(central: Central, command: str, passkey: int | None = None) -> int:
     version = central.version()
     if version:
         _op, ver, company, sub = struct.unpack("<BBHH", version[:6])
@@ -279,6 +453,13 @@ def session(central: Central, command: str) -> int:
     chars = central.characteristics(mesh[0], mesh[1])
     for uuid, (handle, props) in chars.items():
         print(f"  characteristic 0x{handle:04x} props 0x{props:02x} {uuid}")
+    if passkey is not None:
+        try:
+            central.encrypt(central.pair(passkey))
+        except PairingError as error:
+            print(f"  {error}")
+            return 1
+        print(f"  paired with passkey {passkey:06d}; link encrypted")
     from tools import mesh_api
     nonce = 42
     seen: dict = {}
@@ -306,6 +487,8 @@ def main(argv: list[str] | None = None) -> int:
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("air", help="the run's Bluetooth air directory (--ble-air)")
     ap.add_argument("command", choices=("services", "meshtastic"))
+    ap.add_argument("--passkey", type=int,
+                    help="pair with this passkey first (the node's PIN), and encrypt")
     ap.add_argument("--attempts", type=int, default=3,
                     help="connections to try if the link is lost (default 3)")
     args = ap.parse_args(argv)
@@ -316,7 +499,7 @@ def main(argv: list[str] | None = None) -> int:
                 print("heard nothing advertise", file=sys.stderr)
                 return 1
             try:
-                return session(central, args.command)
+                return session(central, args.command, args.passkey)
             except (LinkLost, TimeoutError) as error:
                 print(f"connection {attempt + 1} ended: {error}; connecting again",
                       flush=True)
