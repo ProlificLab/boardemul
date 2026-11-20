@@ -74,7 +74,15 @@ join and the T-Deck and Max boots pass with them.
 
 The profile's next item is the big lock: the main loop wakes about 2,500
 times a second on a Meshtastic boot, and each wake is a handoff the guest's
-thread waits through (9 %, and RCU's 3 %).
+thread waits through (9 %, and RCU's 3 %). A thousand of those wakes are
+ADR 0161's turn timer. Tried the same day and not kept: ending the turn
+from a thread of its own, which `cpu_exit()` allows without the lock. The
+main loop then blocked 1,800 times a second instead of 2,500 and the
+guest's thread ran 73 % of the time instead of 67 %, but Meshtastic reached
+its home screen no sooner (`tools/speed.sh`, three interleaved runs each:
+11.2 s both ways, spread 3 s). Most of the rest are the firmware's own
+timer interrupts, two cores at 1 kHz, which without `-icount` the main loop
+has to raise.
 
 ## Consequences
 
