@@ -1056,12 +1056,17 @@ static void ble_kick(EspBleCore *s, uint32_t value)
     ble_peek(s, idx);
     ble_tx_peek(s, idx);
     ble_sched_peek(s, idx, "kick");
-    ble_transmit(s);
     /* The entry names its own control structure, and the structure's place in
      * exchange memory says which link the event is for. */
     uint16_t cs = (uint16_t)(e[ET_CS_HALFWORD] | (e[ET_CS_HALFWORD + 1] << 8));
     unsigned link = cs >= CS_BASE_HALFWORDS
         ? (cs - CS_BASE_HALFWORDS) / CS_HALFWORDS_PER_LINK : 0;
+    /* Advertising is activity zero and is sent on its own events only: sent
+     * at a connection's events too, a central heard its peripheral
+     * advertise all through the connection, as if it had dropped it (ADR 0168). */
+    if (link == 0) {
+        ble_transmit(s);
+    }
     bool received = false;
     {
         uint8_t heard[64];

@@ -17,6 +17,10 @@ What changed for someone running BoardEmul, newest first. The reasons are in
   T-Deck node joins the run's WPA2 network and its TCP API answers on
   `localhost:4403` through `--wifi-forward`. It needs the classic display
   mode, as on the real device (0164).
+- Bluetooth carries data: the controller's own packets go out on a
+  connection (0168), and `tools/ble_central.py` reads and writes a GATT
+  server. Meshtastic's phone API answers over it, with the node's whole
+  configuration, once its pairing mode is NO_PIN (0169).
 
 ## 1.1.0 — 2026-11-19
 

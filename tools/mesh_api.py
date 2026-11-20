@@ -43,7 +43,12 @@ PACKET_FROM, PACKET_TO, PACKET_DECODED, PACKET_ID = 1, 2, 4, 6
 DATA_PORTNUM, DATA_PAYLOAD, DATA_WANT_RESPONSE = 1, 2, 3
 ADMIN_APP = 6
 ADMIN_SET_CONFIG = 34
-CONFIG_NETWORK, CONFIG_DISPLAY = 4, 5
+CONFIG_NETWORK, CONFIG_DISPLAY, CONFIG_BLUETOOTH = 4, 5, 7
+BLUETOOTH_MODE = 2
+# BluetoothConfig.PairingMode. Under anything but NO_PIN Meshtastic reads and
+# writes its characteristics only on an encrypted, authenticated link
+# (src/nimble/NimbleBluetooth.cpp; ADR 0157).
+PAIRING_MODES = {"random-pin": 0, "fixed-pin": 1, "no-pin": 2}
 NETWORK_WIFI_ENABLED, NETWORK_SSID, NETWORK_PSK = 1, 3, 4
 DISPLAY_MODE = 8
 # DisplayConfig.DisplayMode. COLOR selects the colour interface (the "MUI"),
@@ -176,6 +181,12 @@ def set_wifi(node: int, ssid: str, psk: str, network: bytes = b"",
     return set_config(node, CONFIG_NETWORK, body)
 
 
+def set_pairing_mode(node: int, mode: int, bluetooth: bytes = b"") -> bytes:
+    """Change the Bluetooth pairing mode, keeping the rest of the section."""
+    return set_config(node, CONFIG_BLUETOOTH,
+                      patch(bluetooth, {BLUETOOTH_MODE: field_varint(BLUETOOTH_MODE, mode)}))
+
+
 def set_display_mode(node: int, mode: int, display: bytes = b"") -> bytes:
     """Change the display mode, keeping the rest of the display section."""
     return set_config(node, CONFIG_DISPLAY,
@@ -228,6 +239,12 @@ def describe(message: bytes) -> dict:
                 mode = first(display, DISPLAY_MODE, 0)
                 out["display_mode"] = next(
                     (name for name, n in DISPLAY_MODES.items() if n == mode), str(mode))
+            bluetooth = first(value, CONFIG_BLUETOOTH)
+            if bluetooth is not None:
+                out["raw_bluetooth"] = bluetooth
+                mode = first(bluetooth, BLUETOOTH_MODE, 0)
+                out["pairing_mode"] = next(
+                    (name for name, n in PAIRING_MODES.items() if n == mode), str(mode))
             network = first(value, CONFIG_NETWORK)
             if network is not None:
                 out["raw_network"] = network
@@ -302,6 +319,9 @@ def main(argv: list[str] | None = None) -> int:
     display = sub.add_parser("display-mode", help="set the display mode; 'color' is "
                              "the colour interface, which offers no TCP API on WiFi")
     display.add_argument("mode", choices=sorted(DISPLAY_MODES))
+    pairing = sub.add_parser("bluetooth-pairing", help="set how Bluetooth pairs; "
+                             "'no-pin' lets a central read and write unpaired")
+    pairing.add_argument("mode", choices=sorted(PAIRING_MODES))
     ap.add_argument("--timeout", type=float, default=60)
     args = ap.parse_args(argv)
 
@@ -311,7 +331,8 @@ def main(argv: list[str] | None = None) -> int:
         print("the node did not answer with its configuration", file=sys.stderr)
         return 1
     print(f"node !{state['my_node_num']:08x}; network {state.get('network')}; "
-          f"display mode {state.get('display_mode')}")
+          f"display mode {state.get('display_mode')}; "
+          f"Bluetooth pairing {state.get('pairing_mode')}")
     change = None
     if args.command == "wifi":
         change = set_wifi(state["my_node_num"], args.ssid, args.psk,
@@ -319,6 +340,9 @@ def main(argv: list[str] | None = None) -> int:
     elif args.command == "display-mode":
         change = set_display_mode(state["my_node_num"], DISPLAY_MODES[args.mode],
                                   state.get("raw_display", b""))
+    elif args.command == "bluetooth-pairing":
+        change = set_pairing_mode(state["my_node_num"], PAIRING_MODES[args.mode],
+                                  state.get("raw_bluetooth", b""))
     if change is not None:
         node.send(change)
         state = node.receive(lambda s: "rebooted" in s, seconds=args.timeout)

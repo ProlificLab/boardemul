@@ -256,10 +256,15 @@ through the controller's own mappings and sends what they point at
 connection request, the firmware's own link layer validates it and starts
 scheduling connection events (ADRs 0046-0047). Meshtastic never scans, so
 two boards cannot find each other over Bluetooth; a central connecting in is
-the peer it was built for. The link comes up and stays up, and carries no
-data: that is where the Bluetooth model stops, and ADR 0157 maps the road
-past it, from the controller's transmit path to pairing. The Max carries the
-same Bluetooth core (ADR 0148).
+the peer it was built for. The link carries data both ways: the core sends
+what the controller stages in its transmit descriptors (ADR 0168), so link
+control procedures, L2CAP, ATT and GATT all run, and `tools/ble_central.py`
+is a central that reads and writes a firmware's GATT server. Meshtastic's
+phone API answers over it, once its Bluetooth pairing mode is NO_PIN (set
+through its serial API): a central gets its whole configuration stream, as
+an app does (ADR 0169). Pairing with a PIN, and the encryption it brings,
+are where the model stops (ADR 0157). The Max carries the same Bluetooth
+core (ADR 0148).
 
 ## Tests
 

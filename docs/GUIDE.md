@@ -207,8 +207,11 @@ From a shell, `python tools/device.py` does the same for folders: `create`,
 
 Each of these is decided and recorded in an ADR, not forgotten:
 
-- Bluetooth advertises and holds a connection, and carries no data (ADR
-  0157). Phones cannot pair with a node.
+- Bluetooth carries a connection's data, and Meshtastic's phone API answers
+  over it to `tools/ble_central.py` once the node's pairing mode is NO_PIN
+  (`tools/mesh_api.py … bluetooth-pairing no-pin`, ADR 0169). Pairing with a
+  PIN and encryption are not modelled, so a node set to pair cannot be read,
+  and no real phone reaches the emulated air.
 - Meshtastic's on-screen interface keeps asking its own node for the
   configuration and never finishes ("Resync"): on a guest clock that follows
   the host's, the transfer outlasts the interface's own timeout. Its client
