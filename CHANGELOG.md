@@ -11,6 +11,9 @@ What changed for someone running BoardEmul, newest first. The reasons are in
   drives that path (0164).
 - `tools/mesh_api.py … region CODE` sets a node's LoRa region, which takes
   a fresh node past its setup dialog.
+- Bluetooth frames carry their access address, and a board takes only a
+  connection request that names it: two boards on one air no longer both
+  answer one central (0173). `ble_central.py` can connect to a chosen board.
 
 **Reliability**
 - The Meshtastic touch test survives ADR 0099's ipc1 canary the way a board

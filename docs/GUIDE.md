@@ -233,8 +233,9 @@ From a shell, `python tools/device.py` does the same for folders: `create`,
 Each of these is decided and recorded in an ADR, not forgotten:
 
 - Bluetooth's peer is `tools/ble_central.py`: no real phone reaches the
-  emulated air, and the board is always the peripheral. All of a run's
-  Bluetooth shares one channel (ADR 0157, step 2).
+  emulated air, and the board is always the peripheral. Frames are told apart
+  by access address, as on the air (ADR 0173), but all of a run's Bluetooth
+  shares one channel and nothing collides (ADR 0157, step 2).
 - The firmware runs at a fraction of the chip's speed: about fifteen
   million instructions a second where the chip does two hundred and forty.
   On the host's clock (the default) its own timeline stretches with that:
