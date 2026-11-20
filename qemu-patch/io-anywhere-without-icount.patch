@@ -1,0 +1,28 @@
+diff --git a/accel/tcg/translator.c b/accel/tcg/translator.c
+index cbad00a..d65fa8c 100644
+--- a/accel/tcg/translator.c
++++ b/accel/tcg/translator.c
+@@ -202,6 +202,15 @@ void translator_loop(CPUState *cpu, TranslationBlock *tb, int *max_insns,
+      * Manage can_do_io for the translation block: set to false before
+      * the first insn and set to true before the last insn.
+      */
++    if (!(cflags & CF_USE_ICOUNT)) {
++        /*
++         * Without icount nothing counts instructions, so an access need
++         * not end its block: leave i/o allowed throughout, and no access
++         * recompiles its block and leaves the loop (BoardEmul, ADR 0170).
++         */
++        tcg_ctx->emit_before_op = NULL;
++        goto can_do_io_done;
++    }
+     if (db->num_insns == 1) {
+         tcg_debug_assert(first_insn_start == db->insn_start);
+     } else {
+@@ -212,6 +221,7 @@ void translator_loop(CPUState *cpu, TranslationBlock *tb, int *max_insns,
+     tcg_ctx->emit_before_op = db->insn_start;
+     set_can_do_io(db, true);
+     tcg_ctx->emit_before_op = NULL;
++can_do_io_done:
+ 
+     /* May be used by disas_log or plugin callbacks. */
+     tb->size = db->pc_next - db->pc_first;

@@ -119,6 +119,7 @@ sed -i "/esp_coproc_enable\.c/d" "${SRC}/hw/xtensa/meson.build"
 #   icount-sleep-off-deterministic.patch  ADR 0115  QEMU core: gitlab qemu-project/qemu 4632
 #   flash-writes-synchronously.patch      ADR 0115  issue 188
 #   rtc-light-sleep.patch                 ADR 0165  not yet offered
+#   io-anywhere-without-icount.patch      ADR 0170  QEMU core: not yet offered
 # Nine more were carried until Espressif took them into esp-develop-9.2.2-20261109
 # (ADRs 0017, 0022, 0023, 0066, 0083, 0101, 0105, 0122, 0123; dropped by
 # ADR 0138). When one of these lands and the pinned tag moves past it,
@@ -126,7 +127,7 @@ sed -i "/esp_coproc_enable\.c/d" "${SRC}/hw/xtensa/meson.build"
 # Applied from patch files rather than by hand so that they are declared,
 # reviewed like anything else, and fail loudly if a tag bump moves the code.
 for name in icount-sleep-off-deterministic.patch flash-writes-synchronously.patch \
-            rtc-light-sleep.patch; do
+            rtc-light-sleep.patch io-anywhere-without-icount.patch; do
     PATCH="${REPO_ROOT}/qemu-patch/${name}"
     if git -C "${SRC}" apply --reverse --check "${PATCH}" 2>/dev/null; then
         echo "==> ${name} already applied"

@@ -301,13 +301,15 @@ transaction then *means* is Python. The panel sees whole segments and an I2C
 device sees whole exchanges, instead of either side counting FIFO writes. That
 is what took the first board from 232,320 round trips per frame to about 44.
 
-Our C is nine files we own plus a header, copied into the QEMU tree by
+Our C is ten files we own plus a header, copied into the QEMU tree by
 `tools/build_qemu.sh` rather than committed to it. Their tree's own
-modification is a handful of build lines in one `meson.build`, plus three
+modification is a handful of build lines in one `meson.build`, plus four
 carried patches to their own logic, listed in the build script: an icount
 sleep that is not deterministic, in QEMU's core, and flash writes that land
-synchronously (both ADR 0115, reported upstream), and light sleep in the RTC
-controller's model (ADR 0165, not yet offered). Nine more were carried
+synchronously (both ADR 0115, reported upstream), light sleep in the RTC
+controller's model (ADR 0165), and register accesses that no longer end a
+translation block without icount, in QEMU's core (ADR 0170); the last two
+not yet offered. Nine more were carried
 until Espressif took them into the tag we pin (ADR 0138): a GDMA transmit
 path that never reported which descriptor finished (ADR 0017); an SPI1
 dummy-cycle conversion that shifted every runtime flash read by two bytes
