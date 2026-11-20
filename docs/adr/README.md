@@ -177,3 +177,4 @@ superseded ADR is marked superseded and points forward.
 | [0169](0169-a-central-reads-meshtastic-over-bluetooth.md) | A central reads Meshtastic over Bluetooth | Accepted (steps 3 and 5 of 0157) |
 | [0170](0170-a-register-access-does-not-end-a-block-without-icount.md) | A register access does not end a translation block without `-icount` | Accepted (adds a carried patch, 0017) |
 | [0171](0171-bluetooth-pairs-with-a-passkey-and-encrypts.md) | Bluetooth pairs with a passkey and encrypts the link | Accepted (step 4 of 0157; amends 0046) |
+| [0172](0172-a-parts-answers-to-idle-bytes-come-ahead.md) | A part's answers to idle bytes come ahead of the bytes | Accepted (extends 0011) |
