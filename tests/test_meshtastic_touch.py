@@ -114,14 +114,26 @@ def typed(tmp_path_factory) -> tuple[Run, dict]:
         # The interface blanks its panel after half a minute of its own time
         # with no input, so the first touch has to be prompt. Every input
         # afterwards resets that.
-        send_touch(outdir, *SHORT_ICON)         # binds the keypad to the field
         # The keypad is bound when the on-screen keyboard is actually up, and
         # on its way in it covers the OK button. Waiting for that rather than
         # for a number of seconds is what keeps this from failing on a loaded
         # host, where six seconds of wall time can be almost no guest time at
         # all -- which is how it failed (ADR 0040).
-        seen["keyboard"] = _wait_awake(
-            outdir, lambda f: count_pixels(f, OK_FACE, BLUE) < 100, timeout=180)
+        #
+        # A tap can also simply be lost: one that lands while the chip is in
+        # light sleep wakes nothing, because on the T-Deck only the trackball,
+        # the radio and the timer do (ADR 0165), as on the device. So the icon
+        # is tapped again, as a person would, while the keyboard is visibly
+        # not up -- a tap with it up would put it away.
+        keyboard_up = lambda f: count_pixels(f, OK_FACE, BLUE) < 100  # noqa: E731
+        seen["icon_taps"] = 0
+        seen["keyboard"] = False
+        for _ in range(4):
+            send_touch(outdir, *SHORT_ICON)     # binds the keypad to the field
+            seen["icon_taps"] += 1
+            if _wait_awake(outdir, keyboard_up, timeout=45):
+                seen["keyboard"] = True
+                break
         if not seen["keyboard"]:
             return
         for character in "emu1":
@@ -132,21 +144,34 @@ def typed(tmp_path_factory) -> tuple[Run, dict]:
         _wait_awake(outdir, _typed_into, timeout=90)
         seen["ink_after"] = dark_pixels(frame, SHORT_FIELD)
 
-        send_touch(outdir, *SHORT_ICON)         # the same icon puts it away
-        # And the OK button is reachable again only once it has gone; tapping
-        # where the keyboard still is presses a key instead. Recorded rather
-        # than only acted on, so a failure says which step ran out.
-        seen["dismissed"] = _wait_awake(
-            outdir, lambda f: count_pixels(f, OK_FACE, BLUE) > 500, timeout=180)
+        # The same icon puts it away. And the OK button is reachable again
+        # only once it has gone; tapping where the keyboard still is presses a
+        # key instead. Recorded rather than only acted on, so a failure says
+        # which step ran out. Tapped again while the keyboard is still up, as
+        # the first tap was (a lost tap, ADR 0165).
+        ok_visible = lambda f: count_pixels(f, OK_FACE, BLUE) > 500  # noqa: E731
+        seen["dismissed"] = False
+        for _ in range(4):
+            send_touch(outdir, *SHORT_ICON)
+            if _wait_awake(outdir, ok_visible, timeout=45):
+                seen["dismissed"] = True
+                break
         if not seen["dismissed"]:
             return
         # Committing makes the firmware restart itself to apply the settings,
         # and it says so on the panel first. The notice is what to wait for:
         # the run is launched with -no-reboot, so the reset ends the guest and
-        # no second banner is ever printed.
-        send_touch(outdir, *OK_BUTTON)
-        seen["reboot_notice"] = wait_for_panel(
-            outdir, lambda f: count_pixels(f, NOTICE, RED) > 200, timeout=90)
+        # no second banner is ever printed. OK is tapped again only while it
+        # is still there to be tapped.
+        notice = lambda f: count_pixels(f, NOTICE, RED) > 200  # noqa: E731
+        seen["reboot_notice"] = False
+        for _ in range(4):
+            send_touch(outdir, *OK_BUTTON)
+            if wait_for_panel(outdir, notice, timeout=45):
+                seen["reboot_notice"] = True
+                break
+            if not wait_for_panel(outdir, ok_visible, timeout=5):
+                break
 
     # A ceiling, not a plan: the script stops the run as soon as it has what it
     # came for. It has to cover every wait below end to end, and under a loaded
