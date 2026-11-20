@@ -31,6 +31,7 @@ from emu.guest_clock import GuestClock
 from emu.devices.backlight import Backlight, GpioReports
 from emu.devices.ledc import Ledc
 from emu.devices.lcd import St7789Panel
+from emu.png import FrameWriter
 from emu.devices.air import HOST as AIR_LOOPBACK, AirMedium, air_host, keep_time
 from emu.devices.es7210 import Es7210
 from emu.devices.sdcard import SdCard
@@ -205,6 +206,7 @@ def build(outdir: Path, air: str | None = None, ble_air: str | None = None,
           air_name: str | None = None) -> Board:
     outdir = Path(outdir)
     panel = St7789Panel(outdir / "frames")
+    panel.writer = FrameWriter()        # off the SPI thread (ADR 0175)
     # Sound out and in (ADR 0146): either controller may play or record, so
     # both are told where played streams go and what the microphone hears.
     sound = ""

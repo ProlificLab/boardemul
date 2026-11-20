@@ -24,7 +24,7 @@ import threading
 import time
 from pathlib import Path
 
-from emu.png import RGB, write_png
+from emu.png import RGB, FrameWriter, write_frame
 from emu.spi_link import SpiDevice
 
 log = logging.getLogger("lcd")
@@ -104,6 +104,9 @@ class St7789Panel(SpiDevice):
         self.last_render = time.monotonic()
         self.last_pixels = time.monotonic()
         self.latest: Path | None = None
+        # Set by a board for a run: frames are encoded and written off the
+        # SPI thread (emu/png.py's FrameWriter). Unset, here and now.
+        self.writer: FrameWriter | None = None
         self._new_window = False
         self._odd: int | None = None
         self._lut_cache: list[bytes] | None = None
@@ -304,8 +307,8 @@ class St7789Panel(SpiDevice):
         image = b"".join(rows)
         self.frames += 1
         path = self.outdir / f"frame-{self.frames:03d}.png"
-        write_png(path, w, h, image, RGB)
-        write_png(self.outdir / "latest.png", w, h, image, RGB)
+        write_frame([path, self.outdir / "latest.png"], w, h, image, RGB,
+                    writer=self.writer)
         self.latest = path
         self.dirty = False
         self.last_render = time.monotonic()
@@ -317,6 +320,8 @@ class St7789Panel(SpiDevice):
         update still shows its last screen rather than losing it."""
         if self.dirty:
             self.render()
+        if self.writer is not None:
+            self.writer.drain()
 
     def summary(self) -> str:
         seen = ", ".join(f"0x{c:02x}" for c in dict.fromkeys(self.commands))

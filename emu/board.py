@@ -36,6 +36,7 @@ from emu.devices.usb_otg import OtgCable
 from emu.i2c_link import I2CServer
 from emu.inputs import InputTail
 from emu.peripherals.gpio import GpioClient
+from emu.png import FrameWriter
 from emu.peripherals.i2c import I2CDevice
 from emu.spi_link import SpiDevice, SpiServer
 
@@ -266,6 +267,11 @@ class Board:
                      self.gps, self.modem, self.frames, self.clock, self.usb_otg):
             if link:
                 link.stop()
+        # The last frames the guest drew are on disk before the run says it
+        # stopped (ADR 0175).
+        writer = getattr(self.panel, "writer", None)
+        if writer is not None:
+            writer.drain()
 
     def region(self, name: str) -> "Region | None":
         """A window's model by name, for a run that wants to report on it."""
@@ -320,6 +326,7 @@ def build(outdir: Path, air: str | None = None, ble_air: str | None = None,
         sound += f",mic={Path(mic).resolve().as_posix()}"
     panel = EPaperPanel(outdir / "frames",
                         quarter_turns=int(os.environ.get("BOARDEMUL_ROTATE", "0")))
+    panel.writer = FrameWriter()        # off the SPI thread (ADR 0175)
     gpio = GpioClient(outdir / "gpio.sock")
     # The guest's clock, for parts that keep the board's time (ADR 0104): the
     # radio's, for what it hears off the air (ADR 0112).

@@ -10,7 +10,9 @@ one back.
 from __future__ import annotations
 
 import os
+import queue
 import struct
+import threading
 import zlib
 from pathlib import Path
 
@@ -21,15 +23,65 @@ RGB = 2
 def write_png(path: Path, width: int, height: int, pixels: bytes,
               colour: int = GREY) -> None:
     """Write `pixels` as a PNG. One byte per pixel for GREY, three for RGB."""
-    data = encode_png(width, height, pixels, colour)
-    # Written beside the real name and moved onto it, because the panel rewrites
-    # `latest.png` continuously while a test reads it, and a reader that catches
-    # a half-written file sees something that is not a PNG at all. A rename is
-    # the one operation on a file that cannot be observed half done.
+    write_encoded(path, encode_png(width, height, pixels, colour))
+
+
+def write_encoded(path: Path, data: bytes) -> None:
+    """Put a PNG's bytes at `path`.
+
+    Written beside the real name and moved onto it, because the panel rewrites
+    `latest.png` continuously while a test reads it, and a reader that catches
+    a half-written file sees something that is not a PNG at all. A rename is
+    the one operation on a file that cannot be observed half done."""
     path = Path(path)
     part = path.with_name(path.name + ".part")
     part.write_bytes(data)
     os.replace(part, path)
+
+
+def write_frame(paths: list[Path], width: int, height: int, pixels: bytes,
+                colour: int = GREY, writer: "FrameWriter | None" = None) -> None:
+    """One frame at each of `paths`, encoded once: by `writer`'s thread if
+    there is one, here otherwise."""
+    if writer is not None:
+        writer.put(paths, width, height, pixels, colour)
+        return
+    data = encode_png(width, height, pixels, colour)
+    for path in paths:
+        write_encoded(path, data)
+
+
+class FrameWriter:
+    """Encodes and writes a panel's frames on a thread of its own, in order.
+
+    A panel renders on the SPI thread, and every duplex exchange the guest
+    makes on that bus waits for it. Encoding a frame at zlib's level 9, twice,
+    and writing both files -- over 9P to Windows when the run's folder is
+    shared (ADR 0174) -- kept that thread for tens of milliseconds a frame."""
+
+    def __init__(self) -> None:
+        self._queue: queue.Queue = queue.Queue()
+        threading.Thread(target=self._run, name="frames", daemon=True).start()
+
+    def put(self, paths: list[Path], width: int, height: int, pixels: bytes,
+            colour: int) -> None:
+        self._queue.put((list(paths), width, height, bytes(pixels), colour))
+
+    def _run(self) -> None:
+        while True:
+            paths, width, height, pixels, colour = self._queue.get()
+            try:
+                data = encode_png(width, height, pixels, colour)
+                for path in paths:
+                    write_encoded(path, data)
+            except OSError:
+                pass                    # a run's folder gone at teardown
+            finally:
+                self._queue.task_done()
+
+    def drain(self) -> None:
+        """Wait until every frame handed over is on disk."""
+        self._queue.join()
 
 
 def encode_png(width: int, height: int, pixels: bytes, colour: int = GREY,

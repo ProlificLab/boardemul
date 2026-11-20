@@ -17,7 +17,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from emu.png import write_png
+from emu.png import FrameWriter, write_frame
 from emu.spi_link import SpiDevice
 
 log = logging.getLogger("epd")
@@ -93,6 +93,8 @@ class EPaperPanel(SpiDevice):
         self.data_since_command = 0
         self.dirty = False
         self.latest: Path | None = None
+        # Set by a board for a run: frames are written off the SPI thread.
+        self.writer: FrameWriter | None = None
 
     def on_segment(self, dc: int, data: bytes, duplex: bool) -> bytes | None:
         if dc == 0:
@@ -143,8 +145,8 @@ class EPaperPanel(SpiDevice):
         out_w, out_h, pixels = _rotate(pixels, WIDTH, HEIGHT, self.quarter_turns)
         self.frames += 1
         path = self.outdir / f"frame-{self.frames:03d}.png"
-        write_png(path, out_w, out_h, bytes(pixels))
-        write_png(self.outdir / "latest.png", out_w, out_h, bytes(pixels))
+        write_frame([path, self.outdir / "latest.png"], out_w, out_h, bytes(pixels),
+                    writer=self.writer)
         self.latest = path
         self.dirty = False
         ink = sum(1 for p in pixels if p == 0)

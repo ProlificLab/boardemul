@@ -23,6 +23,7 @@ from emu.devices.lcd import (  # noqa: E402
     MADCTL_MV, MADCTL_MX, MADCTL_MY, NATIVE_H, NATIVE_W,
     St7789Panel, rgb565_to_888,
 )
+from emu.png import FrameWriter  # noqa: E402
 from tests.support import png_colour_type, read_png  # noqa: E402
 
 RED = 0xF800
@@ -273,6 +274,22 @@ def test_flush_emits_what_is_pending(tmp_path: Path) -> None:
     assert not p.dirty
     p.flush()
     assert p.frames == 2, "nothing pending, so nothing to write"
+
+
+def test_a_writer_puts_every_frame_on_disk_by_the_flush(tmp_path: Path) -> None:
+    """A board's panel encodes off the bus's thread (ADR 0175): the frames
+    are the same, in order, once the panel is flushed."""
+    p = make_panel(tmp_path)
+    p.writer = FrameWriter()
+    for colour in (RED, GREEN, BLUE):
+        fill_screen(p, colour)
+    p.flush()
+    frames = tmp_path / "frames"
+    seen = [read_png(frames / f"frame-{n:03d}.png")[2][:3] for n in (1, 2, 3)]
+    assert seen == [bytes((255, 0, 0)), bytes((0, 255, 0)), bytes((0, 0, 255))]
+    assert read_png(frames / "latest.png")[2][:3] == bytes((0, 0, 255)), \
+        "the last frame handed over is the one left as latest"
+    assert not list(frames.glob("*.part"))
 
 
 def test_the_panel_answers_a_duplex_read_with_zeros(tmp_path: Path) -> None:

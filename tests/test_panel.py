@@ -11,8 +11,9 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from emu.devices.epaper import (  # noqa: E402
-    FRAME_BYTES, HEIGHT, WIDTH, EPaperPanel, write_png,
+    FRAME_BYTES, HEIGHT, WIDTH, EPaperPanel,
 )
+from emu.png import write_png  # noqa: E402
 from tests.support import read_png  # noqa: E402
 
 CMD_OLD_PLANE = 0x10
