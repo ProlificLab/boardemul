@@ -279,6 +279,10 @@ ADR 0012. Run several at a time, the ones marked `alone` still run one at a
 time at the end: their firmware keeps deadlines on a clock that follows the
 host's, and a busy host makes them miss (ADR 0167).
 
+Where QEMU spends its time, in the build container and without perf:
+`bash tools/profile.sh -- emu/run.py ARGS...` samples each of its threads
+every millisecond and reports per thread, by function (ADR 0176).
+
 ## Structure
 
     docs/BOOT.md      the ESP32-S3 boot chain, and what QEMU provides for each stage
