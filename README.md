@@ -260,11 +260,11 @@ the peer it was built for. The link carries data both ways: the core sends
 what the controller stages in its transmit descriptors (ADR 0168), so link
 control procedures, L2CAP, ATT and GATT all run, and `tools/ble_central.py`
 is a central that reads and writes a firmware's GATT server. Meshtastic's
-phone API answers over it, once its Bluetooth pairing mode is NO_PIN (set
-through its serial API): a central gets its whole configuration stream, as
-an app does (ADR 0169). Pairing with a PIN, and the encryption it brings,
-are where the model stops (ADR 0157). The Max carries the same Bluetooth
-core (ADR 0148).
+phone API answers over it: the central pairs with the node's PIN by LE
+Secure Connections passkey entry, the controller derives the session key on
+the core's own AES unit, every packet after that is AES-CCM on the air, and
+the central gets the node's whole configuration stream, as an app does
+(ADRs 0169, 0171). The Max carries the same Bluetooth core (ADR 0148).
 
 ## Tests
 

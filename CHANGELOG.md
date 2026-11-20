@@ -3,6 +3,29 @@
 What changed for someone running BoardEmul, newest first. The reasons are in
 `docs/adr/`, numbered as below.
 
+## Unreleased
+
+**Reaching a device**
+- Bluetooth pairs with a PIN and encrypts the link, as a phone does with
+  Meshtastic's default security: `tools/ble_central.py … meshtastic
+  --passkey PIN` pairs by LE Secure Connections passkey entry, and every
+  packet after that is AES-CCM on the air, the device's controller deriving
+  its key on the Bluetooth core's own AES unit. `tools/mesh_api.py …
+  bluetooth-pairing fixed-pin --pin N` sets the PIN (0171).
+- Advertising carries the advertiser's address, which a central needs to pair
+  (0171).
+
+**Faster**
+- Without `-icount`, a register access no longer ends the translated code
+  block it is in: Meshtastic boots about 15% sooner (0170).
+
+**Reliability**
+- A Bluetooth central keeps pace with a slow guest: it sends once per
+  connection event, after the peripheral's answer, and the core answers
+  every event (0169).
+- The Meshtastic touch test taps again when a tap lands while the chip
+  light-sleeps, as a person would (0165).
+
 ## 1.2.0 — 2026-11-20
 
 **Reaching a device**

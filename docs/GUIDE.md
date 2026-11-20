@@ -152,6 +152,23 @@ To reach the node over WiFi instead, as the apps do on port 4403:
    answers over the node's WiFi, and so does any client of Meshtastic's TCP
    API pointed at `localhost`.
 
+To reach it over Bluetooth, as a phone does (ADRs 0169, 0171):
+
+1. Start the device with a Bluetooth air (`--ble-air DIR` and
+   `--icount`, which Bluetooth needs).
+2. Meshtastic pairs with a PIN: on a device with a screen, a random one it
+   shows when a central pairs. To know it in advance, fix it:
+
+       python tools/mesh_api.py 127.0.0.1:5555 bluetooth-pairing fixed-pin --pin 314159
+
+3. Once it has restarted, connect, pair and read its configuration:
+
+       python tools/ble_central.py DIR meshtastic --passkey 314159
+
+   The central pairs by LE Secure Connections passkey entry and encrypts
+   the link; every packet after that is AES-CCM on the air.
+   `bluetooth-pairing no-pin` lets a central in without pairing.
+
 ## Scripting
 
 Everything the page does goes through a small HTTP API on the same port,
@@ -207,11 +224,9 @@ From a shell, `python tools/device.py` does the same for folders: `create`,
 
 Each of these is decided and recorded in an ADR, not forgotten:
 
-- Bluetooth carries a connection's data, and Meshtastic's phone API answers
-  over it to `tools/ble_central.py` once the node's pairing mode is NO_PIN
-  (`tools/mesh_api.py … bluetooth-pairing no-pin`, ADR 0169). Pairing with a
-  PIN and encryption are not modelled, so a node set to pair cannot be read,
-  and no real phone reaches the emulated air.
+- Bluetooth's peer is `tools/ble_central.py`: no real phone reaches the
+  emulated air, and the board is always the peripheral. All of a run's
+  Bluetooth shares one channel (ADR 0157, step 2).
 - Meshtastic's on-screen interface keeps asking its own node for the
   configuration and never finishes ("Resync"): on a guest clock that follows
   the host's, the transfer outlasts the interface's own timeout. Its client
