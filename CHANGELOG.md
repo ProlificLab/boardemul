@@ -10,6 +10,10 @@ What changed for someone running BoardEmul, newest first. The reasons are in
   shared from: QEMU's log and serial files are kept on local disk and copied
   there as they grow. Meshtastic joins WiFi in about ten seconds instead of
   minutes; the slow join blamed on the CPU in 1.3.0 was this (0174).
+- The screen's frames are compressed and saved off the bus the firmware
+  talks to its SD card and radio on, and the OTG port's log is kept on local
+  disk like the others: a run now starts as fast from a shared folder as
+  from local disk (0175).
 
 ## 1.4.0 — 2026-11-20
 
