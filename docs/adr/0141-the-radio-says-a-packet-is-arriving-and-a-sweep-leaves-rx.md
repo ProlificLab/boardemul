@@ -113,7 +113,7 @@ And the test itself:
 
 - PreambleDetected's time is the lock figure ADR 0113 already uses, not a
   measurement.
-- One defect from 2026-10-03 stays open: after a firmware assert and reboot
+- One defect from 2026-10-03 stayed open (closed 2026-11-20, below): after a firmware assert and reboot
   the radio was found at its power-on settings (frequency 0, SF7) with no
   reconfiguration, and a node counted wrong-frequency packets. Its cause was
   not found; the radio logs its resets and cold wakes at INFO so the next one
@@ -168,3 +168,17 @@ And the test itself:
     every 5 ms to the mount under three boots, never waited more than
     25 ms, so a second's hold is a rarer event of the host's. Under
     `-icount` the firmware cannot see one.
+  - *And the radio at its power-on settings, the same cause.* Aimed the same
+    way, a pause that lands inside RadioLib's `begin()` makes it return
+    -705 after SetPacketType and before the modulation and the frequency
+    (traced the same day: an undisturbed boot sends `8a01`, three `8b…`,
+    `86 38ae0000`, then SetRx; the disturbed one `8a01`, then SetRx).
+    Meshtastic's `init()` gives up only on `RADIOLIB_ERR_CHIP_NOT_FOUND` or
+    `RADIOLIB_ERR_SPI_CMD_FAILED` (`SX126xInterface.cpp`, after `begin`), so
+    it logs `SX126x init result -705`, then "Frequency set to 906.875" from
+    its own settings, then "SX1262 init success", and runs on a radio that
+    was never told its frequency or spreading factor: the model's are 0 and
+    SF7, and it sent two packets so in the run traced. That is the defect
+    of 2026-10-03, seen after an assert's reboot under sixteen guests on
+    fourteen cores, where a starved guest's thread could well be held a
+    second; the model is right to keep what it was told. Closed.
