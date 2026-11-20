@@ -33,7 +33,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from tests.support import (  # noqa: E402
     FIRMWARE_MESHTASTIC, MESHTASTIC_LITTLEFS, Run, count_pixels, dark_pixels,
-    pixel, qemu_available, run_emulator, send_text, send_touch, wait_for_panel,
+    pixel, qemu_available, run_emulator, send_text, send_touch, send_trackball_press,
+    wait_for_panel,
 )
 
 pytestmark = [
@@ -68,6 +69,11 @@ def _typed_into(frame: Path) -> bool:
     return 0 < ink < FIELD_PIXELS * 0.6
 
 
+def _blank(frame: Path) -> bool:
+    """The interface in powersave: the white short-name field gone dark."""
+    return dark_pixels(frame, SHORT_FIELD) >= FIELD_PIXELS * 0.95
+
+
 def _wait_awake(outdir: Path, predicate, timeout: float) -> bool:
     """Wait for the panel, keeping the interface awake while waiting.
 
@@ -75,16 +81,39 @@ def _wait_awake(outdir: Path, predicate, timeout: float) -> bool:
     waits are long: the run that found this had typed successfully and then
     watched the screen go dark while it waited for the keyboard to be put
     away. Touching a field body between looks resets that timer and presses
-    nothing.
+    nothing. Once it has gone to powersave it reads only its button ("disable
+    touch, enable button input"), the trackball's click, so that wakes it.
     """
     deadline = time.monotonic() + timeout
+    frame = outdir / "frames" / "latest.png"
     while True:
         left = deadline - time.monotonic()
         if left <= 0:
             return False
         if wait_for_panel(outdir, predicate, timeout=min(10.0, left)):
             return True
-        send_touch(outdir, *FIELD_BODY, hold=0.2)
+        if frame.exists() and _blank(frame):
+            send_trackball_press(outdir)
+        else:
+            send_touch(outdir, *FIELD_BODY, hold=0.2)
+
+
+def _configured(outdir: Path, timeout: float) -> bool:
+    """Whether the interface has its node's configuration.
+
+    It draws the dialog first and asks for the configuration after, and while
+    the stream comes in it reads its touch panel only between packets: a tap
+    then can come and go unread. The stream takes the board two seconds and
+    here several (ADR 0172), which is how a run lost its first tap, waited
+    twenty seconds for a keyboard and blanked before it typed. A person sees
+    the same: a dialog that does not answer at first."""
+    log = outdir / "t.otg.log"
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if log.exists() and b"Config Send Complete" in log.read_bytes():
+            return True
+        time.sleep(1)
+    return False
 
 
 def _is_setup_dialog(frame: Path) -> bool:
@@ -109,6 +138,7 @@ def typed(tmp_path_factory) -> tuple[Run, dict]:
         seen["dialog"] = wait_for_panel(outdir, _is_setup_dialog, timeout=480)
         if not seen["dialog"]:
             return
+        seen["configured"] = _configured(outdir, timeout=180)
         seen["ink_before"] = dark_pixels(frame, SHORT_FIELD)
 
         # The interface blanks its panel after half a minute of its own time

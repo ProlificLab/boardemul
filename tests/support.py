@@ -162,6 +162,16 @@ def send_touch(outdir: Path, x: int, y: int, hold: float = 1.2) -> None:
         fh.write(json.dumps({"type": "touch", "down": False}) + chr(10))
 
 
+def send_trackball_press(outdir: Path, hold: float = 0.3) -> None:
+    """The T-Deck trackball's click, pressed and let go (ADR 0128)."""
+    events = outdir / "input.jsonl"
+    with events.open("a") as fh:
+        fh.write(json.dumps({"type": "trackball", "press": True}) + chr(10))
+    time.sleep(hold)
+    with events.open("a") as fh:
+        fh.write(json.dumps({"type": "trackball", "press": False}) + chr(10))
+
+
 def send_text(outdir: Path, text: str) -> None:
     """Characters, which the board types as the chords the device needs: a
     digit on the T-Deck is SYM held with a letter (ADR 0127)."""
