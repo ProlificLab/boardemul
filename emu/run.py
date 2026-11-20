@@ -473,6 +473,12 @@ def main(argv: list[str] | None = None) -> int:
     usb = args.outdir / f"{tag}.usb.log"
     qlog = args.outdir / f"{tag}.qemu.log"
     elog = args.outdir / f"{tag}.stderr.log"
+    # What QEMU writes as the guest runs stays on local disk where the run's
+    # folder is shared from the host, and is copied there as it grows: over
+    # Docker Desktop's 9P every line was a round trip the guest waited on
+    # (ADR 0174). On local disk these are the same paths.
+    from emu.local_mirror import Mirror
+    mirror = Mirror([uart, usb, qlog])
     seed = rng_seed(mac)
     # What a person types into the serial ports (ADR 0156).
     serial_input = SerialInput(args.outdir)
@@ -487,11 +493,13 @@ def main(argv: list[str] | None = None) -> int:
         bind = "0.0.0.0" if os.environ.get("BOARDEMUL_BIND_ALL") else "127.0.0.1"
         # The OTG port's log is the board's, written as the host reads it
         # (ADR 0166).
-        logs = {"uart": uart, "usb": usb, "otg": args.outdir / f"{tag}.otg.log"}
+        logs = {"uart": mirror.local(uart), "usb": mirror.local(usb),
+                "otg": args.outdir / f"{tag}.otg.log"}
         bridge = SerialBridge(which, int(tcp_port), logs[which], serial_input, bind=bind)
-    cmd = build_argv(qemu, flash, efuse, uart, qlog, args.trace, psram_mb,
-                     psram_octal=psram_octal, seed=seed,
-                     reboot=args.reboot, usb=usb, serial_in=serial_input.paths)
+    cmd = build_argv(qemu, flash, efuse, mirror.local(uart), mirror.local(qlog),
+                     args.trace, psram_mb, psram_octal=psram_octal, seed=seed,
+                     reboot=args.reboot, usb=mirror.local(usb),
+                     serial_in=serial_input.paths)
 
     hw_module = {"tdeck-max": board, "tdeck": board_tdeck}[board_name]
     # SoC-level, so it applies with or without --bus: these describe the chip
@@ -692,9 +700,10 @@ def main(argv: list[str] | None = None) -> int:
               "(ADR 0158)")
     started = time.monotonic()
     interrupted = False
+    mirror.start()
     try:
-        reason, wall = run_qemu(cmd, uart, elog, args.timeout, args.stall, server,
-                                usb=usb)
+        reason, wall = run_qemu(cmd, mirror.local(uart), elog, args.timeout, args.stall,
+                                server, usb=mirror.local(usb))
     except KeyboardInterrupt:
         # Stopped from outside, which is a normal way for a run to end when
         # something is watching it and has seen enough. The manifest is the
@@ -703,6 +712,9 @@ def main(argv: list[str] | None = None) -> int:
         reason, wall = "stopped from outside", time.monotonic() - started
     finally:
         arm_teardown_watchdog(args.outdir)
+        # QEMU has stopped: the rest of what it wrote goes to the run's folder
+        # before anything reads it there (ADR 0174).
+        mirror.stop()
         if server:
             _report_bus(server, tail, irq, hw)
             server.stop()
