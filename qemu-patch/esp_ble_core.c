@@ -50,6 +50,10 @@
  *          0x4002d58c) runs the event's callback only for a status of 3..5.
  *          An entry whose time has passed is skipped: status 4, bit 6.
  *          Nothing here transmits; the event is its own end.
+ *   +0x0B0 the AES unit (ADR 0171): bit 0 starts a block whose key is at
+ *          +0xB4..+0xC0 and whose exchange-memory offset is +0xC4; the
+ *          result lands 16 octets on and status bit 7 is raised
+ *          (r_rwip_aes_encrypt, ROM 0x4002c204).
  *   +0x2D8 the dispatcher's FIFO (blob 0x4037ce70..9b): bits 9..5 count the
  *          entries, bits 31..10 carry the head entry's status word, a write
  *          of bit 0 pops it; the configuration bits the blob wrote at init
@@ -82,6 +86,7 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <dirent.h>
+#include <gcrypt.h>
 
 #define TYPE_ESP_BLE_CORE "esp-ble-core"
 OBJECT_DECLARE_SIMPLE_TYPE(EspBleCore, ESP_BLE_CORE)
@@ -100,6 +105,17 @@ OBJECT_DECLARE_SIMPLE_TYPE(EspBleCore, ESP_BLE_CORE)
 #define R_TGT_HUS_FINE  0x0F0
 #define R_ET_KICK       0x100
 #define R_EM_BASE0      0x204
+/* The core's AES unit (ADR 0171), read off r_rwip_aes_encrypt (ROM 0x4002c204)
+ * and the crypt event handler (0x4002ba44): bit 0 of +0xB0 starts a block, the
+ * key is four little-endian words at +0xB4.. with key octet 0 lowest, +0xC4 is
+ * the block's exchange-memory offset and the result is written 16 octets on.
+ * Done is status bit 7. Octets are least significant first throughout, the
+ * order HCI_LE_Encrypt carries them in. */
+#define R_AESCNTL       0x0B0
+#define R_AESKEY0       0x0B4
+#define R_AESPTR        0x0C4
+#define AES_START       1u
+#define BIT_CRYPT       (1u << 7)
 /* Where the advertising set's record sits in exchange memory. Read off a
  * running controller (ADR 0044), not from a document. */
 #define ADV_RECORD_OFFSET 0x1400
@@ -216,6 +232,27 @@ OBJECT_DECLARE_SIMPLE_TYPE(EspBleCore, ESP_BLE_CORE)
 #define LL_MAX_PAYLOAD    251
 #define HDR_NESN          (1u << 2)
 #define HDR_SN            (1u << 3)
+/* A link's encryption, as the controller loads it (ADR 0171):
+ * r_lld_con_tx_enc / r_lld_con_rx_enc (ROM 0x4001ca80, 0x4001caf0) set bits
+ * 9 and 8 of the structure's +2; r_lld_con_enc_key_load (0x4001cb5c) writes
+ * the session key at +44 most significant octet first, the IV at +60 least
+ * significant first, and zeroes the two packet counters at +68..+79. */
+#define CS_LINKCNTL       2
+#define LINK_RX_CRYPT     (1u << 8)
+#define LINK_TX_CRYPT     (1u << 9)
+#define CS_SK             44
+#define CS_IV             60
+#define CS_TX_COUNTER     68
+#define CS_RX_COUNTER     74
+#define CCM_MIC           4
+/* The header octet NESN, SN and MD are cleared from for CCM's additional
+ * data (Core Specification Vol 6, Part E, 2). */
+#define CCM_AAD_MASK      0xE3
+/* Where the advertiser's own address is: control structure 0's +6..+11,
+ * least significant octet first; and the TxAdd bit of the advertising
+ * descriptor's header, which says whether it is random (ADR 0171). */
+#define CS_OWN_ADDRESS    6
+#define ADV_TXADD         0x40
 
 #define ET_ENTRY_SIZE   16
 #define ET_STATUS_SHIFT 3
@@ -785,20 +822,33 @@ static size_t ble_collect_payload(EspBleCore *s, uint8_t *out, size_t room)
 
 static void ble_transmit(EspBleCore *s)
 {
-    uint8_t payload[64];
+    uint8_t payload[1 + 6 + 64] = { 0 };
+    uint8_t header = 0;
     size_t length;
+    hwaddr cs0, desc;
 
     if (s->air_fd <= 0) {
         return;
     }
-    length = ble_collect_payload(s, payload + 1, sizeof(payload) - 1);
+    length = ble_collect_payload(s, payload + 7, sizeof(payload) - 7);
     if (!length) {
         return;
     }
-    /* A frame on this air is the packet type and then the payload, so a
-     * receiver need not guess what it is holding (ADR 0046). */
-    payload[0] = PDU_ADV_IND;
-    ble_air_send(s, payload, length + 1);
+    /* A frame on this air is the packet type, so a receiver need not guess
+     * what it is holding (ADR 0046), then what an ADV_IND carries: the
+     * advertiser's address and the advertising data (ADR 0171). The address
+     * is control structure 0's, whether it is random the advertising
+     * descriptor's TxAdd bit; a central needs both to pair. */
+    if ((desc = ble_em_addr(s, ADV_RECORD_OFFSET))) {
+        address_space_read(&address_space_memory, desc + 2, MEMTXATTRS_UNSPECIFIED,
+                           &header, 1);
+    }
+    if ((cs0 = ble_em_addr(s, CS_BASE_HALFWORDS * 2))) {
+        address_space_read(&address_space_memory, cs0 + CS_OWN_ADDRESS,
+                           MEMTXATTRS_UNSPECIFIED, payload + 1, 6);
+    }
+    payload[0] = PDU_ADV_IND | (header & ADV_TXADD);
+    ble_air_send(s, payload, length + 7);
 }
 
 /* Take whatever has arrived on the air. Called as an event completes, which
@@ -979,14 +1029,118 @@ static void ble_event_done(void *opaque)
     ble_arm_event_timer(s);
 }
 
+/* -- encryption on a link (ADR 0171) ------------------------------------- */
+
+static hwaddr ble_link_cs(EspBleCore *s, unsigned link)
+{
+    return ble_em_addr(s, (uint32_t)(CS_BASE_HALFWORDS + link * CS_HALFWORDS_PER_LINK) * 2);
+}
+
+static uint16_t ble_link_cntl(hwaddr cs)
+{
+    uint16_t cntl = 0;
+    address_space_read(&address_space_memory, cs + CS_LINKCNTL, MEMTXATTRS_UNSPECIFIED,
+                       &cntl, sizeof(cntl));
+    return cntl;
+}
+
+/* AES-CCM as the link layer uses it (Vol 6, Part E): a 13-octet nonce of the
+ * packet counter with the direction in its 40th bit, then the IV; one octet
+ * of additional data, the header's first with NESN, SN and MD cleared; a
+ * 4-octet MIC after the payload. The counter is the control structure's own,
+ * where the controller zeroed it when it loaded the key, and it moves on
+ * with every packet that goes through here. False means the MIC did not
+ * check. */
+static bool ble_link_ccm(hwaddr cs, unsigned counter_at, bool from_central,
+                         uint8_t header, uint8_t *data, size_t length, uint8_t *mic,
+                         bool encrypt)
+{
+    uint8_t key[16], nonce[13], count[6], aad = header & CCM_AAD_MASK;
+    gcry_cipher_hd_t h;
+    bool ok = false;
+
+    address_space_read(&address_space_memory, cs + CS_SK, MEMTXATTRS_UNSPECIFIED, key, 16);
+    address_space_read(&address_space_memory, cs + counter_at, MEMTXATTRS_UNSPECIFIED,
+                       count, sizeof(count));
+    uint64_t packets = 0;
+    for (int i = 5; i >= 0; i--) {
+        packets = (packets << 8) | count[i];
+    }
+    packets &= (1ull << 39) - 1;
+    for (int i = 0; i < 5; i++) {
+        nonce[i] = (uint8_t)(packets >> (8 * i));
+    }
+    if (from_central) {
+        nonce[4] |= 0x80;
+    }
+    address_space_read(&address_space_memory, cs + CS_IV, MEMTXATTRS_UNSPECIFIED,
+                       nonce + 5, 8);
+
+    if (gcry_cipher_open(&h, GCRY_CIPHER_AES128, GCRY_CIPHER_MODE_CCM, 0)) {
+        return false;
+    }
+    uint64_t lengths[3] = { length, 1, CCM_MIC };
+    if (!gcry_cipher_setkey(h, key, 16) && !gcry_cipher_setiv(h, nonce, 13)
+        && !gcry_cipher_ctl(h, GCRYCTL_SET_CCM_LENGTHS, lengths, sizeof(lengths))
+        && !gcry_cipher_authenticate(h, &aad, 1)) {
+        if (encrypt) {
+            ok = !gcry_cipher_encrypt(h, data, length, NULL, 0)
+                && !gcry_cipher_gettag(h, mic, CCM_MIC);
+        } else {
+            ok = !gcry_cipher_decrypt(h, data, length, NULL, 0)
+                && !gcry_cipher_checktag(h, mic, CCM_MIC);
+        }
+    }
+    gcry_cipher_close(h);
+    if (ok) {
+        packets = (packets + 1) & ((1ull << 39) - 1);
+        for (int i = 0; i < 6; i++) {
+            count[i] = (uint8_t)(packets >> (8 * i));
+        }
+        address_space_write(&address_space_memory, cs + counter_at,
+                            MEMTXATTRS_UNSPECIFIED, count, sizeof(count));
+    }
+    return ok;
+}
+
+/* What the central sent, made readable if the link decrypts (+2 bit 8): the
+ * payload in place, its MIC left after it, the length the air's -- which the
+ * controller takes the MIC off itself (r_lld_con_rx, ROM 0x4001a905). An
+ * empty packet is never encrypted. False means drop it: a MIC that does not
+ * check is a packet lost on the air here, where the silicon's controller
+ * would end the link. */
+static bool ble_link_open(EspBleCore *s, unsigned link, uint8_t *frame, size_t length)
+{
+    hwaddr cs = ble_link_cs(s, link);
+
+    if (!cs || !(ble_link_cntl(cs) & LINK_RX_CRYPT) || !(frame[0] & 3) || length <= 1) {
+        return true;
+    }
+    if (length < 1 + CCM_MIC) {
+        qemu_log_mask(LOG_UNIMP, "esp-ble-core: link %u heard %u byte(s), too short "
+                      "to be encrypted; dropped%c", link, (unsigned)length - 1, 10);
+        return false;
+    }
+    size_t body = length - 1 - CCM_MIC;
+    /* The board is the peripheral (ADR 0157): what it hears is the central's. */
+    if (!ble_link_ccm(cs, CS_RX_COUNTER, true, frame[0], frame + 1, body,
+                      frame + 1 + body, false)) {
+        qemu_log_mask(LOG_UNIMP, "esp-ble-core: link %u: MIC failed on %u byte(s); "
+                      "dropped%c", link, (unsigned)body, 10);
+        return false;
+    }
+    return true;
+}
+
 /* The link's pending packet, if the controller staged one, goes on the air
  * (ADR 0168): header octet with this side's sequence bits, then the payload.
  * The descriptor is marked done and the link moves on to the next. */
 static bool ble_link_transmit(EspBleCore *s, unsigned link)
 {
-    hwaddr cs = ble_em_addr(s, (uint32_t)(CS_BASE_HALFWORDS + link * CS_HALFWORDS_PER_LINK) * 2);
+    hwaddr cs = ble_link_cs(s, link);
     uint16_t at = 0, word0 = 0, header = 0, data = 0;
     uint8_t frame[1 + LL_MAX_PAYLOAD];
+    size_t air;
     hwaddr desc, payload;
 
     if (!cs || link >= LL_LINKS) {
@@ -1021,7 +1175,23 @@ static bool ble_link_transmit(EspBleCore *s, unsigned link)
         address_space_read(&address_space_memory, payload, MEMTXATTRS_UNSPECIFIED,
                            frame + 1, length);
     }
-    ble_air_send(s, frame, length + 1);
+    air = length + 1;
+    /* Encrypted when the controller says so (+2 bit 9, ADR 0171). It staged
+     * the length the air carries, MIC included: r_lld_con_tx_prog_new_packet
+     * (ROM 0x4001aea3) adds 4 when the link encrypts, and the transmit-done
+     * handler (0x4001a9f9) takes 4 off a length of 5 or more. So the payload
+     * is the first length - 4 octets and the MIC the last four. An empty
+     * packet never is encrypted. Sent by the peripheral, so the nonce's
+     * direction bit is clear. */
+    if (length > CCM_MIC && (ble_link_cntl(cs) & LINK_TX_CRYPT)) {
+        size_t body = length - CCM_MIC;
+        if (!ble_link_ccm(cs, CS_TX_COUNTER, false, frame[0], frame + 1, body,
+                          frame + 1 + body, true)) {
+            error_report("esp-ble-core: link %u: libgcrypt refused to encrypt", link);
+            return false;
+        }
+    }
+    ble_air_send(s, frame, air);
     s->tx_sn[link] ^= 1;
     s->pdus_sent++;
 
@@ -1078,7 +1248,8 @@ static void ble_kick(EspBleCore *s, uint32_t value)
     {
         uint8_t heard[64];
         size_t got = 0;
-        if (ble_air_poll(s, heard, sizeof(heard), &got)) {
+        if (ble_air_poll(s, heard, sizeof(heard), &got)
+            && (link == 0 || ble_link_open(s, link, heard, got))) {
             received = ble_deliver(s, heard, got, link, start);
             if (received && link < LL_LINKS) {
                 s->rx_nesn[link] ^= 1;
@@ -1107,6 +1278,63 @@ static void ble_kick(EspBleCore *s, uint32_t value)
     s->events[i].late = ble_now_hus() > start + 2 * EVENT_HUS;
     s->n_events++;
     ble_arm_event_timer(s);
+}
+
+/* -- the AES unit (ADR 0171) ------------------------------------------- */
+
+/* One AES-128 block over libgcrypt, which esp_wifi_mac.c links already; both
+ * arguments in FIPS-197's order, most significant octet first. */
+static bool ble_aes_block(const uint8_t key[16], const uint8_t in[16], uint8_t out[16])
+{
+    gcry_cipher_hd_t h;
+    bool ok;
+
+    if (gcry_cipher_open(&h, GCRY_CIPHER_AES128, GCRY_CIPHER_MODE_ECB, 0)) {
+        return false;
+    }
+    ok = !gcry_cipher_setkey(h, key, 16) && !gcry_cipher_encrypt(h, out, 16, in, 16);
+    gcry_cipher_close(h);
+    return ok;
+}
+
+/* A start: encrypt the block at +0xC4's offset under the key in +0xB4..+0xC0
+ * and put the result 16 octets on, where the crypt event handler (ROM
+ * 0x4002ba44) copies it from. Registers and memory hold least significant
+ * octets first, so the unit reverses into FIPS-197's order and back. Done at
+ * once, as QEMU's other cipher units are; the silicon takes microseconds. */
+static void ble_aes_start(EspBleCore *s)
+{
+    uint32_t ptr = s->regs[R_AESPTR / 4] & 0xFFFF;
+    hwaddr in = ble_em_addr(s, ptr), out = ble_em_addr(s, ptr + 16);
+    uint8_t key[16], block[16], plain[16], cipher[16], result[16];
+
+    if (!in || !out) {
+        qemu_log_mask(LOG_GUEST_ERROR, "esp-ble-core: AES block at 0x%04x is not "
+                      "in exchange memory%c", ptr, 10);
+        return;
+    }
+    for (int w = 0; w < 4; w++) {
+        uint32_t word = s->regs[R_AESKEY0 / 4 + w];
+        for (int b = 0; b < 4; b++) {
+            key[15 - (w * 4 + b)] = (uint8_t)(word >> (8 * b));
+        }
+    }
+    address_space_read(&address_space_memory, in, MEMTXATTRS_UNSPECIFIED, block, 16);
+    for (int i = 0; i < 16; i++) {
+        plain[i] = block[15 - i];
+    }
+    if (!ble_aes_block(key, plain, cipher)) {
+        error_report("esp-ble-core: libgcrypt refused an AES block");
+        return;
+    }
+    for (int i = 0; i < 16; i++) {
+        result[i] = cipher[15 - i];
+    }
+    address_space_write(&address_space_memory, out, MEMTXATTRS_UNSPECIFIED, result, 16);
+    qemu_log_mask(LOG_UNIMP, "esp-ble-core: AES block at 0x%04x done%c", ptr, 10);
+    s->raw |= BIT_CRYPT;
+    ble_fifo_push(s, BIT_CRYPT);
+    ble_update_irq(s);
 }
 
 /* -- registers ----------------------------------------------------------- */
@@ -1174,6 +1402,12 @@ static void ble_write_word(EspBleCore *s, hwaddr offset, uint32_t value)
         s->regs[offset / 4] = value;
         if (value & 0x80000000u) {
             ble_kick(s, value);
+        }
+        return;
+    case R_AESCNTL:
+        s->regs[offset / 4] = value & ~AES_START;
+        if (value & AES_START) {
+            ble_aes_start(s);
         }
         return;
     case R_INTCNTL:

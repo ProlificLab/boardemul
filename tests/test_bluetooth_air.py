@@ -99,16 +99,19 @@ def overheard(tmp_path_factory, bluetooth_filesystem: Path) -> list[bytes]:
 
 
 ADV_IND = 0x00
+TX_ADD = 0x40
+ADDRESS = 6         # the advertiser's address, after the type (ADR 0171)
 
 
 def structures(frame: bytes) -> list[tuple[int, bytes]]:
     """Advertising data describes itself: each block is a length, a type, and
     that many bytes. Walking it is how a payload is told from a run of bytes.
 
-    The first byte of a frame on this air is the packet type (ADR 0046), so
-    the payload starts after it.
+    The first byte of a frame on this air is the packet type (ADR 0046) and
+    the next six the advertiser's address (ADR 0171), so the advertising
+    data starts after them.
     """
-    out, at = [], 1
+    out, at = [], 1 + ADDRESS
     while at < len(frame):
         length = frame[at]
         if length == 0 or at + 1 + length > len(frame):
@@ -121,7 +124,18 @@ def structures(frame: bytes) -> list[tuple[int, bytes]]:
 def test_a_frame_says_what_kind_of_packet_it_is(overheard) -> None:
     """The air carries the type first, so a receiver need not guess."""
     assert overheard, "nothing was heard on the Bluetooth air"
-    assert overheard[0][0] == ADV_IND, overheard[0][:4].hex(" ")
+    assert overheard[0][0] & 0x0F == ADV_IND, overheard[0][:4].hex(" ")
+
+
+def test_it_says_who_is_advertising(overheard) -> None:
+    """An ADV_IND carries its advertiser's address, and a central needs it:
+    pairing hashes both addresses into its keys (ADR 0171). Meshtastic
+    advertises its public one, the chip's Bluetooth MAC."""
+    frame = overheard[0]
+    assert not frame[0] & TX_ADD, "a random address, where a public one was staged"
+    address = frame[1:1 + ADDRESS]
+    assert address != bytes(ADDRESS), f"no address: {frame[:8].hex(' ')}"
+    assert not address[-1] & 0x01, f"a group address: {address[::-1].hex(':')}"
 
 
 def test_something_is_heard(overheard) -> None:
@@ -135,7 +149,7 @@ def test_what_arrives_is_advertising_data(overheard) -> None:
     A frame that merely contained the name could be any accident of memory."""
     blocks = structures(overheard[0])
     assert blocks, f"not advertising data: {overheard[0].hex(' ')}"
-    consumed = 1 + sum(2 + len(payload) for _, payload in blocks)
+    consumed = 1 + ADDRESS + sum(2 + len(payload) for _, payload in blocks)
     assert consumed == len(overheard[0]), (
         f"{len(overheard[0]) - consumed} stray byte(s): {overheard[0].hex(' ')}")
 
