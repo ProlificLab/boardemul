@@ -98,6 +98,15 @@ joins and the API server.
   - A device folder whose join failed message 2 every time, from
     experiments the same morning, joined again as a fresh device: a key
     ESP-IDF had cached in its NVS, most likely, not a fault of the air.
+  - *Also 2026-11-20:* set on the device's own screen, end to end, as a
+    person sets it: the settings gear, the WiFi row, the name and key typed
+    with the keyboard each field's icon binds, OK; the node saved it,
+    restarted, made its certificate (71 guest seconds that time), joined and
+    took 192.168.4.2. `tests/test_meshtastic_wifi_screen.py` checks it up to
+    the restart and the next boot starting WiFi. Two things the interface
+    asks of a person, and of a test: a tap is sometimes lost (tap again
+    until the screen changes), and the home screen's title bar holds a
+    battery icon that changes on its own.
 - The node has to be on WiFi, which on Meshtastic turns its Bluetooth off.
 - One station is forwarded to: the first that holds a lease. A run has one
   device, so its access point has one station.

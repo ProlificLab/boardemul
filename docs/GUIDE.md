@@ -136,7 +136,11 @@ To reach the node over WiFi instead, as the apps do on port 4403:
 
 1. In *Settings*, give it an access point (with a password: WPA2) and
    forward `4403:4403` in *Host tools*.
-2. Set its WiFi as above, and its display mode to the classic screen:
+2. Set its WiFi as above, or on the device's own screen as a person
+   would: the settings gear, the WiFi row, then each field's keyboard icon
+   to type into it, and OK. A tap that lands while the chip light-sleeps is
+   lost, on a real T-Deck too; tap again. Then set its display mode to the
+   classic screen:
 
        python tools/mesh_api.py 127.0.0.1:5555 display-mode default
 

@@ -3,6 +3,19 @@
 What changed for someone running BoardEmul, newest first. The reasons are in
 `docs/adr/`, numbered as below.
 
+## Unreleased
+
+**Reaching a device**
+- Meshtastic's WiFi is set on the T-Deck's own screen as a person sets it,
+  Settings → WiFi, and the node saves it, restarts and joins; a test now
+  drives that path (0164).
+- `tools/mesh_api.py … region CODE` sets a node's LoRa region, which takes
+  a fresh node past its setup dialog.
+
+**Reliability**
+- The Meshtastic touch test survives ADR 0099's ipc1 canary the way a board
+  does, by restarting, and says why when OK does not commit (0114, 0124).
+
 ## 1.3.0 — 2026-11-20
 
 **Reaching a device**
