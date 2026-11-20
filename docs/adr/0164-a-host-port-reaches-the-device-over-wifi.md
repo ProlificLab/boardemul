@@ -80,7 +80,24 @@ joins and the API server.
   interface ("Resync …"), stands for the interface: its link to the main
   loop re-requests the configuration every few seconds of guest time and
   never finishes, on a guest clock that follows the host's.
+  - *Measured 2026-11-20, and explained.* The silent stretch is WPA2's key
+    derivation: core 0 was in `pbkdf2_sha1` on every sample, feeding the
+    SHA unit block by block and by GDMA, some 32,000 operations (the SHA
+    model's six rejected reads of address 0 per DMA operation, at the end of
+    each descriptor list, counted them). Without `-icount` it took 100 to
+    104 guest seconds from WiFi.begin to the first authentication, with a
+    1 ms core turn or a 250 µs one alike, so it is not the cores waiting on
+    each other; it is the host executing the firmware at about 15 million
+    instructions a second. Under `-icount` the same join took 5.3 guest
+    seconds, as on a board, and reached the access point at about the same
+    wall time (136 s from start against 125 s). The certificate is the
+    same story: 562 guest seconds without `-icount` on a fresh device.
+  - The interface's loop, measured the same day, was mostly the SD card
+    read a byte per exchange (ADR 0172); what is left of it shows behind
+    the certificate, whose generation holds the main loop.
+  - A device folder whose join failed message 2 every time, from
+    experiments the same morning, joined again as a fresh device: a key
+    ESP-IDF had cached in its NVS, most likely, not a fault of the air.
 - The node has to be on WiFi, which on Meshtastic turns its Bluetooth off.
-  On BoardEmul Bluetooth carries no data anyway (ADR 0157).
 - One station is forwarded to: the first that holds a lease. A run has one
   device, so its access point has one station.

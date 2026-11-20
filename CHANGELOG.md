@@ -18,6 +18,9 @@ What changed for someone running BoardEmul, newest first. The reasons are in
 **Faster**
 - Without `-icount`, a register access no longer ends the translated code
   block it is in: Meshtastic boots about 15% sooner (0170).
+- An SD card is read a block per exchange instead of a byte: Meshtastic's
+  on-screen interface takes its configuration in about 9 s instead of 22,
+  and finishes on its first request on a quiet machine (0172).
 
 **Reliability**
 - A Bluetooth central keeps pace with a slow guest: it sends once per

@@ -143,9 +143,12 @@ To reach the node over WiFi instead, as the apps do on port 4403:
    Under its colour interface Meshtastic 2.7 serves no API over WiFi, on a
    real T-Deck as here.
 3. Its first boot on WiFi makes a TLS certificate, which takes minutes;
-   later boots reuse it. Joining takes a few minutes more. When the run's
-   log says `Obtained IP address`, then `API server listen on TCP port
-   4403`:
+   later boots reuse it. Joining takes a couple of minutes more, most of it
+   WPA2's key derivation. Tick *Count the guest's time in instructions* in
+   *Settings* for a WiFi run: the join then takes the node five seconds of
+   its own time, as on a board, at about the same time on your clock
+   (ADR 0164). When the run's log says `Obtained IP address`, then `API
+   server listen on TCP port 4403`:
 
        python tools/mesh_api.py 127.0.0.1:4403 info
 
@@ -227,12 +230,15 @@ Each of these is decided and recorded in an ADR, not forgotten:
 - Bluetooth's peer is `tools/ble_central.py`: no real phone reaches the
   emulated air, and the board is always the peripheral. All of a run's
   Bluetooth shares one channel (ADR 0157, step 2).
-- Meshtastic's on-screen interface keeps asking its own node for the
-  configuration and never finishes ("Resync"): on a guest clock that follows
-  the host's, the transfer outlasts the interface's own timeout. Its client
-  API, on the USB OTG port and over WiFi, is not affected (ADRs 0164, 0166).
-- Meshtastic takes minutes to join WiFi, silently, where a board takes
-  seconds; why is not yet known (ADR 0164).
+- The firmware runs at a fraction of the chip's speed: about fifteen
+  million instructions a second where the chip does two hundred and forty.
+  On the host's clock (the default) its own timeline stretches with that:
+  Meshtastic's WPA2 key derivation shows as a hundred silent seconds before
+  it joins, and its on-screen interface, which takes its configuration in a
+  few seconds on a quiet machine (ADR 0172), can ask for it again on a busy
+  one ("Resync"). Counting the guest's time in instructions keeps its
+  timeline a board's, at the cost of a slower start to the home screen
+  (ADRs 0164, 0172).
 - On the Max, the audio codec answers its identity only. The modem answers
   the factory test and has no SIM.
 - GPS always has a fix at the position you give.
