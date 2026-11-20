@@ -44,7 +44,12 @@ DATA_PORTNUM, DATA_PAYLOAD, DATA_WANT_RESPONSE = 1, 2, 3
 ADMIN_APP = 6
 ADMIN_GET_OWNER_REQUEST, ADMIN_GET_OWNER_RESPONSE = 3, 4
 ADMIN_SET_CONFIG = 34
-CONFIG_NETWORK, CONFIG_DISPLAY, CONFIG_BLUETOOTH = 4, 5, 7
+CONFIG_NETWORK, CONFIG_DISPLAY, CONFIG_LORA, CONFIG_BLUETOOTH = 4, 5, 6, 7
+# LoRaConfig.region and the RegionCode values asked for here
+# (meshtastic/protobufs config.proto). A node with no region asks for one in
+# its setup dialog and keeps its radio silent.
+LORA_REGION = 7
+REGIONS = {"unset": 0, "us": 1, "eu-433": 2, "eu-868": 3, "anz": 6}
 BLUETOOTH_MODE, BLUETOOTH_FIXED_PIN = 2, 3
 # BluetoothConfig.PairingMode. Under anything but NO_PIN Meshtastic reads and
 # writes its characteristics only on an encrypted, authenticated link
@@ -216,6 +221,13 @@ def set_pairing_mode(node: int, mode: int, bluetooth: bytes = b"",
     return set_config(node, CONFIG_BLUETOOTH, patch(bluetooth, changes))
 
 
+def set_region(node: int, region: int, lora: bytes = b"") -> bytes:
+    """Set the LoRa region, keeping the rest of the node's LoRa section, as
+    its setup dialog does."""
+    return set_config(node, CONFIG_LORA,
+                      patch(lora, {LORA_REGION: field_varint(LORA_REGION, region)}))
+
+
 def set_display_mode(node: int, mode: int, display: bytes = b"") -> bytes:
     """Change the display mode, keeping the rest of the display section."""
     return set_config(node, CONFIG_DISPLAY,
@@ -275,6 +287,12 @@ def describe(message: bytes) -> dict:
                 out["pairing_mode"] = next(
                     (name for name, n in PAIRING_MODES.items() if n == mode), str(mode))
                 out["fixed_pin"] = first(bluetooth, BLUETOOTH_FIXED_PIN, 0)
+            lora = first(value, CONFIG_LORA)
+            if lora is not None:
+                out["raw_lora"] = lora
+                code = first(lora, LORA_REGION, 0)
+                out["region"] = next(
+                    (name for name, n in REGIONS.items() if n == code), str(code))
             network = first(value, CONFIG_NETWORK)
             if network is not None:
                 out["raw_network"] = network
@@ -349,6 +367,9 @@ def main(argv: list[str] | None = None) -> int:
     display = sub.add_parser("display-mode", help="set the display mode; 'color' is "
                              "the colour interface, which offers no TCP API on WiFi")
     display.add_argument("mode", choices=sorted(DISPLAY_MODES))
+    region = sub.add_parser("region", help="set the LoRa region, as the setup "
+                            "dialog does")
+    region.add_argument("code", choices=sorted(REGIONS))
     pairing = sub.add_parser("bluetooth-pairing", help="set how Bluetooth pairs; "
                              "'no-pin' lets a central read and write unpaired")
     pairing.add_argument("mode", choices=sorted(PAIRING_MODES))
@@ -372,6 +393,9 @@ def main(argv: list[str] | None = None) -> int:
     elif args.command == "display-mode":
         change = set_display_mode(state["my_node_num"], DISPLAY_MODES[args.mode],
                                   state.get("raw_display", b""))
+    elif args.command == "region":
+        change = set_region(state["my_node_num"], REGIONS[args.code],
+                            state.get("raw_lora", b""))
     elif args.command == "bluetooth-pairing":
         change = set_pairing_mode(state["my_node_num"], PAIRING_MODES[args.mode],
                                   state.get("raw_bluetooth", b""), pin=args.pin)

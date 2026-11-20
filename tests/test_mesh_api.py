@@ -119,3 +119,13 @@ def test_an_owner_request_and_its_answer() -> None:
         + m.field_bytes(m.DATA_PAYLOAD, m.field_bytes(m.ADMIN_GET_OWNER_RESPONSE, user))))
     assert m.owner(answer) == user
     assert m.owner(m.field_varint(m.FROMRADIO_ID, 5)) is None
+
+
+def test_the_region_is_set_within_the_lora_section() -> None:
+    lora = m.field_varint(1, 1) + m.field_varint(m.LORA_REGION, 0) + m.field_varint(8, 3)
+    body = m.first(m.first(m.first(m.first(
+        m.set_region(1, m.REGIONS["us"], lora), m.TORADIO_PACKET),
+        m.PACKET_DECODED), m.DATA_PAYLOAD), m.ADMIN_SET_CONFIG)
+    sent = m.first(body, m.CONFIG_LORA)
+    assert m.first(sent, m.LORA_REGION) == 1
+    assert m.first(sent, 1) == 1 and m.first(sent, 8) == 3      # kept
