@@ -2,4 +2,4 @@
 or the scripting API changes incompatibly, the second when an operator can do
 something new, the third for fixes."""
 
-VERSION = "1.2.0"
+VERSION = "1.3.0"

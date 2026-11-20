@@ -3,7 +3,7 @@
 What changed for someone running BoardEmul, newest first. The reasons are in
 `docs/adr/`, numbered as below.
 
-## Unreleased
+## 1.3.0 — 2026-11-20
 
 **Reaching a device**
 - Bluetooth pairs with a PIN and encrypts the link, as a phone does with
@@ -14,6 +14,12 @@ What changed for someone running BoardEmul, newest first. The reasons are in
   bluetooth-pairing fixed-pin --pin N` sets the PIN (0171).
 - Advertising carries the advertiser's address, which a central needs to pair
   (0171).
+- The central subscribes to notifications as a phone does; Meshtastic
+  announces on FromNum what it has for its client (0171).
+- For WiFi work, counting the guest's time in instructions keeps a
+  firmware's timeline a board's: Meshtastic joins five seconds after it
+  starts WiFi, where on the host's clock its key derivation shows as a
+  hundred silent seconds, at about the same wall time (0164).
 
 **Faster**
 - Without `-icount`, a register access no longer ends the translated code
@@ -27,7 +33,12 @@ What changed for someone running BoardEmul, newest first. The reasons are in
   connection event, after the peripheral's answer, and the core answers
   every event (0169).
 - The Meshtastic touch test taps again when a tap lands while the chip
-  light-sleeps, as a person would (0165).
+  light-sleeps, as a person would (0165), and waits for the interface to
+  have its configuration before tapping.
+
+**Fixes**
+- A device whose run was killed no longer refuses snapshots, restores and
+  cards until its `running` file is deleted by hand (0149).
 
 ## 1.2.0 — 2026-11-20
 
