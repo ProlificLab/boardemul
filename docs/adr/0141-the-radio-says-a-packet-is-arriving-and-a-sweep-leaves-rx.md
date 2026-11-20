@@ -131,3 +131,11 @@ And the test itself:
     the reboot the assert caused. Twenty boots with every bus transaction
     logged (`logs/dbg/radio_hunt.sh`) did not repeat it. The touch test, which
     allows only ADR 0099's panic, fails on it when it comes, as it should.
+  - *A lead, the same day (ADR 0174):* that run's output folder was on the
+    host-shared mount, where QEMU wrote its log line by line from the
+    guest's own thread over 9P; the twenty clean boots wrote to local disk.
+    Without `-icount` the guest's clock is the host's, so one long stall of
+    that thread inside RadioLib's wait for BUSY reads, to the guest, as BUSY
+    held past the library's timeout. Since ADR 0174 those writes no longer
+    happen on the guest's thread. Not proven; the next occurrence, or none,
+    will say.
