@@ -118,3 +118,16 @@ And the test itself:
   reconfiguration, and a node counted wrong-frequency packets. Its cause was
   not found; the radio logs its resets and cold wakes at INFO so the next one
   can be.
+  - *Seen again 2026-11-20*, in a Meshtastic touch test without `-icount`,
+    and the assert named: `SX126xInterface.cpp:292`, `assert(err ==
+    RADIOLIB_ERR_NONE)` in `startReceive()`, after
+    `SX126X startReceiveDutyCycleAuto RadioLib err=-705` at guest 10 s,
+    two seconds after `SX126x init result 0`. -705 is RadioLib's SPI command
+    timeout: BUSY did not fall within its wait, before or after a command.
+    The controller's own count of that BUSY line showed only short holds (the
+    longest 8.4 ms), but it counts holds that ended, so one that never fell
+    would not show. The model holds BUSY until the next select only after
+    SetSleep or while NRESET is low, and the run's log shows no reset until
+    the reboot the assert caused. Twenty boots with every bus transaction
+    logged (`logs/dbg/radio_hunt.sh`) did not repeat it. The touch test, which
+    allows only ADR 0099's panic, fails on it when it comes, as it should.
