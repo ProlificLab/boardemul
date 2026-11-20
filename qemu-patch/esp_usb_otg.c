@@ -281,6 +281,7 @@ struct EspUsbOtg {
     bool flushing;
     bool said_tx_full, said_rx_full, said_bad_message;
     bool trace;
+    bool sync;              /* wait for the host's reply (otg_flush) */
     /* A core between reading a register and its next access (otg_hold). */
     hwaddr hold_off[HOLD_CPUS];
     int64_t hold_until[HOLD_CPUS];
@@ -509,7 +510,14 @@ static bool otg_take(EspUsbOtg *s, bool wait, OtgMsg *m)
  * of one air differ by 1.5 ms at their first packet. Only what a person
  * types arrives on the host's own time, as typed input does anywhere. A
  * reply can cause another message (a packet taken), which waits its turn in
- * the outbox rather than nesting. */
+ * the outbox rather than nesting.
+ *
+ * Only with `sync`, which a run under -icount sets. There the wait costs the
+ * guest no time and determinism depends on it. Without -icount the guest's
+ * clock is the host's: a core waiting inside a register access watches its
+ * own time pass, a loaded host makes every wait longer, and Meshtastic, which
+ * logs dozens of packets a second, stopped meeting its own deadlines in a
+ * busy suite. There is no determinism to keep on that clock anyway. */
 static void otg_flush(EspUsbOtg *s)
 {
     OtgMsg reply;
@@ -530,6 +538,9 @@ static void otg_flush(EspUsbOtg *s)
         }
         s->out_head = (s->out_head + 1) % OUTBOX;
         s->out_count--;
+        if (!s->sync) {
+            continue;       /* the reply comes when it comes (otg_receive) */
+        }
         while (otg_take(s, true, &reply) && reply.type != FROM_HOST_DONE) {
             otg_from_host(s, reply.type, reply.ep, reply.data, reply.len);
         }
@@ -1338,6 +1349,7 @@ static Property otg_props[] = {
     DEFINE_PROP_INT32("priority", EspUsbOtg, priority, 100),
     DEFINE_PROP_INT32("irq", EspUsbOtg, irq_source, 38),
     DEFINE_PROP_BOOL("trace", EspUsbOtg, trace, false),
+    DEFINE_PROP_BOOL("sync", EspUsbOtg, sync, false),
     /* Counters, for `qom-get` from the monitor; not settings. */
     DEFINE_PROP_UINT64("deferred", EspUsbOtg, deferred, 0),
     DEFINE_PROP_UINT64("holds-expired", EspUsbOtg, holds_expired, 0),

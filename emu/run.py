@@ -520,6 +520,10 @@ def main(argv: list[str] | None = None) -> int:
         # documents as deterministic -- and determinism is what a shared air
         # is for (ADR 0113).
         cmd += ["-icount", "shift=2,sleep=" + ("off" if args.air_boards else "on")]
+        # On this clock the USB host's replies land at their cause's guest
+        # instant, which a timed air's sameness needs; waiting for them costs
+        # the guest no time here, and would without -icount (ADR 0166).
+        cmd += ["-global", "esp-usb-otg.sync=on"]
 
     # Everything a board provides needs --bus, because without it no board is
     # built at all: no Python devices, no WiFi MAC, nothing on any bus. A run

@@ -93,6 +93,15 @@ reason that is not the controller's speed at all (decision 3).
      their first packet, in the first suite run after the cable existed.
      Only what a person types reaches the controller on the host's own
      time, as typed input does anywhere.
+   - It waits only under `-icount`, where `run.py` sets the controller's
+     `sync` property. There the wait costs the guest no time, and the timed
+     air's sameness depends on it. Without `-icount` the guest's clock is
+     the host's: a core waiting inside a register access watches its own
+     time pass, a loaded host makes each wait longer, and in a three-wide
+     suite on 2026-11-20 four Meshtastic tests that had passed there before
+     failed (`test_mesh`, `test_device_boot`, `test_meshtastic_trackball`),
+     Meshtastic logging dozens of packets a second. On that clock there is
+     no sameness to keep, so the replies arrive when they arrive.
    - The bus's times are the host's and are kept by the controller on the
      guest's clock, as a host's are fixed in the specification: a 100 ms
      attach debounce (TATTDB, USB 2.0 7.1.7.3), a 10 ms reset (TDRST), and
