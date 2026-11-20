@@ -62,7 +62,18 @@ release, as the TCA8418 reports them. The password field then fills with
 phone-keypad digits, two per key ("boardtest" became `2266227733883337788`),
 which is the mapping of the firmware's own dialer (`phone_keypad_to_digit`).
 Why the dialer's mapping reaches the password field is the firmware's, and
-not chased here. The WiFi stack the Max shares with the T-Deck joins
+not chased here.
+
+*Amended 2026-11-20:* chased, as far as the sources go. Our keypad model's
+events are the ones LilyGO's driver decodes (`peri_keypad.cpp`: a press is
+129 to 163, a release 1 to 35, bit 7 the difference). LilyGO's current
+factory source handles the WiFi password screen on its own (`entry4_3`, a
+20 ms timer draining keypad events, characters inserted on presses only,
+through its own letter maps, not the phone keypad's). That screen came in
+with "Add WIFI connection", committed on 2026-05-22; the firmware here is
+V3.1 of 2026-03-13, and LilyGO published V3.3 on 2026-10-09. The doubled
+dialer digits are V3.1's own early screen. Joining from the Max's interface
+needs V3.3 in the firmware library, which is a download to be agreed. The WiFi stack the Max shares with the T-Deck joins
 networks in the T-Deck's tests (ADRs 0074–0097).
 
 ## Consequences
