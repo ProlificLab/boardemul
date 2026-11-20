@@ -77,6 +77,11 @@ second run) to 9, completing on its first request. Under `-icount` it takes
 two host threads (`BOARDEMUL_TCG_THREADS=multi`) made it 15: the rest of the
 gap is the host's speed at the firmware's own code, not its waits.
 
+On a busy host (`logs/dbg/mui_busy.sh`, 14 host CPUs): three T-Decks booted
+at once each finished on its first request, in 14 to 16 guest seconds; five
+at once asked two or three times and finished 18 to 26 seconds after the
+first request. Before, one node on a loaded host looped for minutes.
+
 **Good**
 
 - A block read costs one exchange with Python instead of 515.
