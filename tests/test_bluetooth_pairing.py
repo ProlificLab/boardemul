@@ -72,6 +72,10 @@ def paired(tmp_path_factory, bluetooth_filesystem: Path) -> tuple[Run, dict]:
         try:
             for _ in range(3):
                 if not central.connect(wait_s=max(1, deadline - time.monotonic())):
+                    # Once in a run nothing was heard and nothing said why.
+                    seen["errors"].append(
+                        f"no advertisement heard; {_boots(outdir)} boot(s), "
+                        f"{deadline - time.monotonic():.0f} s of the deadline left")
                     return
                 try:
                     central.exchange_mtu()
@@ -89,9 +93,15 @@ def paired(tmp_path_factory, bluetooth_filesystem: Path) -> tuple[Run, dict]:
                     seen["paired"] = True
                     central.encrypt(ltk)
                     seen["encrypted"] = True
+                    # FromNum, as a phone subscribes to it: the node's way of
+                    # saying FromRadio has something new.
+                    fromnum = chars[ble_central.FROMNUM][0]
+                    central.subscribe(fromnum, mesh[1])
+                    seen["subscribed"] = True
                     central.write(toradio, mesh_api.want_config(NONCE))
+                    fromradio = chars[ble_central.FROMRADIO][0]
                     for _ in range(300):
-                        value = central.read(chars[ble_central.FROMRADIO][0])
+                        value = central.read(fromradio)
                         if not value:
                             break
                         seen["messages"] += 1
@@ -102,6 +112,16 @@ def paired(tmp_path_factory, bluetooth_filesystem: Path) -> tuple[Run, dict]:
                             return
                         seen.update({k: v for k, v in described.items()
                                      if not k.startswith("raw_")})
+                    # Something new, unasked for by a read: the node's answer
+                    # to an admin request, announced on FromNum, then read.
+                    central.notifications.clear()
+                    central.write(toradio, mesh_api.get_owner(seen["my_node_num"]))
+                    seen["notified"] = central.notified(fromnum, wait_s=120) is not None
+                    for _ in range(20):
+                        value = central.read(fromradio)
+                        if not value:
+                            break
+                        seen["owner"] = mesh_api.owner(value) or seen.get("owner")
                     return
                 except (ble_central.LinkLost, TimeoutError,
                         ble_central.PairingError) as error:
@@ -150,6 +170,15 @@ def test_the_node_streams_its_configuration_encrypted(paired) -> None:
     assert seen.get("config_complete_id") == NONCE, seen
     assert seen["messages"] > 10, seen
     assert seen.get("my_node_num") == seen.get("serial_node"), seen
+
+
+def test_fromnum_announces_what_the_node_has_for_its_client(paired) -> None:
+    """A phone reads FromRadio when FromNum says there is something: the
+    node's answer to an owner request is announced, then read (ADR 0171)."""
+    _, seen = paired
+    assert seen.get("subscribed"), seen
+    assert seen.get("notified"), seen
+    assert seen.get("owner"), seen
 
 
 def test_no_packet_failed_its_mic_in_the_core(paired) -> None:

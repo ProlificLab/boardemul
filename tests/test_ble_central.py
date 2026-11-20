@@ -121,3 +121,23 @@ def test_a_frame_goes_in_packets_any_link_layer_takes(tmp_path) -> None:
     assert [llid for llid, _ in c.outbox] == [bc.LLID_START, bc.LLID_CONTINUE,
                                               bc.LLID_CONTINUE]
     assert c.outbox[0][1][:4] == bytes([65, 0, bc.CID_SMP, 0])
+
+
+def test_a_notification_is_kept_apart_from_answers(tmp_path) -> None:
+    c = central(tmp_path)
+    att = bytes([bc.ATT_NOTIFY]) + (0x0010).to_bytes(2, "little") + bytes([7, 0, 0, 0])
+    c.air.heard = [bytes([bc.LLID_START]) + len(att).to_bytes(2, "little")
+                   + bc.CID_ATT.to_bytes(2, "little") + att]
+    c._listen()
+    assert c.notifications == [(0x0010, bytes([7, 0, 0, 0]))]
+    assert not c.frames, "a request would have taken it for its answer"
+
+
+def test_an_indication_is_confirmed(tmp_path) -> None:
+    c = central(tmp_path)
+    att = bytes([bc.ATT_INDICATE]) + (0x0012).to_bytes(2, "little") + b"x"
+    c.air.heard = [bytes([bc.LLID_START]) + len(att).to_bytes(2, "little")
+                   + bc.CID_ATT.to_bytes(2, "little") + att]
+    c._listen()
+    assert c.notifications == [(0x0012, b"x")]
+    assert c.outbox[-1] == (bc.LLID_START, bytes([1, 0, bc.CID_ATT, 0, bc.ATT_CONFIRM]))

@@ -160,7 +160,8 @@ To reach it over Bluetooth, as a phone does (ADRs 0169, 0171):
 1. Start the device with a Bluetooth air (`--ble-air DIR` and
    `--icount`, which Bluetooth needs).
 2. Meshtastic pairs with a PIN: on a device with a screen, a random one it
-   shows when a central pairs. To know it in advance, fix it:
+   shows when a central pairs, and its log says it too (`Enter passkey N on
+   the peer side`). To know it in advance, fix it:
 
        python tools/mesh_api.py 127.0.0.1:5555 bluetooth-pairing fixed-pin --pin 314159
 

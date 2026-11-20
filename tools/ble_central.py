@@ -58,10 +58,15 @@ SMP_FAILURES = {0x01: "passkey entry failed", 0x02: "OOB not available",
                 0x08: "unspecified reason", 0x09: "repeated attempts",
                 0x0B: "DHKey check failed"}
 ATT_ERROR, ATT_MTU_REQ, ATT_MTU_RSP = 0x01, 0x02, 0x03
+ATT_FIND_INFO_REQ, ATT_FIND_INFO_RSP = 0x04, 0x05
 ATT_READ_BY_TYPE_REQ, ATT_READ_BY_TYPE_RSP = 0x08, 0x09
 ATT_READ_REQ, ATT_READ_RSP = 0x0A, 0x0B
 ATT_READ_BY_GROUP_REQ, ATT_READ_BY_GROUP_RSP = 0x10, 0x11
 ATT_WRITE_REQ, ATT_WRITE_RSP = 0x12, 0x13
+# What a server sends unasked: a notification, or an indication, which the
+# client confirms (Vol 3, Part F, 3.4.7).
+ATT_NOTIFY, ATT_INDICATE, ATT_CONFIRM = 0x1B, 0x1D, 0x1E
+CCCD = "2902"                             # Client Characteristic Configuration
 ATT_ERRORS = {0x01: "invalid handle", 0x02: "read not permitted",
               0x03: "write not permitted", 0x05: "insufficient authentication",
               0x0A: "attribute not found", 0x0E: "unlikely error",
@@ -137,6 +142,7 @@ class Central:
         self.tx_count = self.rx_count = 0
         self.mic_failures = 0
         self.starting: tuple[bytes, bytes, bytes] | None = None   # LTK, SKDm, IVm
+        self.notifications: list[tuple[int, bytes]] = []   # (handle, value), oldest first
 
     def close(self) -> None:
         self.air.close()
@@ -230,8 +236,18 @@ class Central:
             if len(self.l2cap) >= 4:
                 length, cid = struct.unpack_from("<HH", self.l2cap)
                 if len(self.l2cap) >= 4 + length:
-                    self.frames.append((cid, bytes(self.l2cap[4:4 + length])))
+                    pdu = bytes(self.l2cap[4:4 + length])
                     self.l2cap = bytearray()
+                    if cid == CID_ATT and pdu[:1] in (bytes([ATT_NOTIFY]),
+                                                      bytes([ATT_INDICATE])) and len(pdu) >= 3:
+                        # Unasked: kept apart, so no request mistakes it for
+                        # its answer; an indication is confirmed.
+                        self.notifications.append((struct.unpack_from("<H", pdu, 1)[0],
+                                                   pdu[3:]))
+                        if pdu[0] == ATT_INDICATE:
+                            self.send_l2cap(CID_ATT, bytes([ATT_CONFIRM]))
+                    else:
+                        self.frames.append((cid, pdu))
 
     def step(self) -> None:
         """One connection event: listen, then send what is due, or an empty
@@ -425,6 +441,49 @@ class Central:
             if self.mic_failures:
                 raise PairingError("the peripheral's packets do not decrypt")
         raise TimeoutError("the link's encryption did not start")
+
+    def descriptors(self, first: int, last: int) -> dict[str, int]:
+        """uuid -> handle of what lies between a characteristic's value and
+        the next declaration (Find Information)."""
+        found, start = {}, first
+        while start <= last:
+            try:
+                p = self.transact(bytes([ATT_FIND_INFO_REQ]) + struct.pack("<HH", start, last),
+                                  (ATT_FIND_INFO_RSP,))
+            except AttError as error:
+                if error.code == 0x0A:
+                    break
+                raise
+            size = 4 if p[1] == 1 else 18          # 16-bit UUIDs, or 128-bit
+            for at in range(2, len(p) - size + 1, size):
+                handle = struct.unpack_from("<H", p, at)[0]
+                uuid = uuid_text(p[at + 2:at + size])
+                if uuid == f"{CHARACTERISTIC:04x}":
+                    return found                    # the next characteristic begins
+                found[uuid] = handle
+                start = handle + 1
+        return found
+
+    def subscribe(self, value_handle: int, last: int) -> int:
+        """Ask for notifications of a characteristic, as a phone app does:
+        write 1 to its Client Characteristic Configuration descriptor, found
+        between its value and `last`. Returns the descriptor's handle."""
+        cccd = self.descriptors(value_handle + 1, last).get(CCCD)
+        if cccd is None:
+            raise AttError(ATT_FIND_INFO_REQ, value_handle + 1, 0x0A)
+        self.write(cccd, struct.pack("<H", 1))
+        return cccd
+
+    def notified(self, handle: int, wait_s: float = 60) -> bytes | None:
+        """The next notification of this handle, waiting for one."""
+        end = time.monotonic() + wait_s
+        while time.monotonic() < end:
+            for i, (h, value) in enumerate(self.notifications):
+                if h == handle:
+                    del self.notifications[i]
+                    return value
+            self.step()
+        return None
 
     def read(self, handle: int) -> bytes:
         return self.transact(bytes([ATT_READ_REQ]) + struct.pack("<H", handle),

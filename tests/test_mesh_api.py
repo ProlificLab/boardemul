@@ -106,3 +106,16 @@ def test_the_fixed_pin_is_set_with_the_pairing_mode() -> None:
     assert m.first(sent, 1) == 1                       # enabled, kept
     assert m.first(sent, m.BLUETOOTH_MODE) == 1
     assert m.first(sent, m.BLUETOOTH_FIXED_PIN) == 271828
+
+
+def test_an_owner_request_and_its_answer() -> None:
+    sent = m.get_owner(0x444D0001)
+    data = m.first(m.first(sent, m.TORADIO_PACKET), m.PACKET_DECODED)
+    assert m.first(data, m.DATA_PORTNUM) == m.ADMIN_APP
+    assert m.first(m.first(data, m.DATA_PAYLOAD), m.ADMIN_GET_OWNER_REQUEST) == 1
+    user = m.field_bytes(2, "Meshtastic 0001")
+    answer = m.field_bytes(m.FROMRADIO_PACKET, m.field_bytes(
+        m.PACKET_DECODED, m.field_varint(m.DATA_PORTNUM, m.ADMIN_APP)
+        + m.field_bytes(m.DATA_PAYLOAD, m.field_bytes(m.ADMIN_GET_OWNER_RESPONSE, user))))
+    assert m.owner(answer) == user
+    assert m.owner(m.field_varint(m.FROMRADIO_ID, 5)) is None

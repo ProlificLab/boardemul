@@ -101,6 +101,12 @@ with `tools/rom_symbols.py` and disassembled with the toolchain's objdump):
    own packets. The cryptography is `tools/ble_crypto.py`, checked against
    FIPS-197, RFC 4493, RFC 3610 and the specification's sample data.
    `tools/mesh_api.py bluetooth-pairing fixed-pin --pin N` sets the PIN.
+   It also subscribes to a characteristic's notifications, as a phone does
+   to FromNum (Find Information for the Client Characteristic
+   Configuration descriptor, then a write of 1), and keeps notifications
+   and indications apart from the answers to its requests; ADR 0169 had it
+   poll. Meshtastic announces on FromNum what it has for its client, an
+   owner request's answer among them.
 
 ## Consequences
 

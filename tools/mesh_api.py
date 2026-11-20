@@ -42,6 +42,7 @@ MYINFO_NODE_NUM = 1
 PACKET_FROM, PACKET_TO, PACKET_DECODED, PACKET_ID = 1, 2, 4, 6
 DATA_PORTNUM, DATA_PAYLOAD, DATA_WANT_RESPONSE = 1, 2, 3
 ADMIN_APP = 6
+ADMIN_GET_OWNER_REQUEST, ADMIN_GET_OWNER_RESPONSE = 3, 4
 ADMIN_SET_CONFIG = 34
 CONFIG_NETWORK, CONFIG_DISPLAY, CONFIG_BLUETOOTH = 4, 5, 7
 BLUETOOTH_MODE, BLUETOOTH_FIXED_PIN = 2, 3
@@ -161,15 +162,36 @@ def patch(message: bytes, replacements: dict[int, bytes]) -> bytes:
     return bytes(out)
 
 
-def set_config(node: int, section: int, body: bytes) -> bytes:
-    """A ToRadio carrying an AdminMessage set_config for one section, to the
-    node itself."""
-    admin = field_bytes(ADMIN_SET_CONFIG, field_bytes(section, body))
-    data = (field_varint(DATA_PORTNUM, ADMIN_APP) + field_bytes(DATA_PAYLOAD, admin)
+def admin(node: int, message: bytes) -> bytes:
+    """A ToRadio carrying an AdminMessage to the node itself, asking for a
+    response."""
+    data = (field_varint(DATA_PORTNUM, ADMIN_APP) + field_bytes(DATA_PAYLOAD, message)
             + field_varint(DATA_WANT_RESPONSE, 1))
     packet = (field_fixed32(PACKET_TO, node) + field_bytes(PACKET_DECODED, data)
               + field_fixed32(PACKET_ID, random.getrandbits(32)))
     return field_bytes(TORADIO_PACKET, packet)
+
+
+def set_config(node: int, section: int, body: bytes) -> bytes:
+    """An AdminMessage set_config for one section, to the node itself."""
+    return admin(node, field_bytes(ADMIN_SET_CONFIG, field_bytes(section, body)))
+
+
+def get_owner(node: int) -> bytes:
+    """Ask the node who owns it. It answers with a packet for its client,
+    which over Bluetooth it announces on FromNum."""
+    return admin(node, field_varint(ADMIN_GET_OWNER_REQUEST, 1))
+
+
+def owner(from_radio: bytes) -> bytes | None:
+    """The User a FromRadio's packet carries in an owner response, if it does."""
+    packet = first(from_radio, FROMRADIO_PACKET)
+    data = first(packet, PACKET_DECODED) if isinstance(packet, bytes) else None
+    if not isinstance(data, bytes) or first(data, DATA_PORTNUM) != ADMIN_APP:
+        return None
+    message = first(data, DATA_PAYLOAD)
+    found = first(message, ADMIN_GET_OWNER_RESPONSE) if isinstance(message, bytes) else None
+    return found if isinstance(found, bytes) else None
 
 
 def set_wifi(node: int, ssid: str, psk: str, network: bytes = b"",
