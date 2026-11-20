@@ -69,6 +69,14 @@ def _typed_into(frame: Path) -> bool:
     return 0 < ink < FIELD_PIXELS * 0.6
 
 
+def _hold(attempt: int) -> float:
+    """How long a tap rests: a finger's second, then a quick one, in turn.
+    Runs of taps went unread while the interface was awake -- four in a row
+    in the WiFi settings once (test_meshtastic_wifi_screen) -- and which
+    length it missed varied, so a retry tries the other."""
+    return 1.2 if attempt % 2 == 0 else 0.3
+
+
 def _blank(frame: Path) -> bool:
     """The interface in powersave: the white short-name field gone dark."""
     return dark_pixels(frame, SHORT_FIELD) >= FIELD_PIXELS * 0.95
@@ -158,10 +166,11 @@ def typed(tmp_path_factory) -> tuple[Run, dict]:
         keyboard_up = lambda f: count_pixels(f, OK_FACE, BLUE) < 100  # noqa: E731
         seen["icon_taps"] = 0
         seen["keyboard"] = False
-        for _ in range(4):
-            send_touch(outdir, *SHORT_ICON)     # binds the keypad to the field
+        for attempt in range(6):
+            # binds the keypad to the field
+            send_touch(outdir, *SHORT_ICON, hold=_hold(attempt))
             seen["icon_taps"] += 1
-            if _wait_awake(outdir, keyboard_up, timeout=45):
+            if _wait_awake(outdir, keyboard_up, timeout=30):
                 seen["keyboard"] = True
                 break
         if not seen["keyboard"]:
@@ -181,9 +190,9 @@ def typed(tmp_path_factory) -> tuple[Run, dict]:
         # the first tap was (a lost tap, ADR 0165).
         ok_visible = lambda f: count_pixels(f, OK_FACE, BLUE) > 500  # noqa: E731
         seen["dismissed"] = False
-        for _ in range(4):
-            send_touch(outdir, *SHORT_ICON)
-            if _wait_awake(outdir, ok_visible, timeout=45):
+        for attempt in range(6):
+            send_touch(outdir, *SHORT_ICON, hold=_hold(attempt))
+            if _wait_awake(outdir, ok_visible, timeout=30):
                 seen["dismissed"] = True
                 break
         if not seen["dismissed"]:
@@ -201,14 +210,14 @@ def typed(tmp_path_factory) -> tuple[Run, dict]:
         seen["reboot_notice"] = False
         seen["ok_taps"] = 0
         seen["woken"] = 0
-        for _ in range(4):
+        for attempt in range(6):
             if frame.exists() and _blank(frame):
                 send_trackball_press(outdir)
                 seen["woken"] += 1
                 wait_for_panel(outdir, ok_visible, timeout=10)
-            send_touch(outdir, *OK_BUTTON)
+            send_touch(outdir, *OK_BUTTON, hold=_hold(attempt))
             seen["ok_taps"] += 1
-            if wait_for_panel(outdir, notice, timeout=45):
+            if wait_for_panel(outdir, notice, timeout=30):
                 seen["reboot_notice"] = True
                 # Every reset before the commit's own was the forgiven one.
                 uart = next(outdir.glob("*.uart.log"), None)
