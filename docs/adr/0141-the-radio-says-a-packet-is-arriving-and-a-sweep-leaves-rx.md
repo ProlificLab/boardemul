@@ -113,8 +113,8 @@ And the test itself:
 
 - PreambleDetected's time is the lock figure ADR 0113 already uses, not a
   measurement.
-- One defect from 2026-10-03 stayed open (closed 2026-11-20, below): after a firmware assert and reboot
-  the radio was found at its power-on settings (frequency 0, SF7) with no
+- One defect from 2026-10-03 stayed open, until 2026-11-20 (below): after
+  a firmware assert and reboot the radio was found at its power-on settings (frequency 0, SF7) with no
   reconfiguration, and a node counted wrong-frequency packets. Its cause was
   not found; the radio logs its resets and cold wakes at INFO so the next one
   can be.
