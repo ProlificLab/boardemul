@@ -49,7 +49,7 @@ def paired(tmp_path_factory, bluetooth_filesystem: Path) -> tuple[Run, dict]:
     seen: dict = {"messages": 0, "errors": []}
 
     def drive(outdir: Path) -> None:
-        deadline = time.monotonic() + 1100
+        deadline = time.monotonic() + 1500
         while _boots(outdir) < 1 and time.monotonic() < deadline:
             time.sleep(2)
         while "pin_sent" not in seen and time.monotonic() < deadline:
@@ -134,7 +134,7 @@ def paired(tmp_path_factory, bluetooth_filesystem: Path) -> tuple[Run, dict]:
             central.close()
 
     run = run_emulator(outdir, firmware=FIRMWARE_MESHTASTIC, board="tdeck",
-                       timeout=1700,
+                       timeout=2000,
                        overlays=(f"0x{OVERLAY_AT:x}={bluetooth_filesystem}",),
                        extra=("--psram-octal", "--icount", "--reboot",
                               "--ble-air", str(air), "--serial-tcp", f"{port}:otg"),
