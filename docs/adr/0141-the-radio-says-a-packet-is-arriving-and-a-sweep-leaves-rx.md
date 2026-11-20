@@ -139,3 +139,32 @@ And the test itself:
     held past the library's timeout. Since ADR 0174 those writes no longer
     happen on the guest's thread. Not proven; the next occurrence, or none,
     will say.
+  - *Explained, the same day.* RadioLib waits for BUSY before and after
+    every command as `start = millis(); while (BUSY reads high) { yield();
+    if (millis() - start >= timeout) return -705; }`, with `timeout` the
+    `spiConfig.timeout` of `Module.h`, 1000 ms (`Module.cpp`,
+    `SPItransferStream`). The model's longest hold is milliseconds, on the
+    guest's clock (ADR 0111). But without `-icount` that clock is the
+    host's, so a pause of the guest's thread on the host -- anything that
+    holds it, 9P or otherwise -- passes as guest time while BUSY reads as
+    it last did. Provoked on 2026-11-20 (`logs/dbg/stall_on_busy.py`):
+    QEMU paused with SIGSTOP 200 µs after the model answered a command that
+    holds BUSY a millisecond or more, three times a boot.
+    - 1.15 s pauses: four boots in five failed with `err=-705`, one exactly
+      as the touch test did (`SX126x init result 0`, then
+      `startReceiveDutyCycleAuto RadioLib err=-705`), and the UART carried
+      the panic at 0x420cf19f, which the image's own literals name
+      `SX126xInterface.cpp`, line 292,
+      `SX126xInterface<T>::startReceive()`, `err == RADIOLIB_ERR_NONE`.
+    - 0.6 s pauses, aimed the same way: none in three.
+    - 1.15 s pauses under `-icount`: none in three; the guest's clock did
+      not move across them.
+    So the assert needs the guest held on the host for more than a second
+    while RadioLib waits for BUSY, which only a run without `-icount` turns
+    into time. Which hold it was in that run is not recoverable. What held
+    the guest's path on the shared mount then -- QEMU's log on its thread,
+    the panel's frames and the OTG port's log on the threads it waits on --
+    is off it (ADRs 0174, 0175); a probe the same day, writing 256 bytes
+    every 5 ms to the mount under three boots, never waited more than
+    25 ms, so a second's hold is a rarer event of the host's. Under
+    `-icount` the firmware cannot see one.

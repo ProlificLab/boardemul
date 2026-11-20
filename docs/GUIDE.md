@@ -248,4 +248,7 @@ Each of these is decided and recorded in an ADR, not forgotten:
   Meshtastic reaches its home screen in about forty seconds, where a board
   takes a few. Both cores share one host thread, taking turns of a
   millisecond (ADR 0161). Without the instruction-counted clock, a heavily
-  loaded machine can make a firmware miss its own deadlines.
+  loaded machine can make a firmware miss its own deadlines: if the host
+  holds the emulator for more than a second while Meshtastic waits on its
+  radio, the radio library gives up and the firmware restarts (ADR 0141).
+  With it, a pause on the host is no time to the firmware.
