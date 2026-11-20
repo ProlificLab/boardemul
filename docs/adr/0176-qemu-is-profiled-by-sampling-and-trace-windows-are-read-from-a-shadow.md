@@ -58,12 +58,30 @@ counted: what a run's record says the firmware touched (ADR 0053).
    shadowed (`TraceRegion`, `PhyGates`); every model with behaviour stays
    answered by Python.
 
+## Measured
+
+The same boot profiled with the shadows, the same day: `recv` on the
+guest's thread 2.6 % (from 10.0 %), `send` 0.9 % (from 3.2 %); the bridge's
+count of accesses to `fe` and `radio_unknown` unchanged in kind. Under
+`-icount`, where the guest does the same work whatever the host, a WiFi
+device reached 19.5, 18.6 and 19.5 guest seconds in 60 s of wall time with
+the shadows and 18.2, 18.9 and 18.2 without (`BOARDEMUL_SHADOW=0`,
+interleaved): 4 % more, over runs of which only the last seconds are the
+PHY's start-up. `tests/test_bridge_shadow.py` drives writes and reads of
+every kind through QEMU's qtest and checks each read against the Python
+model; the Bluetooth link-layer, connection and pairing tests, the WiFi
+join and the T-Deck and Max boots pass with them.
+
+The profile's next item is the big lock: the main loop wakes about 2,500
+times a second on a Meshtastic boot, and each wake is a handoff the guest's
+thread waits through (9 %, and RCU's 3 %).
+
 ## Consequences
 
 **Good**
 
-- The register bridge's 10 % of the guest's thread on a WiFi boot goes, with
-  the run's record of what the firmware touched unchanged.
+- Most of the register bridge's 10 % of the guest's thread on a WiFi boot
+  goes, with the run's record of what the firmware touched unchanged.
 - Speed work can measure the host's side from now on, inside the container,
   without installing anything.
 

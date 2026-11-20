@@ -14,6 +14,20 @@ What changed for someone running BoardEmul, newest first. The reasons are in
   talks to its SD card and radio on, and the OTG port's log is kept on local
   disk like the others: a run now starts as fast from a shared folder as
   from local disk (0175).
+- Registers nothing models are answered inside QEMU instead of by a round
+  trip to Python, and still counted: the WiFi radio's start-up no longer
+  spends a tenth of the guest's time waiting (0176).
+
+**Explained**
+- Meshtastic's rare radio failure, `RadioLib err=-705` and the restart that
+  follows, is the host holding the emulator for over a second while the
+  firmware waits on its radio, without the instruction-counted clock. If it
+  lands during the radio's start, the node runs on a radio never told its
+  frequency. Reproduced; the instruction-counted clock is immune (0141).
+
+**For developers**
+- `bash tools/profile.sh -- emu/run.py …` profiles QEMU by sampling, in the
+  build container, without perf (0176).
 
 ## 1.4.0 — 2026-11-20
 
