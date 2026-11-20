@@ -180,3 +180,4 @@ superseded ADR is marked superseded and points forward.
 | [0172](0172-a-parts-answers-to-idle-bytes-come-ahead.md) | A part's answers to idle bytes come ahead of the bytes | Accepted (extends 0011) |
 | [0173](0173-a-bluetooth-frame-carries-its-access-address.md) | A Bluetooth frame carries its access address | Accepted (part of 0157 step 2; amends 0046, 0168, 0171) |
 | [0174](0174-what-qemu-writes-is-kept-local-and-copied.md) | What QEMU writes during a run is kept on local disk and copied out | Accepted (revises 0164's account of the WiFi join) |
+| [0175](0175-what-python-writes-is-kept-off-the-guests-path.md) | What the run's Python side writes is kept off the guest's path | Accepted (follows 0174 to the panel's frames and the OTG port's log) |
