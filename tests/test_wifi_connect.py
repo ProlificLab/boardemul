@@ -63,6 +63,7 @@ BEACON_MS = 20
 
 pytestmark = [
     pytest.mark.slow,
+    pytest.mark.alone,      # deadlines kept on the host's time (ADR 0167)
     pytest.mark.skipif(not FIRMWARE.exists(), reason="no T-Deck vendor build"),
     pytest.mark.skipif(not qemu_available(), reason="QEMU not built"),
 ]
@@ -131,7 +132,7 @@ def connected(tmp_path_factory) -> Run:
     scratch = Path(tempfile.mkdtemp(prefix="boardemul-connect-"))
     try:
         run = run_emulator(scratch, firmware=FIRMWARE, board="tdeck",
-                           timeout=300,
+                           timeout=600,   # a ceiling: it stops on its report
                            # It may reboot from the firmware's ipc1 overflow,
                            # and is judged on the boot that came back (ADR 0125).
                            extra=("--psram-octal", "--wifi-ap",

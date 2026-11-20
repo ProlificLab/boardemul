@@ -38,6 +38,7 @@ from tests.support import (  # noqa: E402
 
 pytestmark = [
     pytest.mark.slow,
+    pytest.mark.alone,      # deadlines kept on the host's time (ADR 0167)
     pytest.mark.skipif(not FIRMWARE_MESHTASTIC.exists(), reason="no Meshtastic build"),
     pytest.mark.skipif(not MESHTASTIC_LITTLEFS.exists(), reason="no filesystem image"),
     pytest.mark.skipif(not qemu_available(), reason="QEMU not built"),

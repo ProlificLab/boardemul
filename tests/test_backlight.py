@@ -38,6 +38,7 @@ RUN_SECONDS = 300
 
 pytestmark = [
     pytest.mark.slow,
+    pytest.mark.alone,      # deadlines kept on the host's time (ADR 0167)
     pytest.mark.skipif(not FIRMWARE_MESHTASTIC.exists(), reason="no Meshtastic build"),
     pytest.mark.skipif(not CONFIGURED.exists(), reason="no configured filesystem"),
     pytest.mark.skipif(not qemu_available(), reason="QEMU not built"),

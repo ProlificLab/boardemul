@@ -26,6 +26,7 @@ from tests.support import FIRMWARE, qemu_available, read_png  # noqa: E402
 
 pytestmark = [
     pytest.mark.slow,
+    pytest.mark.alone,      # deadlines kept on the host's time (ADR 0167)
     pytest.mark.skipif(not FIRMWARE.exists(), reason="vendor firmware not present"),
 ]
 

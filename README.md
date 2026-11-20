@@ -266,10 +266,13 @@ same Bluetooth core (ADR 0148).
 ```
 python3 -m pytest tests/            # some 700 device, image and board tests, ~2 min
 python3 -m pytest tests/ -m slow    # some 120 that boot the boards under QEMU
+bash tools/slow_suite.sh 3          # the same, three files at a time
 ```
 
 The slow tests skip cleanly without a built QEMU or the vendor firmware. See
-ADR 0012.
+ADR 0012. Run several at a time, the ones marked `alone` still run one at a
+time at the end: their firmware keeps deadlines on a clock that follows the
+host's, and a busy host makes them miss (ADR 0167).
 
 ## Structure
 

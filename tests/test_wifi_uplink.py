@@ -38,6 +38,7 @@ SSID, PASSPHRASE, BEACON_MS = "xinyuandianzi", "AA15994823428", 20
 
 pytestmark = [
     pytest.mark.slow,
+    pytest.mark.alone,      # deadlines kept on the host's time (ADR 0167)
     pytest.mark.skipif(not FIRMWARE.exists(), reason="no T-Deck vendor build"),
     pytest.mark.skipif(not qemu_available(), reason="QEMU not built"),
 ]
@@ -66,7 +67,9 @@ def online(tmp_path_factory) -> Run:
     # reason: output across the build container's mount changes guest timing.
     scratch = Path(tempfile.mkdtemp(prefix="boardemul-uplink-"))
     try:
-        run = run_emulator(scratch, firmware=FIRMWARE, board="tdeck", timeout=300,
+        # A ceiling, not a plan: the run stops once the firmware has reported.
+        # Joining took until 288 s of 300 once, leaving no time for NTP.
+        run = run_emulator(scratch, firmware=FIRMWARE, board="tdeck", timeout=600,
                            extra=("--psram-octal", "--wifi-ap",
                                   f"{SSID},{BEACON_MS}", "--wifi-wpa2",
                                   "--wifi-pass", PASSPHRASE, "--wifi-uplink",
