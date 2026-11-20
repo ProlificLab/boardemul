@@ -23,6 +23,7 @@ echo "slow tier: ${#SHARED[@]} file(s) ${SHARDS} at a time, then ${#ALONE[@]} al
 rm -rf /tmp/slow-shard-* /tmp/slow-alone
 status=0
 pids=()
+names=()
 for s in $(seq 0 $((SHARDS - 1))); do
     mine=()
     for i in "${!SHARED[@]}"; do
@@ -32,13 +33,21 @@ for s in $(seq 0 $((SHARDS - 1))); do
     python3 -m pytest "${mine[@]}" -m 'slow or not slow' -p no:cacheprovider \
         --basetemp=/tmp/slow-shard-$s -q -rfE > logs/slow-shard-$s.txt 2>&1 &
     pids+=($!)
+    names+=("slow-shard-$s")
 done
-for pid in "${pids[@]}"; do
-    wait "$pid" || status=1
+# A failed part's run folders are kept beside its report: in the build
+# container /tmp goes with the container, and with it the UART and bus logs
+# that say why a boot under load went wrong.
+keep() {
+    rm -rf "logs/$1-runs"
+    cp -r "/tmp/$1" "logs/$1-runs" 2>/dev/null && echo "kept /tmp/$1 as logs/$1-runs"
+}
+for i in "${!pids[@]}"; do
+    wait "${pids[$i]}" || { status=1; keep "${names[$i]}"; }
 done
 if [ ${#ALONE[@]} -gt 0 ]; then
     python3 -m pytest "${ALONE[@]}" -m 'slow or not slow' -p no:cacheprovider \
-        --basetemp=/tmp/slow-alone -q -rfE > logs/slow-alone.txt 2>&1 || status=1
+        --basetemp=/tmp/slow-alone -q -rfE > logs/slow-alone.txt 2>&1 || { status=1; keep slow-alone; }
 fi
 for f in logs/slow-shard-*.txt logs/slow-alone.txt; do
     [ -f "$f" ] || continue

@@ -94,18 +94,26 @@ def exchanged(tmp_path_factory, bluetooth_filesystem: Path) -> list[bytes]:
          "--overlay", f"0x{OVERLAY_AT:x}={bluetooth_filesystem}",
          "--outdir", str(work), "--tag", "ll",
          "--timeout", str(RUN_SECONDS), "--stall", str(RUN_SECONDS)],
-        cwd=REPO_ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
+        cwd=REPO_ROOT, stdout=(work / "run.log").open("w"), stderr=subprocess.STDOUT)
     medium = AirMedium(air, "central")
     central = Central(medium)
     try:
-        deadline = time.monotonic() + ADVERTISING_SECONDS
+        started = time.monotonic()
+        deadline = started + ADVERTISING_SECONDS
         address = None
         while time.monotonic() < deadline and address is None:
             address = advertiser(medium.poll())
             if proc.poll() is not None:
                 break
             time.sleep(0.5)
-        medium.send(connect_request(address or bytes(6)))
+        # Said here rather than left to the tests: without an advertiser
+        # there is nobody to connect to, and an empty exchange says nothing
+        # of why (the run's own log is beside it, in run.log).
+        if address is None:
+            pytest.fail(f"no advertising in {time.monotonic() - started:.0f} s; "
+                        f"the run {'ended' if proc.poll() is not None else 'was still going'}"
+                        f" ({work})")
+        medium.send(connect_request(address))
         asked = False
         deadline = time.monotonic() + EXCHANGE_SECONDS
         # Stopped on the evidence: the peripheral's version, once asked for.
