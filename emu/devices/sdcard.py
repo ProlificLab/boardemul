@@ -25,6 +25,7 @@ card that answers instantly is not what they are written against.
 
 from __future__ import annotations
 
+import binascii
 import logging
 
 from emu.spi_link import SpiDevice
@@ -37,14 +38,10 @@ def crc16(payload: bytes) -> int:
 
     Worth computing rather than faking. A host that has turned checking on with
     CMD59 verifies this one, and a wrong value looks to it like a bad card.
+    binascii's is this CRC, in C: bit by bit in Python it was four thousand
+    steps a block (ADR 0172).
     """
-    remainder = 0
-    for byte in payload:
-        remainder ^= byte << 8
-        for _ in range(8):
-            remainder = ((remainder << 1) ^ 0x1021) if remainder & 0x8000 else remainder << 1
-            remainder &= 0xFFFF
-    return remainder
+    return binascii.crc_hqx(payload, 0)
 
 BLOCK = 512
 IDLE = 0xFF
@@ -128,6 +125,23 @@ class SdCard(SpiDevice):
             reply.append(self.out.pop(0) if self.out else IDLE)
             self._consume(byte)
         return bytes(reply) if duplex else None
+
+    def ahead(self, limit: int) -> bytes:
+        """What idle bytes will be answered with (ADR 0172): what is queued,
+        then the blocks of an open multiple-block read, exactly as
+        on_segment would hand them out. Inside a command frame or a write an
+        idle byte is part of what the host is sending, so nothing is offered
+        there."""
+        if self.writing_to is not None or self.frame:
+            return b""
+        offer = bytearray(self.out[:limit])
+        block = self.streaming
+        while block is not None and len(offer) < limit:
+            payload = self._read_block(block)
+            offer += bytes([IDLE] * self.response_gap + [DATA_TOKEN]) + payload
+            offer += crc16(payload).to_bytes(2, "big")
+            block += 1
+        return bytes(offer[:limit])
 
     # -- the conversation ---------------------------------------------------
 

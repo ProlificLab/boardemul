@@ -9,6 +9,7 @@ idle -- which is exactly what a host driver does.
 
 from __future__ import annotations
 
+import copy
 import sys
 from pathlib import Path
 
@@ -241,6 +242,44 @@ def test_a_single_write_is_answered_in_the_byte_after_its_crc(card: SdCard) -> N
     initialise(card)
     assert host_command(card, 24, 60) == R1_READY
     assert host_write_bytes(card, bytes(SECTOR), DATA_TOKEN) == DATA_ACCEPTED
+
+
+# -- answers given ahead (ADR 0172) -------------------------------------------
+
+def offer_holds(card: SdCard) -> bytes:
+    """What the card offers is what idle bytes are then answered with, byte
+    for byte. Checked on a copy, so the card itself is left as it was."""
+    offer = card.ahead(2048)
+    twin = copy.deepcopy(card)
+    assert twin.on_segment(1, b"\xff" * len(offer), True) == offer
+    return offer
+
+
+def test_an_offer_is_what_idle_bytes_are_answered_with(card: SdCard) -> None:
+    initialise(card)
+    for n, block in enumerate(blocks(40, 4)):
+        card.image[(40 + n) * SECTOR:(41 + n) * SECTOR] = block
+    assert offer_holds(card) == b""                    # nothing queued, no read open
+    card.on_segment(1, bytes([0x40 | 17]) + (40).to_bytes(4, "big") + b"\x01", False)
+    single = offer_holds(card)
+    assert DATA_TOKEN in single and blocks(40, 1)[0] in single
+    card.on_segment(1, b"\xff" * len(single), True)
+    assert host_command(card, 18, 41) == R1_READY
+    streamed = offer_holds(card)
+    assert len(streamed) == 2048, "an open read offers as far as it may"
+    assert blocks(41, 1)[0] in streamed and blocks(42, 1)[0] in streamed
+    card.on_segment(1, b"\xff" * 700, True)            # part-way into the second
+    offer_holds(card)
+
+
+def test_nothing_is_offered_inside_a_command_or_a_write(card: SdCard) -> None:
+    initialise(card)
+    card.on_segment(1, bytes([0x40 | 17, 0, 0]), True)    # half a command
+    assert card.ahead(64) == b""
+    card.on_segment(1, bytes([0, 0, 0x01]), True)
+    card.on_segment(1, b"\xff" * 600, True)
+    assert host_command(card, 24, 9) == R1_READY          # a write waiting for its block
+    assert card.ahead(64) == b""
 
 
 # -- what is on the card ----------------------------------------------------

@@ -11,11 +11,17 @@ Segment header, matching esp_spi_master.c:
               2 = the chip select went high
               3 = the same, for a part with a BUSY line: answer BUSY below
               4 = the part's reset pin moved, `dc` its level: answer BUSY
+              5 = skip: the host clocked `len` bytes of 0xFF in duplex and
+                  took the answers the part offered for them (ADR 0172)
     u8 dc     level of the data/command pin while these bytes were clocked
     u8 cs     which device on the bus was selected (ADR 0032)
     u8 pad
     u32 len
     u64 at    the guest's time when the segment was sent, in ns (ADR 0112)
+
+A duplex segment is answered with its `len` bytes, then an offer (ADR 0172):
+a u16 length and that many bytes, what the part will answer to the next
+bytes if they are all 0xFF on the same select and data/command level.
 """
 
 from __future__ import annotations
@@ -35,6 +41,13 @@ SEG_DUPLEX = 1
 SEG_RELEASE = 2         # the chip select went high; the window is over
 SEG_RELEASE_BUSY = 3    # the same, and the part has a BUSY line (ADR 0111)
 SEG_RESET = 4           # the part's reset pin moved; dc is its new level
+SEG_SKIP = 5            # 0xFF bytes answered from the part's offer (ADR 0172)
+
+# An offer's length, and the most a part may offer: esp_spi_master.c's buffer.
+# BOARDEMUL_SPI_OFFERS=0 makes every offer empty, every byte an exchange
+# again, for telling a fault of the offers from one they only moved in time.
+OFFER = struct.Struct("<H")
+OFFER_MAX = 2048 if os.environ.get("BOARDEMUL_SPI_OFFERS", "1") != "0" else 0
 
 # The answer to a release or a reset (ADR 0111, ADR 0112): how long the part's
 # BUSY line stays high, in guest nanoseconds -- from now, and when that is
@@ -56,6 +69,15 @@ class SpiDevice:
 
     def on_segment(self, dc: int, data: bytes, duplex: bool) -> bytes | None:
         return None
+
+    def ahead(self, limit: int) -> bytes:
+        """What this part will answer to the next `limit` bytes if they are
+        all 0xFF, clocked in duplex with nothing else in between -- without
+        answering them (ADR 0172). Up to `limit` bytes; fewer, or none, where
+        the part cannot say. The controller answers those bytes from this and
+        later replays them through on_segment, so a part may offer only what
+        does not depend on when the bytes come."""
+        return b""
 
     def on_deselect(self) -> None:
         """The chip select went high, so whatever was being clocked is over.
@@ -154,7 +176,8 @@ class SpiServer:
             if header is None:
                 return
             kind, dc, cs, _pad, length, at_ns = SEGMENT.unpack(header)
-            payload = self._recv(conn, length) if length else b""
+            # A skip counts bytes the part already gave; none follow it.
+            payload = self._recv(conn, length) if length and kind != SEG_SKIP else b""
             if payload is None:
                 return
             self.segments += 1
@@ -162,6 +185,16 @@ class SpiServer:
             device = self.devices.get(cs)
             if device is not None:
                 device.now_ns = at_ns
+            if kind == SEG_SKIP:
+                # Bytes the controller answered from this part's offer: the
+                # part takes them now, as it would have one by one.
+                if device is not None:
+                    try:
+                        device.on_segment(dc, b"\xff" * length, True)
+                    except Exception:
+                        log.exception("spi device raised replaying %d offered bytes",
+                                      length)
+                continue
             if kind in (SEG_RELEASE, SEG_RELEASE_BUSY, SEG_RESET):
                 if device is not None:
                     try:
@@ -191,8 +224,14 @@ class SpiServer:
                     reply = None
             if kind == SEG_DUPLEX:
                 out = (reply or b"")[:length].ljust(length, b"\x00")
+                offer = b""
+                if device is not None:
+                    try:
+                        offer = device.ahead(OFFER_MAX)[:OFFER_MAX]
+                    except Exception:
+                        log.exception("spi device raised making an offer")
                 try:
-                    conn.sendall(out)
+                    conn.sendall(out + OFFER.pack(len(offer)) + offer)
                 except OSError:
                     return
 

@@ -25,8 +25,8 @@ from emu.devices.sx1262 import (  # noqa: E402
     WRITE_REGISTER,
 )
 from emu.spi_link import (  # noqa: E402
-    ANSWER, BUSY_HELD, LINE_LEFT, SEG_DUPLEX, SEG_RELEASE, SEG_RELEASE_BUSY,
-    SEG_RESET, SEGMENT, SpiServer,
+    ANSWER, BUSY_HELD, LINE_LEFT, OFFER, SEG_DUPLEX, SEG_RELEASE,
+    SEG_RELEASE_BUSY, SEG_RESET, SEG_SKIP, SEG_WRITE, SEGMENT, SpiServer,
 )
 
 US = 1000
@@ -162,14 +162,25 @@ class _Controller:
         self.sock.connect(str(path))
 
     def send(self, kind: int, cs: int, data: bytes = b"", dc: int = 0,
-             at_ns: int = 0) -> None:
-        self.sock.sendall(SEGMENT.pack(kind, dc, cs, 0, len(data), at_ns) + data)
+             at_ns: int = 0, length: int | None = None) -> None:
+        """A segment; `length` stands for the data's own when a segment
+        counts bytes it does not carry, as a skip does."""
+        count = len(data) if length is None else length
+        self.sock.sendall(SEGMENT.pack(kind, dc, cs, 0, count, at_ns) + data)
 
     def read(self, count: int) -> bytes:
         buf = b""
         while len(buf) < count:
             buf += self.sock.recv(count - len(buf))
         return buf
+
+    def reply(self, count: int) -> bytes:
+        """A duplex answer, and the offer after it (ADR 0172)."""
+        data = self.read(count)
+        (offered,) = OFFER.unpack(self.read(OFFER.size))
+        if offered:
+            self.read(offered)
+        return data
 
     def answer(self) -> tuple[int, int, int, int]:
         return ANSWER.unpack(self.read(ANSWER.size))
@@ -193,7 +204,7 @@ def wired(tmp_path: Path):
 def test_a_release_on_a_busy_select_is_answered(wired) -> None:
     controller, _ = wired
     controller.send(SEG_DUPLEX, 1, bytes([CALIBRATE, 0x7F]))
-    controller.read(2)
+    controller.reply(2)
     controller.send(SEG_RELEASE_BUSY, 1)
     assert controller.busy() == (3500 * US, 0)
 
@@ -222,10 +233,10 @@ def test_a_plain_release_still_goes_unanswered(wired) -> None:
     thing read back is the next duplex reply and not a stray answer."""
     controller, radio = wired
     controller.send(SEG_DUPLEX, 1, bytes([CALIBRATE, 0x7F]))
-    controller.read(2)
+    controller.reply(2)
     controller.send(SEG_RELEASE, 1)
     controller.send(SEG_DUPLEX, 1, bytes([GET_IRQ_STATUS, 0, 0, 0]))
-    assert controller.read(4)[0] == radio.status
+    assert controller.reply(4)[0] == radio.status
 
 
 @needs_unix
@@ -250,7 +261,7 @@ def test_a_segment_says_when_the_guest_sent_it(wired) -> None:
     """ADR 0112: the radio learns the guest's time from the bus itself."""
     controller, radio = wired
     controller.send(SEG_DUPLEX, 1, bytes([GET_IRQ_STATUS, 0, 0, 0]), at_ns=123_456)
-    controller.read(4)
+    controller.reply(4)
     assert radio.now_ns == 123_456
 
 
@@ -262,11 +273,11 @@ def test_the_answer_carries_the_interrupt_line(wired) -> None:
     routed to DIO1, the two masks SetDioIrqParams keeps apart (ADR 0141)."""
     controller, _ = wired
     controller.send(SEG_DUPLEX, 1, bytes([0x08, 0x00, 0x01, 0x00, 0x01, 0, 0, 0, 0]))
-    controller.read(9)
+    controller.reply(9)
     controller.send(SEG_RELEASE_BUSY, 1)
     assert controller.answer()[2:] == (0, 0), "nothing is due yet"
     controller.send(SEG_DUPLEX, 1, bytes([0x83, 0, 0, 0]), at_ns=1_000_000)
-    controller.read(4)
+    controller.reply(4)
     controller.send(SEG_RELEASE_BUSY, 1, at_ns=1_000_000)
     assert controller.answer() == (126 * US, 0, 0, 1_000_000 + 126 * US)
 
@@ -284,3 +295,36 @@ def test_the_answer_fits_what_the_controller_reads() -> None:
     assert ANSWER.size == 20
     assert ANSWER.pack(1, 2, 1, 3) == struct.pack("<IIB3xQ", 1, 2, 1, 3)
     assert SEGMENT.size == 16, "esp_spi_master.c's EspSpiSegment"
+
+
+@needs_unix
+def test_bytes_answered_from_an_offer_reach_the_part(tmp_path: Path) -> None:
+    """ADR 0172: a duplex answer carries what the part will answer to idle
+    bytes; the controller answers those itself and then says how many it
+    used, and the part ends where it would have been byte by byte."""
+    from emu import sdimage
+    from emu.devices.sdcard import DATA_TOKEN, IDLE, SdCard
+    from tests.test_sdcard import initialise
+
+    card = SdCard(sdimage.build(size_mb=8))
+    initialise(card)
+    block = bytes([0x55]) * 512
+    card.image[5 * 512:6 * 512] = block
+    idle = bytes([IDLE])
+    server = SpiServer(tmp_path / "spi.sock", {0: card})
+    server.start()
+    controller = _Controller(tmp_path / "spi.sock")
+    try:
+        controller.send(SEG_WRITE, 0, bytes([0x40 | 17, 0, 0, 0, 5, 0x01]), dc=1)
+        controller.send(SEG_DUPLEX, 0, idle, dc=1)
+        controller.read(1)
+        (offered,) = OFFER.unpack(controller.read(OFFER.size))
+        offer = controller.read(offered)
+        assert DATA_TOKEN in offer and block in offer
+        controller.send(SEG_SKIP, 0, dc=1, length=offered)
+        controller.send(SEG_DUPLEX, 0, idle, dc=1)
+        assert controller.reply(1) == bytes([IDLE]), "the block was taken as read"
+        assert card.blocks_read == 1 and not card.out
+    finally:
+        controller.sock.close()
+        server.stop()

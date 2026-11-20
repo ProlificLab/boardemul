@@ -118,6 +118,13 @@ typedef struct QEMU_PACKED {
 /* The part's reset pin moved; `dc` carries its new level. Answered the same
  * way, and the answer replaces whatever hold was running. */
 #define SEGMENT_RESET 4
+/* Bytes of 0xFF this controller answered from the part's offer, which the
+ * part takes now as it would have one by one (ADR 0172). No reply. */
+#define SEGMENT_SKIP 5
+/* The most a part may offer after a duplex answer: what it will answer to the
+ * next bytes if they are all 0xFF, on the same select and data/command level.
+ * emu/spi_link.py's OFFER_MAX. */
+#define SPI_OFFER_MAX 2048
 
 #define SPI_SELECTS 3
 
@@ -192,6 +199,13 @@ struct EspSpiMaster {
 
     int fd;
     bool broken;
+
+    /* The part's offer (ADR 0172): its answers to idle bytes, given ahead, on
+     * one select and data/command level; how far into it the guest has
+     * clocked; and how many of those the part has not yet been told about. */
+    uint8_t offer[SPI_OFFER_MAX];
+    uint32_t offer_len, offer_pos, offer_used;
+    int offer_cs, offer_dc;
 
     /* SPI_USR reads as set until the transaction's bus time has passed
      * (ADR 0120). */
@@ -405,6 +419,51 @@ static bool spi_asks(EspSpiBusyLine *line)
     return line->pin >= 0 || line->irq_pin >= 0;
 }
 
+/* Before anything else reaches the part, tell it how many offered bytes the
+ * guest clocked, so it is where it would have been byte by byte; and drop
+ * what is left of the offer, which whatever goes next may change (ADR 0172).
+ * Every segment goes out through spi_flush, which starts here. */
+static void spi_offer_settle(EspSpiMaster *s)
+{
+    EspSpiSegment seg;
+
+    s->offer_len = s->offer_pos = 0;
+    if (!s->offer_used || s->broken || s->fd < 0) {
+        s->offer_used = 0;
+        return;
+    }
+    seg.type = SEGMENT_SKIP;
+    seg.dc = (uint8_t)(s->offer_dc & 1);
+    seg.cs = (uint8_t)s->offer_cs;
+    seg.pad = 0;
+    seg.len = s->offer_used;
+    seg.at_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    s->offer_used = 0;
+    if (!spi_write_all(s, &seg, sizeof(seg))) {
+        spi_fail(s, "send failed");
+    }
+}
+
+/* A duplex transfer the part's offer already answers: all 0xFF, on the select
+ * and level it was made for, with nothing clocked since but what it covered. */
+static bool spi_offer_serves(EspSpiMaster *s, int cs, int dc, uint8_t *data,
+                             uint32_t len)
+{
+    if (cs != s->offer_cs || dc != s->offer_dc || s->buffered
+        || s->offer_pos + len > s->offer_len) {
+        return false;
+    }
+    for (uint32_t i = 0; i < len; i++) {
+        if (data[i] != 0xFF) {
+            return false;
+        }
+    }
+    memcpy(data, s->offer + s->offer_pos, len);
+    s->offer_pos += len;
+    s->offer_used += len;
+    return true;
+}
+
 /* Hand the accumulated bytes to the model. Nothing is expected back: a
  * write-only burst is the overwhelming majority of display traffic, and not
  * waiting is what makes batching worth doing. */
@@ -412,6 +471,7 @@ static void spi_flush(EspSpiMaster *s)
 {
     EspSpiSegment seg;
 
+    spi_offer_settle(s);
     if (!s->buffered || s->broken || s->fd < 0) {
         s->buffered = 0;
         return;
@@ -450,6 +510,10 @@ static void spi_append(EspSpiMaster *s, const uint8_t *data, uint32_t len)
     if (s->buffered + len > SPI_BUFFER_MAX) {
         spi_flush(s);
     }
+    /* Written bytes may change what the part would answer next; the offer
+     * no longer stands. What was used of it is still told first, at the next
+     * flush, ahead of these bytes. */
+    s->offer_len = s->offer_pos = 0;
     s->buffered_dc = dc;
     s->buffered_cs = cs;
     if (len > SPI_BUFFER_MAX) {
@@ -465,24 +529,39 @@ static void spi_duplex(EspSpiMaster *s, uint8_t *data, uint32_t len)
 {
     EspSpiSegment seg;
     int cs = spi_selected(s);
+    int dc = s->dc_gpio >= 0 ? esp_gpio_pin_level(NULL, s->dc_gpio) & 1 : 0;
+    uint16_t offered = 0;
 
+    /* Idle bytes the part said ahead how it would answer: no exchange, and
+     * the bus time is charged as for any other transfer (ADR 0172). */
+    if (cs >= 0 && spi_offer_serves(s, cs, dc, data, len)) {
+        return;
+    }
     spi_flush(s);
     if (cs < 0 || s->broken || s->fd < 0) {
         memset(data, 0, len);
         return;
     }
     seg.type = SEGMENT_DUPLEX;
-    seg.dc = (uint8_t)(s->dc_gpio >= 0 ? esp_gpio_pin_level(NULL, s->dc_gpio) : 0);
+    seg.dc = (uint8_t)dc;
     seg.cs = (uint8_t)cs;
     seg.pad = 0;
     seg.len = len;
     seg.at_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
     if (!spi_write_all(s, &seg, sizeof(seg)) ||
         !spi_write_all(s, data, len) ||
-        !spi_read_all(s, data, len)) {
+        !spi_read_all(s, data, len) ||
+        !spi_read_all(s, &offered, sizeof(offered)) ||
+        offered > SPI_OFFER_MAX ||
+        !spi_read_all(s, s->offer, offered)) {
         spi_fail(s, "duplex exchange failed");
         memset(data, 0, len);
+        return;
     }
+    s->offer_len = offered;
+    s->offer_pos = 0;
+    s->offer_cs = cs;
+    s->offer_dc = dc;
 }
 
 /* SPI_CLK (TRM 30.7): clk_spi_mst, PLL_F80M or XTAL by SPI_MST_CLK_SEL, over
