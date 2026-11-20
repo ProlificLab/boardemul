@@ -87,11 +87,17 @@ joins and the API server.
     each descriptor list, counted them). Without `-icount` it took 100 to
     104 guest seconds from WiFi.begin to the first authentication, with a
     1 ms core turn or a 250 µs one alike, so it is not the cores waiting on
-    each other; it is the host executing the firmware at about 15 million
-    instructions a second. Under `-icount` the same join took 5.3 guest
-    seconds, as on a board, and reached the access point at about the same
-    wall time (136 s from start against 125 s). The certificate is the
-    same story: 562 guest seconds without `-icount` on a fresh device.
+    each other. Under `-icount` the same join took 5.3 guest seconds and
+    reached the access point at about the same wall time (136 s from start
+    against 125 s), which was first read as the host executing the firmware
+    at about 15 million instructions a second.
+  - *Corrected the same day (ADR 0174):* it was not the CPU. QEMU's thread
+    was blocked two thirds of the time writing its log, line by line, into
+    the run's folder shared from Windows over 9P, and the DMA operations'
+    rejected reads made the log enormous. With QEMU's files kept on local
+    disk the join takes 7 to 9 guest seconds from WiFi.begin and 22 s of
+    wall time, without `-icount`; under `-icount`, 8 guest seconds in 45 s
+    of wall time, about 45 million instructions a second.
   - The interface's loop, measured the same day, was mostly the SD card
     read a byte per exchange (ADR 0172); what is left of it shows behind
     the certificate, whose generation holds the main loop.

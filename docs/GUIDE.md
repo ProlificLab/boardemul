@@ -146,13 +146,10 @@ To reach the node over WiFi instead, as the apps do on port 4403:
 
    Under its colour interface Meshtastic 2.7 serves no API over WiFi, on a
    real T-Deck as here.
-3. Its first boot on WiFi makes a TLS certificate, which takes minutes;
-   later boots reuse it. Joining takes a couple of minutes more, most of it
-   WPA2's key derivation. Tick *Count the guest's time in instructions* in
-   *Settings* for a WiFi run: the join then takes the node five seconds of
-   its own time, as on a board, at about the same time on your clock
-   (ADR 0164). When the run's log says `Obtained IP address`, then `API
-   server listen on TCP port 4403`:
+3. Its first boot on WiFi makes a TLS certificate, which can take
+   minutes; later boots reuse it. Joining then takes about ten seconds
+   (ADRs 0164, 0174). When the run's log says `Obtained IP address`, then
+   `API server listen on TCP port 4403`:
 
        python tools/mesh_api.py 127.0.0.1:4403 info
 
@@ -236,15 +233,14 @@ Each of these is decided and recorded in an ADR, not forgotten:
   emulated air, and the board is always the peripheral. Frames are told apart
   by access address, as on the air (ADR 0173), but all of a run's Bluetooth
   shares one channel and nothing collides (ADR 0157, step 2).
-- The firmware runs at a fraction of the chip's speed: about fifteen
-  million instructions a second where the chip does two hundred and forty.
-  On the host's clock (the default) its own timeline stretches with that:
-  Meshtastic's WPA2 key derivation shows as a hundred silent seconds before
-  it joins, and its on-screen interface, which takes its configuration in a
-  few seconds on a quiet machine (ADR 0172), can ask for it again on a busy
-  one ("Resync"). Counting the guest's time in instructions keeps its
-  timeline a board's, at the cost of a slower start to the home screen
-  (ADRs 0164, 0172).
+- The firmware runs slower than the chip: a few tens of millions of
+  instructions a second where the chip does two hundred and forty. On the
+  host's clock (the default) its own timeline stretches where it computes
+  hard, a first TLS certificate above all, and on a heavily loaded machine
+  Meshtastic's on-screen interface can ask for its configuration more than
+  once ("Resync") before it has it (ADR 0172). Counting the guest's time in
+  instructions keeps its timeline a board's, at the cost of a slower start
+  to the home screen.
 - On the Max, the audio codec answers its identity only. The modem answers
   the factory test and has no SIM.
 - GPS always has a fix at the position you give.

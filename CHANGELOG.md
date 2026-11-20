@@ -3,6 +3,14 @@
 What changed for someone running BoardEmul, newest first. The reasons are in
 `docs/adr/`, numbered as below.
 
+## Unreleased
+
+**Faster**
+- On Windows and macOS, a run no longer waits on the folder its output is
+  shared from: QEMU's log and serial files are kept on local disk and copied
+  there as they grow. Meshtastic joins WiFi in about ten seconds instead of
+  minutes; the slow join blamed on the CPU in 1.3.0 was this (0174).
+
 ## 1.4.0 — 2026-11-20
 
 **Reaching a device**
