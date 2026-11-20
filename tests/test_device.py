@@ -8,6 +8,9 @@ emulator and the CLI both lean on. Starting a real device is the slow test's.
 from __future__ import annotations
 
 import json
+import os
+import socket as _socket
+import subprocess
 import sys
 from pathlib import Path
 
@@ -308,6 +311,25 @@ def test_a_held_device_is_neither_snapshotted_nor_given_a_card(tmp_path, firmwar
         device_folder.snapshot(device)
     with pytest.raises(device_folder.DeviceBusy):
         device_folder.card_from_files(device, [("A.TXT", b"a")])
+
+
+@pytest.mark.skipif(os.name != "posix", reason="process numbers are checked on POSIX")
+def test_a_marker_left_by_a_run_that_was_killed_no_longer_holds(tmp_path, firmware,
+                                                                fake_build) -> None:
+    """A killed run leaves its marker; from this machine, a process that is
+    gone is seen to be gone, and the folder is the operator's again."""
+    device = device_folder.create(tmp_path / "devices", "pocket", firmware)
+    marker = device.root / device_folder.RUNNING
+    proc = subprocess.Popen([sys.executable, "-c", "pass"])
+    proc.wait()
+    marker.write_text(f"{proc.pid} 2026-11-20T10:20:43 {_socket.gethostname()}\n")
+    assert device_folder.held(device) is None
+    assert not marker.exists()
+    # Another machine's run, or this one's while it lives, still holds.
+    marker.write_text(f"{proc.pid} 2026-11-20T10:20:43 some-other-host\n")
+    assert device_folder.held(device) == "2026-11-20T10:20:43"
+    marker.write_text(f"{os.getpid()} 2026-11-20T10:20:43 {_socket.gethostname()}\n")
+    assert device_folder.held(device) == "2026-11-20T10:20:43"
 
 
 def test_a_card_made_from_files_holds_them_and_keeps_the_old_one(tmp_path, firmware,

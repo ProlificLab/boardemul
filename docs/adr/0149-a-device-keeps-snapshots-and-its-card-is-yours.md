@@ -36,6 +36,12 @@ all the device is: what is in RAM is gone at the next boot either way.
    card back when it ends and QEMU writes the flash as the guest does, so
    while it runs the files are not a state the device was ever in. The page
    and the CLI refuse, and say why.
+   - *Amended 2026-11-20:* a run that was killed never removes its
+     `running` marker, and the folder then refused for good. The marker
+     names the machine as well as the process; one written on this machine
+     by a process that no longer exists no longer holds, and is removed. One
+     from another machine or container still holds, since nothing here can
+     check it.
 
 3. **The card is the user's, whole or by files:**
    - **out**: a copy of `sdcard.img`, a FAT16 image any computer mounts;

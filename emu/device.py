@@ -328,18 +328,43 @@ def hold(device: Device) -> None:
     then, and QEMU writes its flash as the guest does, so until then the files
     are not a state the device was ever in."""
     marker = device.root / RUNNING
-    marker.write_text(f"{os.getpid()} {datetime.datetime.now().isoformat(timespec='seconds')}\n",
-                      encoding="utf-8")
+    marker.write_text(f"{os.getpid()} {datetime.datetime.now().isoformat(timespec='seconds')}"
+                      f" {socket.gethostname()}\n", encoding="utf-8")
     import atexit
     atexit.register(lambda: marker.unlink(missing_ok=True))
 
 
+def _gone(pid: int) -> bool:
+    """Whether no process has this number, as far as this machine can tell.
+    Only asked on POSIX: on Windows signal 0 is CTRL_C_EVENT, which would
+    interrupt the process rather than ask about it."""
+    if os.name != "posix":
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return True
+    except OSError:
+        return False                  # it exists; it is only not ours to signal
+    return False
+
+
 def held(device: Device) -> str | None:
-    """Since when a run has held the folder, or None."""
+    """Since when a run has held the folder, or None.
+
+    A run that was killed never removes its marker, and the folder then
+    refused snapshots and cards for good. A marker written on this machine by
+    a process that no longer exists is one of those, and is removed. One from
+    another machine or container, or one without its machine's name, cannot
+    be checked from here and still holds."""
     marker = device.root / RUNNING
     try:
         words = marker.read_text(encoding="utf-8").split()
     except OSError:
+        return None
+    if (len(words) > 2 and words[2] == socket.gethostname()
+            and words[0].isdigit() and _gone(int(words[0]))):
+        marker.unlink(missing_ok=True)
         return None
     return words[1] if len(words) > 1 else "an unknown time"
 
