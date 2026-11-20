@@ -3,7 +3,7 @@
 What changed for someone running BoardEmul, newest first. The reasons are in
 `docs/adr/`, numbered as below.
 
-## Unreleased
+## 1.2.0 — 2026-11-20
 
 **Reaching a device**
 - The ESP32-S3's USB OTG port works, with a host on its cable: a firmware
@@ -21,6 +21,13 @@ What changed for someone running BoardEmul, newest first. The reasons are in
   connection (0168), and `tools/ble_central.py` reads and writes a GATT
   server. Meshtastic's phone API answers over it, with the node's whole
   configuration, once its pairing mode is NO_PIN (0169).
+- `tools/mesh_api.py` also sets a node's Bluetooth pairing mode.
+
+**Reliability**
+- A run on a timed air is the same run twice again: the USB host's replies
+  land at their cause's guest instant (0166).
+- `tools/slow_suite.sh N` runs the slow tests N at a time, then the ones
+  whose firmware keeps deadlines on the host's clock one at a time (0167).
 
 ## 1.1.0 — 2026-11-19
 
