@@ -33,8 +33,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from tests.support import (  # noqa: E402
     FIRMWARE_MESHTASTIC, MESHTASTIC_LITTLEFS, Run, count_pixels, dark_pixels,
-    pixel, qemu_available, run_emulator, send_text, send_touch, send_trackball_press,
-    wait_for_panel,
+    pixel, qemu_available, reset_trouble, run_emulator, send_text, send_touch,
+    send_trackball_press, wait_for_panel,
 )
 
 pytestmark = [
@@ -189,28 +189,51 @@ def typed(tmp_path_factory) -> tuple[Run, dict]:
         if not seen["dismissed"]:
             return
         # Committing makes the firmware restart itself to apply the settings,
-        # and it says so on the panel first. The notice is what to wait for:
-        # the run is launched with -no-reboot, so the reset ends the guest and
-        # no second banner is ever printed. OK is tapped again only while it
-        # is still there to be tapped.
+        # and it says so on the panel first. The notice is what to wait for,
+        # and the run stops on it, before the restart. OK is tapped again only
+        # while it is still there to be tapped.
+        #
+        # A screen that went to powersave in the meantime shows neither, and
+        # reads only its button: it is woken first, as a person would, rather
+        # than taken for a dialog that has gone (which is how a suite once
+        # lost this step with nothing to say for it).
         notice = lambda f: count_pixels(f, NOTICE, RED) > 200  # noqa: E731
         seen["reboot_notice"] = False
+        seen["ok_taps"] = 0
+        seen["woken"] = 0
         for _ in range(4):
+            if frame.exists() and _blank(frame):
+                send_trackball_press(outdir)
+                seen["woken"] += 1
+                wait_for_panel(outdir, ok_visible, timeout=10)
             send_touch(outdir, *OK_BUTTON)
+            seen["ok_taps"] += 1
             if wait_for_panel(outdir, notice, timeout=45):
                 seen["reboot_notice"] = True
+                # Every reset before the commit's own was the forgiven one.
+                uart = next(outdir.glob("*.uart.log"), None)
+                seen["uart_before_commit"] = (uart.read_text(errors="replace")
+                                              if uart else "")
                 break
-            if not wait_for_panel(outdir, ok_visible, timeout=5):
+            if not wait_for_panel(outdir, lambda f: ok_visible(f) or _blank(f), timeout=5):
                 break
+        # Whether the node itself said it would restart: a failure then says
+        # whether the commit was lost or only its notice went unseen.
+        log = outdir / "t.otg.log"
+        seen["restart_logged"] = log.exists() and b"Reboot" in log.read_bytes()
 
     # A ceiling, not a plan: the script stops the run as soon as it has what it
     # came for. It has to cover every wait below end to end, and under a loaded
     # suite each of them takes far longer in wall time than in the guest's
     # (ADR 0040).
+    #
+    # With --reboot, as the other Meshtastic boots run (ADRs 0114, 0124): a run
+    # here once ended at eight guest seconds on ADR 0099's ipc1 canary, which
+    # a board survives by restarting, and the dialog comes back after it.
     run = run_emulator(tmp_path_factory.mktemp("touch"), firmware=FIRMWARE_MESHTASTIC,
                        board="tdeck", timeout=760,
                        overlays=(f"0xc90000={MESHTASTIC_LITTLEFS}",),
-                       extra=("--psram-octal",), script=drive)
+                       extra=("--psram-octal", "--reboot"), script=drive)
     return run, seen
 
 
@@ -241,3 +264,10 @@ def test_the_ok_button_commits_and_the_firmware_restarts(typed) -> None:
     assert seen.get("dismissed"), (
         f"the keyboard never went away, so OK was never reachable: {seen}")
     assert seen.get("reboot_notice"), f"OK did not commit: no restart notice drawn: {seen}"
+
+
+def test_it_restarts_only_from_the_forgiven_panic(typed) -> None:
+    """Before the commit, a boot may end only in ADR 0099's ipc1 canary."""
+    _, seen = typed
+    text = seen.get("uart_before_commit", "")
+    assert not reset_trouble(text), reset_trouble(text)
