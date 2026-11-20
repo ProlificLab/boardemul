@@ -236,3 +236,36 @@ def test_the_cable_asks_qemu_for_the_controller_on_its_socket() -> None:
     cable = u.OtgCable("/out/otg.sock")
     assert cable.qemu_args() == ["-chardev", "socket,id=otg,path=/out/otg.sock",
                                  "-device", "esp-usb-otg,chardev=otg,id=otg"]
+
+
+def test_the_ports_log_grows_locally_when_the_runs_folder_is_shared(
+        tmp_path, monkeypatch) -> None:
+    """The cable's thread is the one QEMU's controller waits on; it writes
+    a packet at a time, so not over 9P (ADR 0175)."""
+    from emu import local_mirror
+    out = tmp_path / "out"
+    out.mkdir()
+    mounts = tmp_path / "mounts"
+    mounts.write_text(f"x {out.resolve().as_posix()} 9p rw 0 0\n")
+    monkeypatch.setattr(local_mirror, "MOUNTS", mounts)
+    cable = u.OtgCable.logging_to(out / "otg.sock", out / "t.otg.log")
+    assert cable.log_path == out / "t.otg.log"
+    assert cable.live_path != cable.log_path, "written elsewhere"
+    cable.host.sink(b"INFO  | ")
+    cable.host.sink(b"booted\n")
+    assert cable.live_path.read_bytes() == b"INFO  | booted\n"
+    cable.close()
+    assert cable.log_path.read_bytes() == b"INFO  | booted\n", "all of it, at the close"
+    assert not cable.live_path.exists()
+
+
+def test_on_local_disk_the_ports_log_is_written_in_place(tmp_path, monkeypatch) -> None:
+    from emu import local_mirror
+    mounts = tmp_path / "mounts"
+    mounts.write_text("x /elsewhere 9p rw 0 0\n")
+    monkeypatch.setattr(local_mirror, "MOUNTS", mounts)
+    cable = u.OtgCable.logging_to(tmp_path / "otg.sock", tmp_path / "t.otg.log")
+    assert cable.live_path == cable.log_path
+    cable.host.sink(b"x")
+    cable.close()
+    assert cable.log_path.read_bytes() == b"x"

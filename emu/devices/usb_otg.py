@@ -310,7 +310,11 @@ class OtgCable:
         self._listener: socket.socket | None = None
         self._stop = threading.Event()
         self._log_handle = None
+        self._mirror = None
+        # The port's log in the run's folder, and where it grows while the
+        # run lasts: the same file, unless that folder is shared (ADR 0175).
         self.log_path: Path | None = None
+        self.live_path: Path | None = None
         self.host = CdcHost(self._send, sink)
 
     # ---------------------------------------------------- QEMU's side
@@ -430,13 +434,24 @@ class OtgCable:
     def logging_to(cls, socket_path, path) -> "OtgCable":
         """The cable of a run: what the device sends on its CDC port is
         appended to `path`, the port's log beside the UART's and the USB
-        Serial/JTAG port's (ADR 0166)."""
+        Serial/JTAG port's (ADR 0166).
+
+        It is written unbuffered, a USB packet at a time, from the thread
+        QEMU's controller waits on. Where the run's folder is shared from
+        the host it grows on local disk instead and is copied there as it
+        grows, as QEMU's own files are (ADRs 0174, 0175)."""
+        from emu.local_mirror import Mirror
         path = Path(path)
-        path.write_bytes(b"")
-        handle = open(path, "ab", buffering=0)
+        mirror = Mirror([path])
+        live = mirror.local(path)
+        live.write_bytes(b"")
+        mirror.start()
+        handle = open(live, "ab", buffering=0)
         cable = cls(socket_path, sink=handle.write)
         cable._log_handle = handle
+        cable._mirror = mirror
         cable.log_path = path
+        cable.live_path = live
         return cable
 
     def close(self) -> None:
@@ -446,3 +461,6 @@ class OtgCable:
                 self.host.sink = lambda data: None
                 handle.close()
                 self._log_handle = None
+        mirror, self._mirror = self._mirror, None
+        if mirror is not None:
+            mirror.stop()

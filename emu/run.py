@@ -492,7 +492,7 @@ def main(argv: list[str] | None = None) -> int:
             raise SystemExit("--serial-tcp is PORT, PORT:uart, PORT:usb or PORT:otg")
         bind = "0.0.0.0" if os.environ.get("BOARDEMUL_BIND_ALL") else "127.0.0.1"
         # The OTG port's log is the board's, written as the host reads it
-        # (ADR 0166).
+        # (ADR 0166); where it grows is known once the board is built.
         logs = {"uart": mirror.local(uart), "usb": mirror.local(usb),
                 "otg": args.outdir / f"{tag}.otg.log"}
         bridge = SerialBridge(which, int(tcp_port), logs[which], serial_input, bind=bind)
@@ -670,6 +670,9 @@ def main(argv: list[str] | None = None) -> int:
         if hw.usb_otg is not None:
             # Typed to the OTG port: the host on its cable sends it (ADR 0166).
             serial_input.route("otg", hw.usb_otg.type_bytes)
+            if bridge is not None and bridge.port == "otg":
+                # Read where the log grows, not its copy (ADR 0175).
+                bridge.log_path = hw.usb_otg.live_path
         hw.start()
         server = BusServer(args.outdir / f"{tag}.bus.sock", hw.regions)
         irq = IrqChannel(args.outdir / f"{tag}.irq.sock")
