@@ -145,7 +145,14 @@ def test_the_wifi_screen_answers_a_scan(web) -> None:
             launcher = frames["frames"][-1]["name"]
             break
         time.sleep(1)
-    assert launcher, "the launcher never drew"
+    if not launcher:
+        # Once in a suite it did not draw, and nothing said why: the end of
+        # the firmware's own log is what says whether it panicked or waited.
+        _s, uart, _h = call(client, "GET", "/api/runs/pocket/uart?after=0")
+        lines = uart.get("lines", []) if isinstance(uart, dict) else []
+        tail = "\n".join(str(line) for line in lines[-25:])
+        pytest.fail(f"the launcher never drew ({len(frames['frames'])} frame(s)); "
+                    f"the UART ended:\n{tail}")
     tap(client, *WIFI_ICON)
     menu = settled(client, launcher, 90.0)
     assert menu, "tapping the WiFi icon changed nothing"
