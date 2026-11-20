@@ -201,6 +201,21 @@ OBJECT_DECLARE_SIMPLE_TYPE(EspBleCore, ESP_BLE_CORE)
  * because r_rwble_isr takes them in that order out of one status word and the
  * receive handler insists the entry's status is already past 2. */
 #define BIT_RX          (1u << 2)
+/* A packet went out during the event: r_rwble_isr hands this bit to
+ * r_sch_prog_tx_isr (ADR 0051), which frees what was sent. */
+#define BIT_TX          (1u << 1)
+
+/* What the link transmits (ADR 0168). A link's control structure names its
+ * current transmit descriptor at +28; a descriptor is 14 bytes at EM 0x1400
+ * and up: +0 the next one's offset in bits 0..14 and *done* in bit 15, +2 the
+ * PDU's two header octets, +4 the payload's offset. */
+#define CS_TX_DESC        28
+#define TX_DONE           0x8000u
+#define TX_NEXT_MASK      0x7FFFu
+#define LL_LINKS          8
+#define LL_MAX_PAYLOAD    251
+#define HDR_NESN          (1u << 2)
+#define HDR_SN            (1u << 3)
 
 #define ET_ENTRY_SIZE   16
 #define ET_STATUS_SHIFT 3
@@ -236,7 +251,10 @@ struct EspBleCore {
     unsigned fifo_len;
 
     /* Exchange-table entries kicked and not yet ended, by start time. */
-    struct { unsigned idx; int64_t start_hus; bool received; bool late; } events[ET_MAX_PENDING];
+    struct { unsigned idx; int64_t start_hus; bool received; bool late; bool sent; } events[ET_MAX_PENDING];
+    /* Each link's sequence bits, the hardware's own (ADR 0168). */
+    uint8_t tx_sn[LL_LINKS], rx_nesn[LL_LINKS];
+    uint64_t pdus_sent;
     unsigned n_events;
     QEMUTimer *event_timer;
 
@@ -437,6 +455,81 @@ static void ble_sched_peek(EspBleCore *s, unsigned idx, const char *when)
     qemu_log_mask(LOG_UNIMP, "esp-ble-core: sched %s entry %u: arg0 0x%08x "
                   "callback 0x%08x arg2 0x%08x word3 0x%08x, current %u%c",
                   when, idx, slot[0], slot[1], slot[2], slot[3], current, 10);
+}
+
+/* Investigation hatch, off unless BOARDEMUL_BLE_TXPEEK is set: the transmit
+ * descriptors. r_lld_con_tx_prog (ROM 0x4001afe8) indexes a table of 14-byte
+ * entries at exchange-memory offset 0x1400 (its literal at 0x40014c08), two
+ * per link in alternation, skips one whose first halfword has bit 15 set,
+ * and sets bit 4 of the halfword at +2 -- the shape of a descriptor the
+ * hardware owns and a data PDU header's MD bit. Which fields are what is to
+ * be read off what the controller writes: at every kick, each entry that
+ * changed is logged, with the bytes its halfwords point to. */
+#define TXPEEK_ENTRIES  24
+#define TXPEEK_SIZE     14
+
+static void ble_tx_peek(EspBleCore *s, unsigned idx)
+{
+    static int enabled = -1;
+    static uint8_t last[TXPEEK_ENTRIES][TXPEEK_SIZE];
+    hwaddr table;
+
+    if (enabled < 0) {
+        enabled = getenv("BOARDEMUL_BLE_TXPEEK") != NULL;
+    }
+    if (!enabled || !(table = ble_em_addr(s, 0x1400))) {
+        return;
+    }
+    /* And each link's control structure (EM 0x400 + link * 90, ADR 0051):
+     * one of its halfwords should name the link's current descriptor. */
+    static uint8_t last_cs[3][90];
+    for (unsigned link = 0; link < 3; link++) {
+        hwaddr cs = ble_em_addr(s, 0x400 + link * 90);
+        uint8_t c[90];
+        char text[90 * 3 + 1];
+        if (!cs) {
+            continue;
+        }
+        address_space_read(&address_space_memory, cs, MEMTXATTRS_UNSPECIFIED, c, sizeof(c));
+        if (!memcmp(c, last_cs[link], sizeof(c))) {
+            continue;
+        }
+        memcpy(last_cs[link], c, sizeof(c));
+        for (int h = 0; h < 45; h++) {
+            snprintf(text + h * 5, 6, "%04x ", c[h * 2] | c[h * 2 + 1] << 8);
+        }
+        qemu_log_mask(LOG_UNIMP, "esp-ble-core: txpeek kick %u cs %u: %s%c",
+                      idx, link, text, 10);
+    }
+    for (unsigned n = 0; n < TXPEEK_ENTRIES; n++) {
+        uint8_t d[TXPEEK_SIZE];
+        address_space_read(&address_space_memory, table + n * TXPEEK_SIZE,
+                           MEMTXATTRS_UNSPECIFIED, d, sizeof(d));
+        if (!memcmp(d, last[n], sizeof(d))) {
+            continue;
+        }
+        memcpy(last[n], d, sizeof(d));
+        qemu_log_mask(LOG_UNIMP, "esp-ble-core: txpeek kick %u entry %u: "
+                      "%04x %04x %04x %04x %04x %04x %04x%c", idx, n,
+                      d[0] | d[1] << 8, d[2] | d[3] << 8, d[4] | d[5] << 8,
+                      d[6] | d[7] << 8, d[8] | d[9] << 8, d[10] | d[11] << 8,
+                      d[12] | d[13] << 8, 10);
+        for (int half = 0; half < TXPEEK_SIZE / 2; half++) {
+            uint32_t ptr = d[half * 2] | (d[half * 2 + 1] << 8);
+            hwaddr to;
+            uint8_t seen[12];
+            if (ptr < 0x400 || ptr >= 0x8000 || !(to = ble_em_addr(s, ptr))) {
+                continue;
+            }
+            address_space_read(&address_space_memory, to, MEMTXATTRS_UNSPECIFIED,
+                               seen, sizeof(seen));
+            qemu_log_mask(LOG_UNIMP, "esp-ble-core: txpeek   +%d 0x%04x: "
+                          "%02x %02x %02x %02x %02x %02x %02x %02x %02x %02x "
+                          "%02x %02x%c", half * 2, ptr, seen[0], seen[1], seen[2],
+                          seen[3], seen[4], seen[5], seen[6], seen[7], seen[8],
+                          seen[9], seen[10], seen[11], 10);
+        }
+    }
 }
 
 static void ble_peek(EspBleCore *s, unsigned idx)
@@ -843,6 +936,7 @@ static void ble_event_done(void *opaque)
     unsigned idx = s->events[0].idx;
     bool late = s->events[0].late;
     bool took = s->events[0].received;
+    bool gave = s->events[0].sent;
     hwaddr entry = ble_et_entry(s, idx);
     uint16_t word0 = 0;
 
@@ -876,10 +970,63 @@ static void ble_event_done(void *opaque)
     if (took && !late) {
         raised |= BIT_RX;
     }
+    if (gave && !late) {
+        raised |= BIT_TX;
+    }
     s->raw |= raised;
     ble_fifo_push(s, raised);
     ble_update_irq(s);
     ble_arm_event_timer(s);
+}
+
+/* The link's pending packet, if the controller staged one, goes on the air
+ * (ADR 0168): header octet with this side's sequence bits, then the payload.
+ * The descriptor is marked done and the link moves on to the next. */
+static bool ble_link_transmit(EspBleCore *s, unsigned link)
+{
+    hwaddr cs = ble_em_addr(s, (uint32_t)(CS_BASE_HALFWORDS + link * CS_HALFWORDS_PER_LINK) * 2);
+    uint16_t at = 0, word0 = 0, header = 0, data = 0;
+    uint8_t frame[1 + LL_MAX_PAYLOAD];
+    hwaddr desc, payload;
+
+    if (!cs || link >= LL_LINKS) {
+        return false;
+    }
+    address_space_read(&address_space_memory, cs + CS_TX_DESC, MEMTXATTRS_UNSPECIFIED,
+                       &at, sizeof(at));
+    if (!at || !(desc = ble_em_addr(s, at))) {
+        return false;
+    }
+    address_space_read(&address_space_memory, desc, MEMTXATTRS_UNSPECIFIED, &word0, 2);
+    if (word0 & TX_DONE) {
+        return false;                       /* nothing staged */
+    }
+    address_space_read(&address_space_memory, desc + 2, MEMTXATTRS_UNSPECIFIED, &header, 2);
+    address_space_read(&address_space_memory, desc + 4, MEMTXATTRS_UNSPECIFIED, &data, 2);
+    unsigned length = MIN(header >> 8, LL_MAX_PAYLOAD);
+    if (length && (!data || !(payload = ble_em_addr(s, data)))) {
+        return false;
+    }
+    frame[0] = (uint8_t)((header & 0xF3)
+                         | (s->rx_nesn[link] ? HDR_NESN : 0)
+                         | (s->tx_sn[link] ? HDR_SN : 0));
+    if (length) {
+        address_space_read(&address_space_memory, payload, MEMTXATTRS_UNSPECIFIED,
+                           frame + 1, length);
+    }
+    ble_air_send(s, frame, length + 1);
+    s->tx_sn[link] ^= 1;
+    s->pdus_sent++;
+
+    word0 |= TX_DONE;
+    address_space_write(&address_space_memory, desc, MEMTXATTRS_UNSPECIFIED, &word0, 2);
+    uint16_t next = word0 & TX_NEXT_MASK;
+    address_space_write(&address_space_memory, cs + CS_TX_DESC, MEMTXATTRS_UNSPECIFIED,
+                        &next, sizeof(next));
+    qemu_log_mask(LOG_UNIMP, "esp-ble-core: link %u sent LLID %u, %u byte(s) from "
+                  "descriptor 0x%04x%s%c", link, header & 3, length, at,
+                  length ? "" : " (empty)", 10);
+    return true;
 }
 
 static void ble_kick(EspBleCore *s, uint32_t value)
@@ -907,6 +1054,7 @@ static void ble_kick(EspBleCore *s, uint32_t value)
                   e[8], e[9], e[10], e[11], e[12], e[13], e[14], e[15], 10);
 
     ble_peek(s, idx);
+    ble_tx_peek(s, idx);
     ble_sched_peek(s, idx, "kick");
     ble_transmit(s);
     /* The entry names its own control structure, and the structure's place in
@@ -920,8 +1068,14 @@ static void ble_kick(EspBleCore *s, uint32_t value)
         size_t got = 0;
         if (ble_air_poll(s, heard, sizeof(heard), &got)) {
             received = ble_deliver(s, heard, got, link, start);
+            if (received && link < LL_LINKS) {
+                s->rx_nesn[link] ^= 1;
+            }
         }
     }
+    /* A connection's event: the peripheral answers in it (ADR 0168).
+     * Advertising (link 0) transmits through ble_transmit above. */
+    bool sent = link > 0 && ble_link_transmit(s, link);
 
     unsigned i = s->n_events;
     while (i > 0 && s->events[i - 1].start_hus > start) {
@@ -931,6 +1085,7 @@ static void ble_kick(EspBleCore *s, uint32_t value)
     s->events[i].idx = idx;
     s->events[i].start_hus = start;
     s->events[i].received = received;
+    s->events[i].sent = sent;
     /* An entry already past when it is kicked is skipped (ADR 0025). That is
      * decided here, on the kick: deciding it when the end timer runs measured
      * the timer, not the guest, and under -icount's clock warp a loaded host
