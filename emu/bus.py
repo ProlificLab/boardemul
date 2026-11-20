@@ -28,6 +28,7 @@ IRQ_MSG = struct.Struct("<II")    # interrupt source, level
 OP_READ = 0
 OP_WRITE = 1
 OP_RESET = 2        # the machine reset; the region returns to its reset state
+OP_READ_SEEN = 3    # a read QEMU answered from its shadow, with the value (ADR 0176)
 
 
 class Region:
@@ -173,6 +174,10 @@ class BusServer:
             try:
                 if op == OP_READ:
                     result = region.read(offset, size) & 0xFFFFFFFF
+                elif op == OP_READ_SEEN:
+                    # Answered already, by the window's shadow in QEMU; heard
+                    # here so it is counted and kept like any read.
+                    result = value
                 elif op == OP_RESET:
                     region.reset()
                     log.debug("%s reset with the machine", region.name)
@@ -187,13 +192,16 @@ class BusServer:
             # raised: a write has no reply to carry it on.
             if region.irq >= 0 and self.irq_channel is not None:
                 self.irq_channel.set(region.irq, region.irq_level())
+        answered = op == OP_READ_SEEN       # a read, whose answer QEMU gave
+        if answered:
+            op = OP_READ
         if op != OP_RESET:
             self.recent.append((op, addr, size, result if op == OP_READ else value))
         if _dbg and region is not None:
             log.debug("%s %s +0x%03x = 0x%08x", region.name,
                       "rd" if op == OP_READ else "wr", addr - region.base,
                       result if op == OP_READ else value)
-        if op != OP_READ:
+        if op != OP_READ or answered:
             return          # writes are not acknowledged (ADR 0011)
         try:
             conn.sendall(RESPONSE.pack(result))

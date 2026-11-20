@@ -158,6 +158,24 @@ class TraceRegion(Region):
         second boot then finds the window as the first one did."""
         self.regs.clear()
 
+    def shadow_gates(self) -> dict[int, int] | None:
+        """The bits QEMU forces on read, by address, if QEMU can answer this
+        window's reads itself from a shadow of it (ADR 0176); None if not.
+        Only the read rule above can be shadowed: a subclass that reads
+        otherwise is answered here, as every model is."""
+        return {} if type(self).read is TraceRegion.read else None
+
+    def qemu_device_arg(self, socket_path: str) -> str:
+        arg = super().qemu_device_arg(socket_path)
+        gates = self.shadow_gates()
+        # BOARDEMUL_SHADOW=0: every read asks Python, as before ADR 0176.
+        if gates is None or os.environ.get("BOARDEMUL_SHADOW") == "0":
+            return arg
+        arg += ",shadow=on"
+        if gates:
+            arg += ",gates=" + ";".join(f"0x{a:x}:0x{m:x}" for a, m in sorted(gates.items()))
+        return arg
+
 
 class PhyGates(TraceRegion):
     """A radio register page whose completion flags can be answered.
@@ -201,6 +219,14 @@ class PhyGates(TraceRegion):
         if self._gated:
             v |= self.GATES.get(self.base + offset, 0)
         return v
+
+    def shadow_gates(self) -> dict[int, int] | None:
+        if type(self).read is not PhyGates.read:
+            return None
+        if not self._gated:
+            return {}
+        return {a: m for a, m in self.GATES.items()
+                if self.base <= a < self.base + self.size}
 
 
 def i2c_devices(clock=None) -> list[I2CDevice]:

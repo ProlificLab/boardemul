@@ -38,6 +38,10 @@ OBJECT_DECLARE_SIMPLE_TYPE(EspBusBridge, ESP_BUS_BRIDGE)
 /* The machine reset. Not acknowledged, like a write: it carries no value and
  * nothing waits on it. */
 #define BRIDGE_OP_RESET 2u
+/* A read this device answered from its shadow, with the value it gave: posted
+ * so the model counts it and keeps it in its tail, and nothing waits (ADR
+ * 0176). */
+#define BRIDGE_OP_READ_SEEN 3u
 
 struct EspBusBridge {
     DeviceState parent_obj;
@@ -60,6 +64,15 @@ struct EspBusBridge {
     char *irq_socket_path;
     int irqfd;
     DeviceState *intc_dev;
+
+    /* A trace window, read from here (ADR 0176): what the Python model
+     * would answer, which is the last value written at that offset, ORed
+     * with the gate bits for that address ("addr:mask;..."), cleared at
+     * reset. The model still hears of every access. */
+    bool shadow;
+    char *gates_spec;
+    GHashTable *regs;       /* offset -> last value written */
+    GHashTable *gates;      /* absolute address -> bits forced high on read */
 };
 
 typedef struct QEMU_PACKED {
@@ -255,6 +268,15 @@ static uint64_t bridge_mmio_read(void *opaque, hwaddr offset, unsigned size)
                       req.addr, cc->get_pc(current_cpu), current_cpu->cpu_index);
     }
 
+    if (s->shadow) {
+        req.op = BRIDGE_OP_READ_SEEN;
+        req.value = GPOINTER_TO_UINT(g_hash_table_lookup(s->regs,
+                                                         GUINT_TO_POINTER(offset)))
+                    | GPOINTER_TO_UINT(g_hash_table_lookup(s->gates,
+                                                           GUINT_TO_POINTER(req.addr)));
+        bridge_post(s, &req);
+        return req.value;
+    }
     return bridge_transact(s, &req, &rsp) ? rsp.value : 0;
 }
 
@@ -277,6 +299,10 @@ static void bridge_mmio_write(void *opaque, hwaddr offset,
         CPUClass *cc = CPU_GET_CLASS(current_cpu);
         qemu_log_mask(LOG_UNIMP, "PCWATCH wr addr=0x%08x value=0x%08x pc=0x%08" PRIx64 " cpu=%d\n",
                       req.addr, req.value, cc->get_pc(current_cpu), current_cpu->cpu_index);
+    }
+    if (s->shadow) {
+        g_hash_table_insert(s->regs, GUINT_TO_POINTER(offset),
+                            GUINT_TO_POINTER(req.value));
     }
     bridge_post(s, &req);
 }
@@ -311,9 +337,37 @@ static void bridge_reset(void *opaque)
         .value = 0,
     };
 
+    if (s->shadow) {
+        g_hash_table_remove_all(s->regs);
+    }
     if (s->fd >= 0 && !s->broken) {
         bridge_post(s, &req);
     }
+}
+
+/* "addr:mask;addr:mask", numbers in any base strtoul reads. Not commas:
+ * -device splits its properties on those. */
+static bool bridge_parse_gates(EspBusBridge *s, Error **errp)
+{
+    if (!s->gates_spec || !*s->gates_spec) {
+        return true;
+    }
+    char **items = g_strsplit(s->gates_spec, ";", -1);
+    bool ok = true;
+    for (char **it = items; *it && ok; it++) {
+        char *colon = strchr(*it, ':');
+        if (!colon) {
+            error_setg(errp, "esp-bus-bridge: gate '%s' is not addr:mask", *it);
+            ok = false;
+            break;
+        }
+        *colon = 0;
+        uint32_t addr = (uint32_t)strtoul(*it, NULL, 0);
+        uint32_t mask = (uint32_t)strtoul(colon + 1, NULL, 0);
+        g_hash_table_insert(s->gates, GUINT_TO_POINTER(addr), GUINT_TO_POINTER(mask));
+    }
+    g_strfreev(items);
+    return ok;
 }
 
 
@@ -385,6 +439,9 @@ static void bridge_realize(DeviceState *dev, Error **errp)
     }
     if (strlen(s->socket_path) >= sizeof(addr.sun_path)) {
         error_setg(errp, "esp-bus-bridge: socket path too long");
+        return;
+    }
+    if (!bridge_parse_gates(s, errp)) {
         return;
     }
 
@@ -459,6 +516,8 @@ static Property bridge_props[] = {
     DEFINE_PROP_UINT64("base", EspBusBridge, base, 0),
     DEFINE_PROP_UINT64("size", EspBusBridge, size, 0),
     DEFINE_PROP_INT32("priority", EspBusBridge, priority, 100),
+    DEFINE_PROP_BOOL("shadow", EspBusBridge, shadow, false),
+    DEFINE_PROP_STRING("gates", EspBusBridge, gates_spec),
     DEFINE_PROP_END_OF_LIST(),
 };
 
@@ -469,6 +528,8 @@ static void bridge_init(Object *obj)
     s->intc_type = g_strdup("misc.esp32s3.intmatrix");
     s->fd = -1;
     s->irqfd = -1;
+    s->regs = g_hash_table_new(g_direct_hash, g_direct_equal);
+    s->gates = g_hash_table_new(g_direct_hash, g_direct_equal);
 }
 
 static void bridge_class_init(ObjectClass *klass, void *data)
