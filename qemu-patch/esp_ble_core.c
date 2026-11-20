@@ -253,6 +253,17 @@ OBJECT_DECLARE_SIMPLE_TYPE(EspBleCore, ESP_BLE_CORE)
  * descriptor's header, which says whether it is random (ADR 0171). */
 #define CS_OWN_ADDRESS    6
 #define ADV_TXADD         0x40
+/* Every frame on the air starts with its access address, four octets least
+ * significant first (ADR 0173): the advertising one or a connection's, which
+ * the controller keeps at +12 of the link's control structure. A radio hears
+ * only frames on the address its event is for. */
+#define CS_ACCESS_ADDRESS 12
+#define AIR_AA            4
+#define ADV_RXADD         0x80
+#define PDU_SCAN_REQ      0x03
+/* A scan or connection request names the advertiser it is for after the
+ * scanner's or initiator's own address: its payload's octets 6..11. */
+#define REQ_ADVA          6
 
 #define ET_ENTRY_SIZE   16
 #define ET_STATUS_SHIFT 3
@@ -715,7 +726,41 @@ static void ble_air_join(EspBleCore *s)
     }
 }
 
-static void ble_air_send(EspBleCore *s, const uint8_t *frame, size_t length)
+static void ble_air_send_raw(EspBleCore *s, const uint8_t *frame, size_t length);
+
+/* The access address of a link's events, from its control structure. */
+static uint32_t ble_link_aa(EspBleCore *s, unsigned link)
+{
+    uint8_t aa[AIR_AA] = { 0 };
+    hwaddr cs = ble_em_addr(s, (uint32_t)(CS_BASE_HALFWORDS + link * CS_HALFWORDS_PER_LINK) * 2);
+
+    if (cs) {
+        address_space_read(&address_space_memory, cs + CS_ACCESS_ADDRESS,
+                           MEMTXATTRS_UNSPECIFIED, aa, sizeof(aa));
+    }
+    return (uint32_t)aa[0] | (uint32_t)aa[1] << 8 | (uint32_t)aa[2] << 16
+           | (uint32_t)aa[3] << 24;
+}
+
+/* A frame goes on the air behind its link's access address (ADR 0173). */
+static void ble_air_send(EspBleCore *s, unsigned link, const uint8_t *frame,
+                         size_t length)
+{
+    uint8_t out[AIR_AA + 1 + LL_MAX_PAYLOAD + 16];
+    uint32_t aa = ble_link_aa(s, link);
+
+    if (length > sizeof(out) - AIR_AA) {
+        length = sizeof(out) - AIR_AA;
+    }
+    out[0] = aa & 0xFF;
+    out[1] = (aa >> 8) & 0xFF;
+    out[2] = (aa >> 16) & 0xFF;
+    out[3] = (aa >> 24) & 0xFF;
+    memcpy(out + AIR_AA, frame, length);
+    ble_air_send_raw(s, out, length + AIR_AA);
+}
+
+static void ble_air_send_raw(EspBleCore *s, const uint8_t *frame, size_t length)
 {
     struct dirent *entry;
     DIR *dir;
@@ -848,7 +893,7 @@ static void ble_transmit(EspBleCore *s)
                            MEMTXATTRS_UNSPECIFIED, payload + 1, 6);
     }
     payload[0] = PDU_ADV_IND | (header & ADV_TXADD);
-    ble_air_send(s, payload, length + 7);
+    ble_air_send(s, 0, payload, length + 7);
 }
 
 /* Take whatever has arrived on the air. Called as an event completes, which
@@ -1158,7 +1203,7 @@ static bool ble_link_transmit(EspBleCore *s, unsigned link)
          * central paces itself on it, sending once per event. */
         frame[0] = (uint8_t)(0x01 | (s->rx_nesn[link] ? HDR_NESN : 0)
                              | (s->tx_sn[link] ? HDR_SN : 0));
-        ble_air_send(s, frame, 1);
+        ble_air_send(s, link, frame, 1);
         s->tx_sn[link] ^= 1;
         return false;
     }
@@ -1191,7 +1236,7 @@ static bool ble_link_transmit(EspBleCore *s, unsigned link)
             return false;
         }
     }
-    ble_air_send(s, frame, air);
+    ble_air_send(s, link, frame, air);
     s->tx_sn[link] ^= 1;
     s->pdus_sent++;
 
@@ -1203,6 +1248,52 @@ static bool ble_link_transmit(EspBleCore *s, unsigned link)
     qemu_log_mask(LOG_UNIMP, "esp-ble-core: link %u sent LLID %u, %u byte(s) from "
                   "descriptor 0x%04x%s%c", link, header & 3, length, at,
                   length ? "" : " (empty)", 10);
+    return true;
+}
+
+/* Whether a frame heard in an event of this link is one its radio would see
+ * (ADR 0173): on the link's access address, and on an advertising event a
+ * scan or connection request only if it names this board -- its AdvA this
+ * board's own address and its RxAdd this board's TxAdd -- as the radio's
+ * address filter has it; the controller does not check that itself. */
+static bool ble_air_correlates(EspBleCore *s, unsigned link, const uint8_t *raw,
+                               size_t got)
+{
+    uint32_t aa;
+
+    if (got <= AIR_AA) {
+        return false;
+    }
+    aa = (uint32_t)raw[0] | (uint32_t)raw[1] << 8 | (uint32_t)raw[2] << 16
+         | (uint32_t)raw[3] << 24;
+    if (aa != ble_link_aa(s, link)) {
+        qemu_log_mask(LOG_UNIMP, "esp-ble-core: link %u: a frame on 0x%08x is not "
+                      "for this event; not heard%c", link, aa, 10);
+        return false;
+    }
+    const uint8_t *pdu = raw + AIR_AA;
+    size_t length = got - AIR_AA;
+    unsigned type = pdu[0] & 0x0F;
+    if (link == 0 && (type == PDU_SCAN_REQ || type == PDU_CONNECT_IND)) {
+        uint8_t own[6] = { 0 }, header = 0;
+        hwaddr cs0 = ble_em_addr(s, CS_BASE_HALFWORDS * 2);
+        hwaddr desc = ble_em_addr(s, ADV_RECORD_OFFSET);
+        if (cs0) {
+            address_space_read(&address_space_memory, cs0 + CS_OWN_ADDRESS,
+                               MEMTXATTRS_UNSPECIFIED, own, sizeof(own));
+        }
+        if (desc) {
+            address_space_read(&address_space_memory, desc + 2,
+                               MEMTXATTRS_UNSPECIFIED, &header, 1);
+        }
+        bool rx_random = pdu[0] & ADV_RXADD, own_random = header & ADV_TXADD;
+        if (length < 1 + REQ_ADVA + 6 || memcmp(pdu + 1 + REQ_ADVA, own, 6)
+            || rx_random != own_random) {
+            qemu_log_mask(LOG_UNIMP, "esp-ble-core: a type %u request for "
+                          "another advertiser; not taken%c", type, 10);
+            return false;
+        }
+    }
     return true;
 }
 
@@ -1246,11 +1337,12 @@ static void ble_kick(EspBleCore *s, uint32_t value)
     }
     bool received = false;
     {
-        uint8_t heard[64];
+        uint8_t raw[AIR_AA + 64];
         size_t got = 0;
-        if (ble_air_poll(s, heard, sizeof(heard), &got)
-            && (link == 0 || ble_link_open(s, link, heard, got))) {
-            received = ble_deliver(s, heard, got, link, start);
+        if (ble_air_poll(s, raw, sizeof(raw), &got)
+            && ble_air_correlates(s, link, raw, got)
+            && (link == 0 || ble_link_open(s, link, raw + AIR_AA, got - AIR_AA))) {
+            received = ble_deliver(s, raw + AIR_AA, got - AIR_AA, link, start);
             if (received && link < LL_LINKS) {
                 s->rx_nesn[link] ^= 1;
             }

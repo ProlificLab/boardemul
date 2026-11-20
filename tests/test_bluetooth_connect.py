@@ -34,6 +34,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from emu.devices.air import AirMedium  # noqa: E402
+from tools.ble_central import ADV_AA, CONN_AA, on, split  # noqa: E402
 from tests.support import (  # noqa: E402
     FIRMWARE_MESHTASTIC, MESHTASTIC_LITTLEFS, REPO_ROOT, qemu_available,
 )
@@ -78,13 +79,14 @@ HUS_PER_MS = 2000
 ALIVE_MS = 2000
 
 
-def connect_request() -> bytes:
+def connect_request(advertiser: bytes) -> bytes:
     """Six bytes of initiator address, six of advertiser, twenty-two of
     connection data -- the interval, latency and timeout are inside the ranges
-    the ROM insists on, which is why it accepts this and not any 34 bytes."""
+    the ROM insists on, which is why it accepts this and not any 34 bytes.
+    The advertiser is the address its advertisement gave: a board takes only
+    a request that names it (ADR 0173). Sent on the advertising address."""
     initiator = bytes.fromhex("ccbbaa286f24")
-    advertiser = bytes.fromhex("0100000000c0")
-    data = (struct.pack("<I", 0xAF9AB4C3)        # access address
+    data = (struct.pack("<I", CONN_AA)           # access address
             + bytes.fromhex("555555")            # CRC seed
             + bytes([3])                         # window size
             + struct.pack("<H", 1)               # window offset
@@ -95,14 +97,22 @@ def connect_request() -> bytes:
             + bytes([0x0D]))                     # hop and clock accuracy
     payload = initiator + advertiser + data
     assert len(payload) == 34, len(payload)
-    return bytes([PDU_CONNECT_IND]) + payload
+    return on(ADV_AA, bytes([PDU_CONNECT_IND]) + payload)
+
+
+def advertiser(frames: list[bytes]) -> bytes | None:
+    """The address an advertisement heard gives, if one was (ADR 0171)."""
+    for aa, pdu in map(split, frames):
+        if aa == ADV_AA and len(pdu) >= 7 and not pdu[0] & 0x0F:
+            return pdu[1:7]
+    return None
 
 
 def empty_packet() -> bytes:
     """What a master sends when it has nothing to say: a data packet whose
     LLID is one and whose payload is empty. It carries nothing, and hearing it
     is what tells a peripheral its master is still there."""
-    return bytes([0x01])
+    return on(CONN_AA, bytes([0x01]))
 
 
 def connection_events(log: str) -> list[int]:
@@ -191,11 +201,13 @@ def connected(tmp_path_factory, bluetooth_filesystem: Path) -> str:
         # Wait until it is actually advertising; connecting to silence proves
         # nothing, and the link layer takes a while to come up.
         deadline = time.monotonic() + ADVERTISING_SECONDS
-        while time.monotonic() < deadline and not central.poll():
+        address = None
+        while time.monotonic() < deadline and address is None:
+            address = advertiser(central.poll())
             if proc.poll() is not None:
                 break
             time.sleep(0.5)
-        central.send(connect_request())
+        central.send(connect_request(address or bytes(6)))
         # One request, then talk. A real central sends exactly one, and the
         # link then lives or dies on whether it is spoken to -- for as long as
         # it takes the link to show what the assertions ask of it.

@@ -28,8 +28,9 @@ from tests.support import (  # noqa: E402
     FIRMWARE_MESHTASTIC, MESHTASTIC_LITTLEFS, REPO_ROOT, qemu_available,
 )
 from tests.test_bluetooth_connect import (  # noqa: E402,F401
-    ADVERTISING_SECONDS, OVERLAY_AT, bluetooth_filesystem, connect_request,
+    ADVERTISING_SECONDS, OVERLAY_AT, advertiser, bluetooth_filesystem, connect_request,
 )
+from tools.ble_central import CONN_AA, on, split  # noqa: E402
 
 pytestmark = [
     pytest.mark.slow,
@@ -57,14 +58,14 @@ class Central:
         self.control: list[bytes] = []          # every control PDU heard
 
     def send(self, llid: int, payload: bytes = b"") -> None:
-        self.air.send(bytes([llid | self.nesn << 2 | self.sn << 3]) + payload)
+        self.air.send(on(CONN_AA, bytes([llid | self.nesn << 2 | self.sn << 3]) + payload))
         self.sn ^= 1
 
     def listen(self) -> None:
-        for frame in self.air.poll():
-            llid = frame[0] & 3
-            if not llid:                     # advertising PDU, type 0
+        for aa, frame in map(split, self.air.poll()):
+            if aa != CONN_AA:                # advertising, or another link's
                 continue
+            llid = frame[0] & 3
             self.nesn ^= 1
             body = frame[1:]
             if llid == LLID_CONTROL and body:
@@ -98,11 +99,13 @@ def exchanged(tmp_path_factory, bluetooth_filesystem: Path) -> list[bytes]:
     central = Central(medium)
     try:
         deadline = time.monotonic() + ADVERTISING_SECONDS
-        while time.monotonic() < deadline and not medium.poll():
+        address = None
+        while time.monotonic() < deadline and address is None:
+            address = advertiser(medium.poll())
             if proc.poll() is not None:
                 break
             time.sleep(0.5)
-        medium.send(connect_request())
+        medium.send(connect_request(address or bytes(6)))
         asked = False
         deadline = time.monotonic() + EXCHANGE_SECONDS
         # Stopped on the evidence: the peripheral's version, once asked for.

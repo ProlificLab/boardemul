@@ -95,11 +95,14 @@ def overheard(tmp_path_factory, bluetooth_filesystem: Path) -> list[bytes]:
                 proc.wait(timeout=15)
             except subprocess.TimeoutExpired:
                 proc.kill()
-    return frames
+    # Each frame starts with its access address (ADR 0173); what follows is
+    # the advertisement these tests read.
+    return [frame[4:] for frame in frames if frame[:4] == ADV_AA_BYTES]
 
 
 ADV_IND = 0x00
 TX_ADD = 0x40
+ADV_AA_BYTES = (0x8E89BED6).to_bytes(4, "little")     # advertising's access address
 ADDRESS = 6         # the advertiser's address, after the type (ADR 0171)
 
 

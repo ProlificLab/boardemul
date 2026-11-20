@@ -8,9 +8,10 @@ characteristics, reads and writes. It pairs, too (ADR 0171): LE Secure
 Connections passkey entry over the Security Manager, then the link layer's
 encryption, AES-CCM on every packet after it. Standard library only.
 
-Frames on the air are a data channel PDU's first header octet, then its
-payload (ADR 0168); an advertisement is its type octet, the advertiser's
-address and its data (ADR 0171); the connection request is ADR 0047's.
+Frames on the air start with their access address (ADR 0173), then a data
+channel PDU's first header octet and its payload (ADR 0168), or an
+advertisement's type octet, the advertiser's address and its data (ADR
+0171); the connection request is ADR 0047's.
 Nothing here is retransmitted by the link layer, which assumes delivery, so
 an ATT request that gets no answer is sent again.
 
@@ -94,11 +95,26 @@ def uuid_text(raw: bytes) -> str:
 # The central's own address, public, least significant octet first.
 INITIATOR = bytes.fromhex("ccbbaa286f24")
 NO_ADDRESS = bytes.fromhex("0100000000c0")
+# The access addresses a frame starts with (ADR 0173): advertising's, and the
+# one this central's connection request gives its connection.
+ADV_AA, CONN_AA = 0x8E89BED6, 0xAF9AB4C3
+
+
+def on(aa: int, pdu: bytes) -> bytes:
+    """A frame as the air carries it: the access address, then the PDU."""
+    return struct.pack("<I", aa) + pdu
+
+
+def split(frame: bytes) -> tuple[int, bytes]:
+    """A frame's access address and PDU; an address of -1 if it has none."""
+    if len(frame) < 5:
+        return -1, b""
+    return struct.unpack_from("<I", frame)[0], frame[4:]
 
 
 def connect_request(advertiser: bytes = NO_ADDRESS, random: bool = False) -> bytes:
     """A CONNECT_IND from INITIATOR (public) to the advertiser heard."""
-    data = (struct.pack("<I", 0xAF9AB4C3) + bytes.fromhex("555555") + bytes([3])
+    data = (struct.pack("<I", CONN_AA) + bytes.fromhex("555555") + bytes([3])
             + struct.pack("<HHHH", 1, INTERVAL_UNITS, 0, 72)
             + bytes.fromhex("ffffffff1f") + bytes([0x0D]))
     return (bytes([PDU_CONNECT_IND | (RX_ADD if random else 0)])
@@ -149,15 +165,16 @@ class Central:
 
     # -- the link layer --------------------------------------------------
 
-    def connect(self, wait_s: float = 240) -> bool:
-        """Wait to hear the board advertise, then ask to connect."""
+    def connect(self, wait_s: float = 240, address: bytes | None = None) -> bool:
+        """Wait to hear a board advertise -- the one with this address, if
+        given, least significant octet first -- then ask it to connect."""
         deadline = time.monotonic() + wait_s
         while time.monotonic() < deadline:
-            heard = self.air.poll()
-            for frame in heard:
-                if not frame[0] & 3 and len(frame) >= 7:      # an advertisement
-                    self.peer, self.peer_random = frame[1:7], bool(frame[0] & TX_ADD)
-            if heard:
+            adverts = [pdu for aa, pdu in map(split, self.air.poll())
+                       if aa == ADV_AA and len(pdu) >= 7 and not pdu[0] & 0x0F
+                       and (address is None or pdu[1:7] == address)]
+            if adverts:
+                self.peer, self.peer_random = adverts[0][1:7], bool(adverts[0][0] & TX_ADD)
                 self.sn = self.nesn = 0
                 self.heard_since_send = True
                 self.outbox.clear()
@@ -166,7 +183,7 @@ class Central:
                 self.sk, self.tx_crypt, self.rx_crypt = None, False, False
                 self.starting = None
                 self.tx_count = self.rx_count = self.mic_failures = 0
-                self.air.send(connect_request(self.peer or NO_ADDRESS, self.peer_random))
+                self.air.send(on(ADV_AA, connect_request(self.peer, self.peer_random)))
                 self.connected_at = time.monotonic()
                 self.adverts_since = 0
                 return True
@@ -183,7 +200,7 @@ class Central:
             payload = ble_crypto.ccm_encrypt(self.sk, self._nonce(self.tx_count, True),
                                              payload, aad=bytes([header & 0xE3]))
             self.tx_count += 1
-        self.air.send(bytes([header]) + payload)
+        self.air.send(on(CONN_AA, bytes([header]) + payload))
         self.sn ^= 1
 
     def send_l2cap(self, cid: int, pdu: bytes) -> None:
@@ -194,15 +211,18 @@ class Central:
                                 frame[at:at + LL_PAYLOAD]))
 
     def _listen(self) -> None:
-        for frame in self.air.poll():
-            llid = frame[0] & 3
-            if not llid:                       # an advertising PDU, type 0
-                # A peripheral advertising well after it was asked to connect
-                # has dropped the link (or restarted its stack).
-                if (self.connected_at is not None
+        for aa, frame in map(split, self.air.poll()):
+            if aa == ADV_AA:
+                # Its peripheral advertising well after it was asked to
+                # connect has dropped the link (or restarted its stack).
+                # Another board's advertising says nothing about this link.
+                if (self.connected_at is not None and frame[1:7] == self.peer
                         and time.monotonic() > self.connected_at + 2):
                     self.adverts_since += 1
                 continue
+            if aa != CONN_AA:
+                continue                       # another connection's
+            llid = frame[0] & 3
             self.nesn ^= 1
             self.heard_since_send = True
             body = frame[1:]
