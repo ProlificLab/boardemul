@@ -178,3 +178,4 @@ superseded ADR is marked superseded and points forward.
 | [0170](0170-a-register-access-does-not-end-a-block-without-icount.md) | A register access does not end a translation block without `-icount` | Accepted (adds a carried patch, 0017) |
 | [0171](0171-bluetooth-pairs-with-a-passkey-and-encrypts.md) | Bluetooth pairs with a passkey and encrypts the link | Accepted (step 4 of 0157; amends 0046) |
 | [0172](0172-a-parts-answers-to-idle-bytes-come-ahead.md) | A part's answers to idle bytes come ahead of the bytes | Accepted (extends 0011) |
+| [0173](0173-a-bluetooth-frame-carries-its-access-address.md) | A Bluetooth frame carries its access address | Accepted (part of 0157 step 2; amends 0046, 0168, 0171) |
