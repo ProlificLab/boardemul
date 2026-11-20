@@ -44,7 +44,7 @@ DATA_PORTNUM, DATA_PAYLOAD, DATA_WANT_RESPONSE = 1, 2, 3
 ADMIN_APP = 6
 ADMIN_SET_CONFIG = 34
 CONFIG_NETWORK, CONFIG_DISPLAY, CONFIG_BLUETOOTH = 4, 5, 7
-BLUETOOTH_MODE = 2
+BLUETOOTH_MODE, BLUETOOTH_FIXED_PIN = 2, 3
 # BluetoothConfig.PairingMode. Under anything but NO_PIN Meshtastic reads and
 # writes its characteristics only on an encrypted, authenticated link
 # (src/nimble/NimbleBluetooth.cpp; ADR 0157).
@@ -181,10 +181,17 @@ def set_wifi(node: int, ssid: str, psk: str, network: bytes = b"",
     return set_config(node, CONFIG_NETWORK, body)
 
 
-def set_pairing_mode(node: int, mode: int, bluetooth: bytes = b"") -> bytes:
-    """Change the Bluetooth pairing mode, keeping the rest of the section."""
-    return set_config(node, CONFIG_BLUETOOTH,
-                      patch(bluetooth, {BLUETOOTH_MODE: field_varint(BLUETOOTH_MODE, mode)}))
+def set_pairing_mode(node: int, mode: int, bluetooth: bytes = b"",
+                     pin: int | None = None) -> bytes:
+    """Change the Bluetooth pairing mode, and the fixed PIN if one is given,
+    keeping the rest of the section. A central pairs with the PIN as its
+    passkey (ADR 0171)."""
+    changes = {BLUETOOTH_MODE: field_varint(BLUETOOTH_MODE, mode)}
+    if pin is not None:
+        if not 0 <= pin <= 999999:
+            raise ValueError("a Bluetooth PIN is six digits")
+        changes[BLUETOOTH_FIXED_PIN] = field_varint(BLUETOOTH_FIXED_PIN, pin)
+    return set_config(node, CONFIG_BLUETOOTH, patch(bluetooth, changes))
 
 
 def set_display_mode(node: int, mode: int, display: bytes = b"") -> bytes:
@@ -245,6 +252,7 @@ def describe(message: bytes) -> dict:
                 mode = first(bluetooth, BLUETOOTH_MODE, 0)
                 out["pairing_mode"] = next(
                     (name for name, n in PAIRING_MODES.items() if n == mode), str(mode))
+                out["fixed_pin"] = first(bluetooth, BLUETOOTH_FIXED_PIN, 0)
             network = first(value, CONFIG_NETWORK)
             if network is not None:
                 out["raw_network"] = network
@@ -322,6 +330,8 @@ def main(argv: list[str] | None = None) -> int:
     pairing = sub.add_parser("bluetooth-pairing", help="set how Bluetooth pairs; "
                              "'no-pin' lets a central read and write unpaired")
     pairing.add_argument("mode", choices=sorted(PAIRING_MODES))
+    pairing.add_argument("--pin", type=int,
+                         help="the fixed PIN, six digits; a central pairs with it")
     ap.add_argument("--timeout", type=float, default=60)
     args = ap.parse_args(argv)
 
@@ -342,7 +352,7 @@ def main(argv: list[str] | None = None) -> int:
                                   state.get("raw_display", b""))
     elif args.command == "bluetooth-pairing":
         change = set_pairing_mode(state["my_node_num"], PAIRING_MODES[args.mode],
-                                  state.get("raw_bluetooth", b""))
+                                  state.get("raw_bluetooth", b""), pin=args.pin)
     if change is not None:
         node.send(change)
         state = node.receive(lambda s: "rebooted" in s, seconds=args.timeout)

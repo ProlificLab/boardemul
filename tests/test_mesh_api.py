@@ -95,3 +95,14 @@ def test_a_lone_start_octet_in_the_log_is_not_lost() -> None:
     assert reader.feed(b"x") == []
     assert bytes(reader.text) == b"abc\x94x"
     assert struct.pack(">H", 2) == b"\x00\x02"
+
+
+def test_the_fixed_pin_is_set_with_the_pairing_mode() -> None:
+    bluetooth = m.field_varint(1, 1) + m.field_varint(m.BLUETOOTH_MODE, 0)
+    body = m.first(m.first(m.first(m.first(
+        m.set_pairing_mode(1, m.PAIRING_MODES["fixed-pin"], bluetooth, pin=271828),
+        m.TORADIO_PACKET), m.PACKET_DECODED), m.DATA_PAYLOAD), m.ADMIN_SET_CONFIG)
+    sent = m.first(body, m.CONFIG_BLUETOOTH)
+    assert m.first(sent, 1) == 1                       # enabled, kept
+    assert m.first(sent, m.BLUETOOTH_MODE) == 1
+    assert m.first(sent, m.BLUETOOTH_FIXED_PIN) == 271828
