@@ -3,7 +3,7 @@
 What changed for someone running BoardEmul, newest first. The reasons are in
 `docs/adr/`, numbered as below.
 
-## Unreleased
+## 1.4.0 — 2026-11-20
 
 **Reaching a device**
 - Meshtastic's WiFi is set on the T-Deck's own screen as a person sets it,
@@ -17,7 +17,13 @@ What changed for someone running BoardEmul, newest first. The reasons are in
 
 **Reliability**
 - The Meshtastic touch test survives ADR 0099's ipc1 canary the way a board
-  does, by restarting, and says why when OK does not commit (0114, 0124).
+  does, by restarting, and says why when OK does not commit (0114, 0124); its
+  taps are retried with a resting and a quick finger in turn.
+
+**Known**
+- Rarely, Meshtastic asserts on a radio command timeout right after the
+  radio's init and reboots; recorded with its error code in ADR 0141, not yet
+  explained.
 
 ## 1.3.0 — 2026-11-20
 
