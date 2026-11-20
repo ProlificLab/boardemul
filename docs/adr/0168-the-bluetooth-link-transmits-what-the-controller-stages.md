@@ -73,7 +73,10 @@ answer staged, because the controller does one procedure at a time.
 
 - Acknowledgement is assumed: a packet sent is a packet received, so
   nothing is retransmitted. The air loses nothing.
-- Empty packets are not sent; a central that needs the peripheral's NESN to
-  move learns it from the next packet that carries data.
+- ~~Empty packets are not sent.~~ Since 2026-11-20 (ADR 0169) an event with
+  nothing staged sends the empty packet the hardware sends, so a central can
+  answer once per event: a central that sent on a timer instead flooded a
+  guest running slower than the wall, and its requests queued behind
+  hundreds of empty packets.
 - Pairing and encryption (step 4) remain: Meshtastic reads and writes its
   characteristics encrypted unless its Bluetooth mode is NO_PIN.

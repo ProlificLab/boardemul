@@ -40,6 +40,12 @@ Two things in our own models stood in the way, and were found on the way:
    characteristics, read, write. A peripheral advertising again after it was
    connected is a lost link, and the central reconnects. Standard library
    only.
+   - It sends once per connection event, after the peripheral's answer to
+     its last packet, as a central does; the core answers every event, an
+     empty packet when nothing is staged. Sent on a wall-clock timer, a
+     central's packets piled up in front of a guest under `-icount` and a
+     busy host, and the Meshtastic test failed in a three-wide suite; paced
+     on the answers it passed two at a time.
 2. **Meshtastic is read without pairing, by its own setting.** Its
    Bluetooth pairing mode is set to NO_PIN through its serial API
    (`tools/mesh_api.py … bluetooth-pairing no-pin`, ADR 0166), as its apps'

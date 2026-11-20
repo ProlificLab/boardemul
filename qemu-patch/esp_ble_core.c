@@ -999,7 +999,14 @@ static bool ble_link_transmit(EspBleCore *s, unsigned link)
     }
     address_space_read(&address_space_memory, desc, MEMTXATTRS_UNSPECIFIED, &word0, 2);
     if (word0 & TX_DONE) {
-        return false;                       /* nothing staged */
+        /* Nothing staged: the hardware answers its central with an empty
+         * packet, as every connection event must have one (ADR 0169). A
+         * central paces itself on it, sending once per event. */
+        frame[0] = (uint8_t)(0x01 | (s->rx_nesn[link] ? HDR_NESN : 0)
+                             | (s->tx_sn[link] ? HDR_SN : 0));
+        ble_air_send(s, frame, 1);
+        s->tx_sn[link] ^= 1;
+        return false;
     }
     address_space_read(&address_space_memory, desc + 2, MEMTXATTRS_UNSPECIFIED, &header, 2);
     address_space_read(&address_space_memory, desc + 4, MEMTXATTRS_UNSPECIFIED, &data, 2);

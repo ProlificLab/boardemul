@@ -93,6 +93,8 @@ class Central:
         self.frames: list[tuple[int, bytes]] = []
         self.control: list[bytes] = []        # every control PDU heard
         self.connected_at: float | None = None
+        self.heard_since_send = True          # the peripheral answered our last packet
+        self.sent_at = 0.0
         self.adverts_since = 0                # advertisements heard while connected
 
     def close(self) -> None:
@@ -106,6 +108,7 @@ class Central:
         while time.monotonic() < deadline:
             if self.air.poll():
                 self.sn = self.nesn = 0
+                self.heard_since_send = True
                 self.outbox.clear()
                 self.frames.clear()
                 self.l2cap = bytearray()
@@ -131,6 +134,7 @@ class Central:
                     self.adverts_since += 1
                 continue
             self.nesn ^= 1
+            self.heard_since_send = True
             body = frame[1:]
             if llid == LLID_CONTROL and body:
                 self.control.append(body)
@@ -150,13 +154,24 @@ class Central:
                     self.l2cap = bytearray()
 
     def step(self) -> None:
-        """One connection interval: listen, then send what is due, or an
-        empty packet so the peripheral knows its central is there."""
+        """One connection event: listen, then send what is due, or an empty
+        packet so the peripheral knows its central is there.
+
+        A central sends once per event and the peripheral answers every
+        event (an empty packet if it has nothing, ADR 0169), so the next
+        packet waits for that answer. Sent on a timer instead, packets piled
+        up in front of a guest running slower than the wall -- under -icount
+        and a busy host, hundreds deep -- and a request waited behind them
+        all. A packet that got no answer within a second is followed anyway,
+        in case it was lost."""
         self._listen()
         if self.adverts_since >= 3:
             raise LinkLost("the peripheral is advertising again")
-        self._send(*(self.outbox.pop(0) if self.outbox else (LLID_CONTINUE,)))
-        time.sleep(INTERVAL_S)
+        if self.heard_since_send or time.monotonic() > self.sent_at + 1.0:
+            self._send(*(self.outbox.pop(0) if self.outbox else (LLID_CONTINUE,)))
+            self.heard_since_send = False
+            self.sent_at = time.monotonic()
+        time.sleep(0.005)
 
     def run(self, seconds: float) -> None:
         end = time.monotonic() + seconds
@@ -177,7 +192,7 @@ class Central:
     # -- ATT over L2CAP -------------------------------------------------------
 
     def transact(self, pdu: bytes, answers: tuple[int, ...], tries: int = 4,
-                 wait_s: float = 8) -> bytes:
+                 wait_s: float = 15) -> bytes:
         """Send an ATT request and return its response, sending it again if
         nothing came back; an error response raises AttError."""
         for _ in range(tries):
