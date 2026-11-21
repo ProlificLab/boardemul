@@ -92,6 +92,13 @@ networks in the T-Deck's tests (ADRs 0074–0097).
   (ADR 0103), not the ADC.
 - Joining a network from the Max's own interface is not shown, for the
   firmware's reason above.
+  - *Amended 2026-11-21:* shown, without V3.3. A passphrase V3.1's field can
+    type -- `aaaa` types `22222222` -- is accepted, and Connect calls
+    `WiFi.begin`. The station then reported every attempt `NO_AP_FOUND`,
+    and that was the model's: every frame arrived at 0 dBm, and a station
+    that picks its network by signal never picks one at zero (ADR 0177).
+    With a signal it authenticates, completes WPA2's handshake and takes an
+    address; `tests/test_max_wifi_join.py` does it as a person does.
 - `test_max_keyboard` failed once in three runs that day, on the WiFi menu
   not redrawing for UP inside its wait, and passed alone and after this
   test. An e-paper redraw's timing, not this change; noted, not fixed.

@@ -182,3 +182,4 @@ superseded ADR is marked superseded and points forward.
 | [0174](0174-what-qemu-writes-is-kept-local-and-copied.md) | What QEMU writes during a run is kept on local disk and copied out | Accepted (revises 0164's account of the WiFi join) |
 | [0175](0175-what-python-writes-is-kept-off-the-guests-path.md) | What the run's Python side writes is kept off the guest's path | Accepted (follows 0174 to the panel's frames and the OTG port's log) |
 | [0176](0176-qemu-is-profiled-by-sampling-and-trace-windows-are-read-from-a-shadow.md) | QEMU is profiled by sampling, and trace windows are read from a shadow | Accepted (profiles ADR 0161's speed; amends 0011's protocol) |
+| [0177](0177-a-received-wifi-frame-has-a-signal-strength.md) | A received WiFi frame has a signal strength | Accepted (amends 0152; adds to 0063's receive header) |
