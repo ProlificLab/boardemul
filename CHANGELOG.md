@@ -3,6 +3,18 @@
 What changed for someone running BoardEmul, newest first. The reasons are in
 `docs/adr/`, numbered as below.
 
+## Unreleased
+
+**Reaching a device**
+- The T-Deck Max joins a WPA2 network from its own WiFi screen: scan, tap
+  the network, type the password, Connect. Its factory firmware types keypad
+  digits into the field, so give the access point a passphrase of them:
+  `aaaa` types `22222222` (0152, 0177).
+
+**Fixed**
+- WiFi frames arrive with a signal strength (−45 dBm) instead of 0 dBm, at
+  which a station that chooses its network by signal never chose one (0177).
+
 ## 1.5.0 — 2026-11-21
 
 **Faster**

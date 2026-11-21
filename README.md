@@ -109,7 +109,8 @@ select 3 (ADR 0102); the SD card; I2C0/I2C1 with the board's parts, the fuel
 gauge provisioned as its driver expects (ADR 0103) and the sensor hub booting
 the firmware it is given (ADR 0108); the A7682E modem and the u-blox receiver
 on their serial lines (ADRs 0105, 0117); WiFi, whose scan lists an access
-point given `--wifi-ap` (ADRs 0137, 0152); the chip's I2S controllers and
+point given `--wifi-ap` and whose own screen joins it (ADRs 0137, 0152,
+0177); the chip's I2S controllers and
 Bluetooth core, as on the T-Deck (ADR 0148); the USB serial port (ADR 0100).
 The factory firmware's own Test page passes LoRa, Touch, SY6970, BQ27220,
 SD Card, A7682E and ES8311.
@@ -130,8 +131,9 @@ touch-only by the vendor's design, and its sub-screens take keys
 nothing more, so its volume and routing are not modelled, though what the
 firmware sends it over I2S is recorded with `--audio` (ADR 0148); the modem
 answers only the few commands the factory test sends, and has no SIM
-(ADR 0105); joining a network from the factory interface, whose password
-field fills with its own dialer's digits (ADR 0152).
+(ADR 0105). The factory interface's password field types its dialer's
+digits, two per key, so a network it joins needs a passphrase of those
+digits: `aaaa` types `22222222` (ADR 0152).
 
 ### The T-Deck, second board
 
