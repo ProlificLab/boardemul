@@ -28,6 +28,9 @@ What changed for someone running BoardEmul, newest first. The reasons are in
 **For developers**
 - `bash tools/profile.sh -- emu/run.py …` profiles QEMU by sampling, in the
   build container, without perf (0176).
+- `tools/slow_suite.sh` keeps a failing part's run folders under `logs/`,
+  and the device boot test survives the firmware's known panic as the
+  other boot tests do (0125).
 
 ## 1.4.0 — 2026-11-20
 
