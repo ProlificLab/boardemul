@@ -24,7 +24,8 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from tests.support import (  # noqa: E402
-    FIRMWARE_MESHTASTIC, MESHTASTIC_LITTLEFS, qemu_available, wait_for_panel,
+    FIRMWARE_MESHTASTIC, MESHTASTIC_LITTLEFS, qemu_available, reset_trouble,
+    unforgiven, wait_for_panel,
 )
 from tools.make_configured_fs import (  # noqa: E402
     OK_BUTTON, SHORT_ICON, count_pixels, is_setup_dialog, tap,
@@ -61,10 +62,12 @@ def stop(proc: subprocess.Popen) -> None:
 
 
 def boot(device_root: Path, outdir: Path, tag: str) -> subprocess.Popen:
+    """With --reboot, as every single-board boot test (ADR 0125): the ipc1
+    canary Meshtastic trips now and then is survived, as the board does."""
     outdir.mkdir(parents=True, exist_ok=True)
     return subprocess.Popen(
         [sys.executable, "emu/run.py", "--device", str(device_root),
-         "--bus", "--outdir", str(outdir), "--tag", tag,
+         "--bus", "--outdir", str(outdir), "--tag", tag, "--reboot",
          "--timeout", "600", "--stall", "600"],
         cwd=Path(__file__).resolve().parent.parent,
         stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT,
@@ -114,10 +117,20 @@ def test_a_configured_device_comes_back_configured(node) -> None:
         time.sleep(4)
         tap(events, SHORT_ICON)              # put the keyboard away
         time.sleep(6)
+        resets = _uart(first, "boot1").count("rst:0x")
         tap(events, OK_BUTTON)               # commits; the firmware restarts
-        time.sleep(30)                       # the save and the restart it asks for
+        # Stopped at the restart it asks for, once it has saved, as the run
+        # ended there before --reboot: the boot after it rewrites its files
+        # first thing, and a stop in the middle of that would be judged.
+        deadline = time.monotonic() + 120
+        while time.monotonic() < deadline \
+                and _uart(first, "boot1").count("rst:0x") <= resets:
+            time.sleep(0.25)
     finally:
         stop(proc)
+    # This boot ends in the restart OK asks for; before it, only the canary.
+    wrong = unforgiven(_uart(first, "boot1"))
+    assert not wrong, f"the first boot panicked, not in ADR 0099's canary: {wrong[0]!r}"
 
     # The guest had somewhere to put a preference, and used it.
     after_first = node["flash_sha"]()
@@ -145,6 +158,13 @@ def test_a_configured_device_comes_back_configured(node) -> None:
         assert _frames_differ(first, second), "the second boot drew the first boot's screen"
     finally:
         stop(proc)
+    trouble = reset_trouble(_uart(second, "boot2"))
+    assert not trouble, trouble
+
+
+def _uart(outdir: Path, tag: str) -> str:
+    path = outdir / f"{tag}.uart.log"
+    return path.read_text(errors="replace") if path.exists() else ""
 
 
 def _ui_is_up(frame: Path, frames: Path) -> bool:

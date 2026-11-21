@@ -71,3 +71,11 @@ name, and fail any other reset with the boot that ended in it.
   them fail with their cause in the message.
 - `test_meshtastic_touch` can still be ended by the canary, about one run in
   ten to twenty, as before.
+
+*Amended 2026-11-21:* `test_meshtastic_touch` came to run with `--reboot`
+after all (its retries made a restarted boot resumable). `test_device_boot`
+was the one left: a full slow-tier run ended its first boot at 13 s in the
+ipc1 canary, `guest exited (code 0)`, and the test then waited five minutes
+for a setup dialog. It runs with `--reboot` too. Its first boot ends in the
+restart the firmware asks for after OK, so that boot is checked for any
+panic but the canary; the second, which asks for none, by `reset_trouble`.
