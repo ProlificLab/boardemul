@@ -95,6 +95,10 @@ OBJECT_DECLARE_SIMPLE_TYPE(EspWifiMac, ESP_WIFI_MAC)
  * words at +0, +4, +8, +44 and the byte at +47 -- so the packet starts at
  * forty-eight and five header fields are consulted on the way. */
 #define RX_HEADER       48
+/* What every received frame's strength reads as: a station across a room from
+ * its access point. The WiFi air has no positions to work one out from (ADR
+ * 0177). */
+#define RX_RSSI_DBM     (-45)
 #define RX_HEADER_TAG   8
 #define R_RX_QUEUES     0xca8
 /* Whether the MAC is running at all. ic_mac_deinit (ROM, 0x4003c5fc) spins
@@ -1285,8 +1289,14 @@ static void wifi_deliver(void *opaque)
      * remaining guess is bit 29 and that it is not load-bearing.
      *
      * Neither arrangement helps an EAPOL data frame reach the supplicant, so
-     * this field is not what drops it (ADR 0068's open question). */
-    header[0] = 0x30000000u;
+     * this field is not what drops it (ADR 0068's open question).
+     *
+     * Word 0's low byte is the frame's signal strength, a signed byte in dBm
+     * (`wifi_pkt_rx_ctrl_t.rssi`). Left zero, every frame arrived at 0 dBm,
+     * and a station that picks its access point by signal never picks one:
+     * `cnx_choose_rc` keeps the candidate whose utility beats zero, unsigned,
+     * and that utility is this byte. A room's distance instead (ADR 0177). */
+    header[0] = 0x30000000u | (uint8_t)RX_RSSI_DBM;
     for (unsigned i = 0; i < RX_HEADER / 4; i++) {
         if (s->header_set & (1u << i)) {
             header[i] = s->header_words[i];
