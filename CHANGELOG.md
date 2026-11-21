@@ -3,7 +3,7 @@
 What changed for someone running BoardEmul, newest first. The reasons are in
 `docs/adr/`, numbered as below.
 
-## Unreleased
+## 1.5.0 — 2026-11-21
 
 **Faster**
 - On Windows and macOS, a run no longer waits on the folder its output is
