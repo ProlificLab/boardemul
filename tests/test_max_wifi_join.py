@@ -24,7 +24,8 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from tests.support import (  # noqa: E402
-    FIRMWARE, qemu_available, read_png, run_emulator, send_touch, usb_text,
+    FIRMWARE, qemu_available, read_png, reset_trouble, run_emulator, send_touch,
+    usb_text,
 )
 
 pytestmark = [
@@ -115,10 +116,14 @@ def joined(tmp_path_factory) -> dict:
         while time.monotonic() < deadline and "dhcp ACK" not in bus_log(out):
             time.sleep(2)
 
-    run_emulator(outdir, board="tdeck-max", wait_frames=3, timeout=900,
-                 extra=("--wifi-ap", f"{AP_NAME},100,1", "--wifi-wpa2",
-                        "--wifi-pass", PASSPHRASE),
-                 script=drive)
+    # With --reboot, as every single-board boot test (ADR 0125): a full slow
+    # tier once ended this run at five seconds in ADR 0099's ipc1 canary,
+    # which the board survives by restarting.
+    run = run_emulator(outdir, board="tdeck-max", wait_frames=3, timeout=900,
+                       extra=("--wifi-ap", f"{AP_NAME},100,1", "--wifi-wpa2",
+                              "--wifi-pass", PASSPHRASE, "--reboot"),
+                       script=drive)
+    seen["uart"] = run.uart
     seen["bus"] = bus_log(outdir)
     seen["usb"] = usb_text(outdir)
     return seen
@@ -143,3 +148,10 @@ def test_it_found_its_network_rather_than_none(joined) -> None:
     assert "NO_AP_FOUND" not in joined["usb"], (
         "the station reported its network not found, as it did when every "
         "frame arrived at 0 dBm (ADR 0177)")
+
+
+def test_it_reboots_only_from_the_forgiven_panic(joined) -> None:
+    """Any reset but ADR 0099's ipc1 canary fails, with the boot it ended
+    (ADR 0125)."""
+    trouble = reset_trouble(joined["uart"])
+    assert not trouble, trouble
