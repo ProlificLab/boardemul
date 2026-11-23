@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-FileCopyrightText: 2026 Prolific Lab
 # SPDX-License-Identifier: Apache-2.0
-"""Fetch the vendor firmware firmware/MANIFEST.toml pins, and check it (ADR 0147).
+"""Fetch the vendor firmware tools/firmware_manifest.toml pins, and check it (ADR 0147).
 
     python tools/fetch_firmware.py            # fetch whatever is missing
     python tools/fetch_firmware.py --check    # fetch nothing; say what is there
@@ -27,8 +27,13 @@ import zipfile
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-FIRMWARE = REPO_ROOT / "firmware"
-MANIFEST = FIRMWARE / "MANIFEST.toml"
+sys.path.insert(0, str(REPO_ROOT))
+from emu import home  # noqa: E402
+
+# Where the images go: the home's firmware/ (ADR 0183); the manifest that
+# pins them travels with the code.
+FIRMWARE = home.firmware()
+MANIFEST = Path(__file__).resolve().parent / "firmware_manifest.toml"
 # A plain client name: nothing about whoever runs it goes upstream.
 AGENT = "BoardEmul-fetch"
 TIMEOUT_S = 120

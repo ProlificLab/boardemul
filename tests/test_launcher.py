@@ -136,3 +136,22 @@ def test_the_sources_digest_follows_the_patches_and_not_line_endings(tmp_path, m
     assert doctor.sources_digest() == first
     (tmp_path / "qemu-patch/esp_guest_clock.c").write_bytes(b"one\ntwo\nthree\n")
     assert doctor.sources_digest() != first
+
+
+def test_an_installed_copy_pulls_its_image_instead_of_building(world, monkeypatch):
+    """ADR 0183: without the clone's sources, the image CI published."""
+    published = "ghcr.io/prolificlab/boardemul:0.1.0"
+    monkeypatch.setattr(boardemul, "RUNTIME_IMAGE", published)
+    monkeypatch.setattr(boardemul, "PUBLISHED_IMAGE", published)
+    pulled = []
+
+    def pull():
+        pulled.append(1)
+        world["image_built"] = True
+        return True
+
+    monkeypatch.setattr(boardemul, "pull_runtime_image", pull)
+    assert boardemul.main(["--no-open"]) == 0
+    assert pulled == [1] and world["built"] == 0
+    import os
+    assert os.environ["BOARDEMUL_IMAGE"] == published

@@ -5,7 +5,7 @@ T-Deck Max, what each stage demands of the hardware, and which of those demands
 the Espressif QEMU fork actually satisfies.
 
 **Every concrete number in this document was measured from the vendor images
-pinned in `firmware/MANIFEST.toml`, not copied from a datasheet.** Where
+pinned in `tools/firmware_manifest.toml`, not copied from a datasheet.** Where
 something is derived but not yet observed, it is labelled as such. It was
 written before the first run, to make M0's output interpretable. What the runs
 corrected is marked where it fell, and the table of what QEMU provides says

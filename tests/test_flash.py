@@ -4,7 +4,7 @@
 """Flash image and eFuse tests.
 
 These run against the real vendor binary, so they double as a check that the
-file on disk is the one `firmware/MANIFEST.toml` pins.
+file on disk is the one `tools/firmware_manifest.toml` pins.
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ from tests.support import FIRMWARE, REPO_ROOT  # noqa: E402
 from tools import mkflash  # noqa: E402
 
 pytestmark = pytest.mark.skipif(not FIRMWARE.exists(),
-                                reason="vendor firmware is not vendored; see MANIFEST.toml")
+                                reason="vendor firmware is not vendored; see tools/firmware_manifest.toml")
 
 
 @pytest.fixture(scope="module")
@@ -31,7 +31,7 @@ def image() -> bytes:
 
 
 def test_file_matches_the_pinned_hash(image: bytes) -> None:
-    manifest = tomllib.loads((REPO_ROOT / "firmware" / "MANIFEST.toml").read_text())
+    manifest = tomllib.loads((REPO_ROOT / "tools" / "firmware_manifest.toml").read_text())
     entry = next(e for e in manifest["image"] if e["name"] == "factory")
     assert hashlib.sha256(image).hexdigest() == entry["sha256"]
     assert len(image) == entry["size"]

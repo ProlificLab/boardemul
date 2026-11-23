@@ -27,7 +27,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-RUNTIME_IMAGE = "boardemul-runtime"
+from tools.doctor import PUBLISHED_IMAGE, RUNTIME_IMAGE  # noqa: E402
 
 
 def say(text: str) -> None:
@@ -42,6 +42,13 @@ def build_runtime_image(why: str) -> bool:
                            "--build-arg", f"BOARDEMUL_SOURCES={doctor.sources_digest()}",
                            "-f", "docker/runtime/Dockerfile", "."], cwd=REPO_ROOT)
     return done.returncode == 0
+
+
+def pull_runtime_image() -> bool:
+    """An installed BoardEmul runs the image CI published for its version
+    (ADR 0183)."""
+    say(f"pulling the {PUBLISHED_IMAGE} image, which carries QEMU")
+    return subprocess.run(["docker", "pull", PUBLISHED_IMAGE]).returncode == 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -80,6 +87,11 @@ def main(argv: list[str] | None = None) -> int:
 
     for f in blocking:
         if f.what == "Build image" and image == RUNTIME_IMAGE:
+            if image == PUBLISHED_IMAGE:
+                if not pull_runtime_image():
+                    say("the image did not arrive; Docker's output above says why")
+                    return 1
+                continue
             why = ("its QEMU sources have changed since it was built"
                    if "other QEMU sources" in f.detail else "once")
             if not build_runtime_image(why):

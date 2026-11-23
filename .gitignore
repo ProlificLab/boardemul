@@ -1,4 +1,4 @@
-# Vendor firmware is pinned by hash in firmware/MANIFEST.toml, not vendored.
+# Vendor firmware is pinned by hash in tools/firmware_manifest.toml, not vendored.
 # Committing 4 MB of third-party binaries would bloat history for no gain:
 # the hashes make them verifiable and the manifest makes them re-fetchable.
 firmware/**/*.bin

@@ -28,7 +28,13 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 OK, WARN, ERROR = "ok", "warn", "error"
-RUNTIME_IMAGE = "boardemul-runtime"
+from emu import home  # noqa: E402
+from emu.version import VERSION  # noqa: E402
+
+# A clone builds its runtime image from its own sources; an installed
+# BoardEmul pulls the one CI published for its version (ADR 0183).
+PUBLISHED_IMAGE = f"ghcr.io/prolificlab/boardemul:{VERSION}"
+RUNTIME_IMAGE = "boardemul-runtime" if home.is_clone() else PUBLISHED_IMAGE
 # The label the runtime image carries: the digest of the sources its QEMU was
 # built from, so a clone that has moved on can tell (ADR 0159).
 SOURCES_LABEL = "org.boardemul.sources"
@@ -100,11 +106,15 @@ def check_where(image: str) -> list[Finding]:
     env = " ".join(config.get("Env") or [])
     built_from = (config.get("Labels") or {}).get(SOURCES_LABEL)
     if have is None or have.returncode != 0:
-        build = ("-f docker/runtime/Dockerfile ." if image == RUNTIME_IMAGE
-                 else ".devcontainer")
-        found.append(Finding(ERROR, "Build image", f"{image} is not built",
-                             f"docker build -t {image} {build}"))
-    elif "BOARDEMUL_QEMU=" in env and built_from != sources_digest():
+        if image == PUBLISHED_IMAGE:
+            fix = f"docker pull {image}"
+        else:
+            build = ("-f docker/runtime/Dockerfile ." if image == RUNTIME_IMAGE
+                     else ".devcontainer")
+            fix = f"docker build -t {image} {build}"
+        found.append(Finding(ERROR, "Build image", f"{image} is not built", fix))
+    elif ("BOARDEMUL_QEMU=" in env and home.is_clone()
+          and built_from != sources_digest()):
         # Its QEMU lacks what this clone's QEMU sources add since (ADR 0159).
         found.append(Finding(ERROR, "Build image", f"{image} was built from "
                              "other QEMU sources than this clone's",

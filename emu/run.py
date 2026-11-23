@@ -24,6 +24,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from emu import device as device_folder  # noqa: E402
+from emu import home  # noqa: E402
 from tools import mkflash  # noqa: E402
 from tools.fetch_firmware import companion_overlays as firmware_companions  # noqa: E402
 from emu import board  # noqa: E402
@@ -311,8 +312,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--device", type=Path, default=None, metavar="PATH",
                     help="start a device folder instead of a bare firmware: "
                          "its storage is reused and kept (ADR 0133)")
-    ap.add_argument("--outdir", type=Path, default=REPO_ROOT / "logs")
-    ap.add_argument("--builddir", type=Path, default=REPO_ROOT / "build")
+    ap.add_argument("--outdir", type=Path, default=home.logs())
+    ap.add_argument("--builddir", type=Path, default=home.builds())
     ap.add_argument("--trace", action="store_true",
                     help="record every MMIO access (roughly 100x slower)")
     ap.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT_SECONDS)

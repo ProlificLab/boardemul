@@ -32,10 +32,11 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from emu import device as device_folder  # noqa: E402
+from emu import home  # noqa: E402
 
 
 def devices_dir(explicit: str | None) -> Path:
-    return Path(explicit) if explicit else REPO_ROOT / "devices"
+    return Path(explicit) if explicit else home.devices()
 
 
 def _get(devices: Path, name: str):

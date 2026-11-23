@@ -127,7 +127,7 @@ def main(argv: list[str] | None = None) -> int:
 
     for needed in (FIRMWARE_MESHTASTIC, MESHTASTIC_LITTLEFS):
         if not needed.exists():
-            raise SystemExit(f"missing {needed}; see firmware/MANIFEST.toml")
+            raise SystemExit(f"missing {needed}; see tools/firmware_manifest.toml")
 
     work = Path(tempfile.mkdtemp(prefix="configured-"))
     build = work / "build"

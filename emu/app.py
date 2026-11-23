@@ -45,6 +45,7 @@ from emu.skin import (  # noqa: E402
     DEFAULT, KEY_NAMES, KEYSYMS, LETTER_KEYS, SKINS, InputWriter, Skin, TDeckTyping,
 )
 from emu import device as _device_folder  # noqa: E402
+from emu import home  # noqa: E402
 from emu.chooser import Chooser  # noqa: E402
 from emu.devices.tdeck_trackball import NOTCH  # noqa: E402
 
@@ -624,7 +625,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--board", default=DEFAULT.name, choices=sorted(SKINS),
                     help=f"which device to draw (default: {DEFAULT.name}, or "
                          f"the started device's)")
-    ap.add_argument("--dir", type=Path, default=REPO_ROOT / "devices",
+    ap.add_argument("--dir", type=Path, default=home.devices(),
                     help="where device folders live, for the chooser")
     args = ap.parse_args(argv)
 

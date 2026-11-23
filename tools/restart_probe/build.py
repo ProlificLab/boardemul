@@ -15,7 +15,7 @@ Run it on a host with PlatformIO, not in the build container:
     python3 -m pytest tests/test_restart_probe.py -m slow
 
 The image is not byte-for-byte reproducible (the app records its build time),
-which is why firmware/MANIFEST.toml does not pin it.
+which is why tools/firmware_manifest.toml does not pin it.
 """
 
 from __future__ import annotations

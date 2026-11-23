@@ -38,6 +38,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from emu import device as device_folder  # noqa: E402
+from emu import home  # noqa: E402
 from emu.skin import InputWriter, LETTER_KEYS, KEYSYMS, TDeckTyping  # noqa: E402
 
 WEB_DIR = Path(__file__).resolve().parent / "web"
@@ -45,7 +46,7 @@ WEB_DIR = Path(__file__).resolve().parent / "web"
 # port on the USB OTG controller (ADRs 0156, 0166).
 SERIAL_PORTS = ("uart", "usb", "otg")
 # Where RunHandle puts each run's directory, by device.
-LOGS = REPO_ROOT / "logs"
+LOGS = home.logs()
 UPLOADS = ".uploads"
 # The most a firmware upload may carry: four times the largest flash these
 # boards have (ADR 0139).
@@ -867,7 +868,7 @@ def make_server(devices: Path, port: int = 0,
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--port", type=int, default=8420)
-    ap.add_argument("--dir", type=Path, default=REPO_ROOT / "devices",
+    ap.add_argument("--dir", type=Path, default=home.devices(),
                     help="where device folders live")
     ap.add_argument("--no-open", action="store_true",
                     help="do not open a browser tab")

@@ -49,7 +49,7 @@ OUT="/tmp/tlb-rate-${LABEL}"
 
 if [[ ! -f "${FW}" || ! -f "${LFS}" ]]; then
     echo "ERROR: the Meshtastic firmware and its filesystem image are needed." >&2
-    echo "       See firmware/MANIFEST.toml for how to fetch them." >&2
+    echo "       See tools/firmware_manifest.toml for how to fetch them." >&2
     exit 1
 fi
 

@@ -15,5 +15,5 @@ QEMU itself, fetched and built by tools/build_qemu.sh, is the QEMU
 project's and Espressif's, under their own licences.
 
 Firmware for the boards BoardEmul emulates is not part of this product: it
-is fetched from where its vendors publish it (firmware/MANIFEST.toml) and is
+is fetched from where its vendors publish it (tools/firmware_manifest.toml) and is
 under its vendors' terms.

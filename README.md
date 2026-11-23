@@ -20,7 +20,7 @@ python boardemul.py
 ```
 
 The first time it builds the `boardemul-runtime` image, which compiles QEMU
-once, fetches the vendor firmware `firmware/MANIFEST.toml` pins, and opens
+once, fetches the vendor firmware `tools/firmware_manifest.toml` pins, and opens
 the page. **`docs/GUIDE.md` is the operator's guide**: devices, settings,
 snapshots and clones, a Meshtastic mesh, the scripting API, and the limits.
 
@@ -297,7 +297,7 @@ every millisecond and reports per thread, by function (ADR 0176).
     tests/            fast device tests, plus golden-frame tests behind -m slow
     emu/              the emulator: launcher, bus bridge host side, device models,
                       the drawn faces, the web front door
-    firmware/         vendor binaries (not committed; see MANIFEST.toml)
+    firmware/         vendor binaries (not committed; see tools/firmware_manifest.toml)
     devices/          device folders, made by tools/device.py (ADR 0133)
 
 ## How it fits together
