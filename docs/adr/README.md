@@ -185,3 +185,5 @@ superseded ADR is marked superseded and points forward.
 | [0177](0177-a-received-wifi-frame-has-a-signal-strength.md) | A received WiFi frame has a signal strength | Accepted (amends 0152; adds to 0063's receive header) |
 | [0178](0178-the-guest-counts-its-time-in-instructions-by-default.md) | The guest counts its time in instructions by default | Accepted (revises 0027's default) |
 | [0179](0179-prolific-lab-publishes-boardemul-under-two-licences.md) | Prolific Lab publishes BoardEmul under two licences | Accepted |
+| [0180](0180-boardemul-tests-any-firmware-on-boards-its-users-describe.md) | BoardEmul tests any firmware, on boards its users will describe | Accepted (reverses the README's "not a framework") |
+| [0181](0181-the-first-public-version-is-0-1-0.md) | The first public version is 0.1.0 | Accepted (supersedes 0162's numbering) |
