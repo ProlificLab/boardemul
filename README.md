@@ -1,12 +1,14 @@
 # BoardEmul
 
-An emulator for one specific device: the LilyGO T-Deck Max (ESP32-S3), complete
-enough that the real, unmodified, vendor-compiled firmware boots and runs.
+Run and test your ESP32-S3 firmware without the board. BoardEmul emulates
+the chip and the parts wired to it closely enough that real, unmodified
+firmware boots and runs: your own build, or a vendor's. You drive it as a
+person would -- the screen, the keys, the serial ports, the radio -- from a
+page, a script or a CI job.
 
-This is not a network simulator and not a general emulation framework. A
-second board, the original T-Deck, is brought up alongside the first -- not to
-become a framework, but because one board cannot tell you which parts of a
-design were general and which were that board's accidents.
+It comes with two boards, the LilyGO T-Deck Max and T-Deck, and is growing
+toward boards its users describe themselves (ADR 0180). The words it uses --
+Build, Device, Board, Part -- are in `GLOSSARY.md`.
 
 ## Getting started
 
@@ -342,3 +344,11 @@ ADRs 0126, 0130, 0131, 0133, 0134 and 0135 are the run of decisions that built
 the two front doors and the devices between them, and ADRs 0145 and 0149
 made a device something kept like a virtual machine: settings, snapshots,
 its card.
+
+## Licence
+
+Copyright 2026 Prolific Lab. BoardEmul is under the Apache License 2.0
+(`LICENSE`), except `qemu-patch/`, which is compiled into QEMU and is under
+GPL-2.0-or-later (`qemu-patch/LICENSE`); `NOTICE` says which is which, and
+vendor firmware is never part of it (ADR 0179). Contributions are welcome
+with a sign-off: see `CONTRIBUTING.md`.
