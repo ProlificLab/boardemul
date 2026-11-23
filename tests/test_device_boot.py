@@ -12,7 +12,6 @@ the vendor images, like every boot test.
 from __future__ import annotations
 
 import hashlib
-import json
 import signal
 import subprocess
 import sys
@@ -27,9 +26,8 @@ from tests.support import (  # noqa: E402
     FIRMWARE_MESHTASTIC, MESHTASTIC_LITTLEFS, qemu_available, reset_trouble,
     unforgiven, wait_for_panel,
 )
-from tools.make_configured_fs import (  # noqa: E402
-    OK_BUTTON, SHORT_ICON, count_pixels, is_setup_dialog, tap,
-)
+from tests.setup_dialog import fill_in  # noqa: E402
+from tools.make_configured_fs import count_pixels, is_setup_dialog  # noqa: E402
 
 pytestmark = [
     pytest.mark.slow,
@@ -103,22 +101,15 @@ def test_a_configured_device_comes_back_configured(node) -> None:
     # -- first boot: fresh, so the setup dialog is the whole interface -------
     first = node["work"] / "boot1"
     proc = boot(device.root, first, "boot1")
+    seen: dict = {}
     try:
-        frames = first / "frames"
-        assert wait_for_panel(first, is_setup_dialog, 300.0), \
-            "a fresh device never asked its setup dialog"
-        events = first / "input.jsonl"
-        tap(events, SHORT_ICON)              # binds the keypad to the field
-        time.sleep(6)
-        for character in NAME:
-            # As the chord that types it on the device (ADR 0127).
-            events.open("a").write(json.dumps({"type": "text", "text": character}) + "\n")
-            time.sleep(2.5)
-        time.sleep(4)
-        tap(events, SHORT_ICON)              # put the keyboard away
-        time.sleep(6)
-        resets = _uart(first, "boot1").count("rst:0x")
-        tap(events, OK_BUTTON)               # commits; the firmware restarts
+        # As a person fills it in, tapping again when a tap is lost: one OK in
+        # a run of three went unread, nothing was saved, and the second boot
+        # rightly asked again (tests/setup_dialog.py).
+        fill_in(first, NAME, seen, dialog_timeout=300.0)
+        assert seen.get("dialog"), "a fresh device never asked its setup dialog"
+        assert seen.get("reboot_notice"), f"OK did not commit: {seen}"
+        resets = seen["uart_before_commit"].count("rst:0x")
         # Stopped at the restart it asks for, once it has saved, as the run
         # ended there before --reboot: the boot after it rewrites its files
         # first thing, and a stop in the middle of that would be judged.

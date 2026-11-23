@@ -33,7 +33,7 @@ from tests.support import (  # noqa: E402
     run_emulator, send_text, send_touch, send_trackball_press, unforgiven,
     wait_for_panel,
 )
-from tests.test_meshtastic_touch import BLUE, WHITE, _blank  # noqa: E402
+from tests.setup_dialog import BLUE, WHITE, blank as _blank  # noqa: E402
 from tools import mesh_api  # noqa: E402
 
 pytestmark = [
