@@ -187,3 +187,4 @@ superseded ADR is marked superseded and points forward.
 | [0179](0179-prolific-lab-publishes-boardemul-under-two-licences.md) | Prolific Lab publishes BoardEmul under two licences | Accepted |
 | [0180](0180-boardemul-tests-any-firmware-on-boards-its-users-describe.md) | BoardEmul tests any firmware, on boards its users will describe | Accepted (reverses the README's "not a framework") |
 | [0181](0181-the-first-public-version-is-0-1-0.md) | The first public version is 0.1.0 | Accepted (supersedes 0162's numbering) |
+| [0182](0182-the-test-library-drives-the-page-s-api.md) | The test library drives the page's API | Accepted |
