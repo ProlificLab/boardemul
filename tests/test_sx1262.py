@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """What the radio answers (ADR 0034).
 
 The part replies to byte N while byte N is being clocked, so these tests clock

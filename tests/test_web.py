@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """The web front door's API, over real HTTP on a loopback port.
 
 Fast: the assembler is a stub and `RunHandle.start` is recorded rather than

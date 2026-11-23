@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """The access-point peer, driven directly with frames -- no emulator.
 
 The peer used to be exercised only end to end, under QEMU, which is minutes per

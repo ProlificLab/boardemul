@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """The T-Deck's drawn face against LilyGO's own sources (ADR 0126).
 
 The outline is the board drawing's, the panel is its specification's, and the

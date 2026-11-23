@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """A restart from either core boots the chip once (ADR 0123).
 
 ESP-IDF's restart, run on core 1, resets core 0 and stalls it, then resets it

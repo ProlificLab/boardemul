@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """Find the advertising data in a running guest's memory.
 
     python3 tools/find_ble_advertising.py QMP_SOCKET OUTDIR

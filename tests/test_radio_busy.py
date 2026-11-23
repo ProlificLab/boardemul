@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """How long the radio says each command keeps it busy (ADR 0111).
 
 Every number here is the datasheet's -- Semtech DS.SX1261-2.W.APP, Rev. 1.2 --

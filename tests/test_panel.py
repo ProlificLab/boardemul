@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """Panel tests: what the firmware sends versus what ends up in the PNG."""
 
 from __future__ import annotations

@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """The access point is on one channel, and heard and hearing only there
 (ADR 0110). Driven with frames directly, no emulator."""
 

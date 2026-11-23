@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """Meshtastic's setup dialog, driven by touch and the keyboard.
 
 This is the interaction the emulator exists to support: unmodified vendor

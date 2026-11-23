@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """How the window presses the T-Deck's keys (ADR 0127, decision 7).
 
 The host's keyboard types characters, which the window presses as the chords

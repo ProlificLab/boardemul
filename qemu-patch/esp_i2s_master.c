@@ -1,4 +1,8 @@
 /*
+ * SPDX-FileCopyrightText: 2026 Prolific Lab
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ */
+/*
  * esp_i2s_master -- the receive half of an I2S controller, so a DMA capture
  * can complete.
  *

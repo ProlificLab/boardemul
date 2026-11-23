@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """The SAR ADC's one-shot conversion, which is all `analogRead()` needs.
 
 Found by sampling the CPU: once the vendor firmware's interface was up, its

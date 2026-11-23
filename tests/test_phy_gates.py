@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """The radio bring-up gates, pinned to what was read off the silicon's code.
 
 Each gate answers one polling loop in the vendor firmware's esp_wifi_start()

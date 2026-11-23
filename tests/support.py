@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """Helpers shared by the tests.
 
 Includes a minimal PNG reader, which the emulator itself has no need for -- it

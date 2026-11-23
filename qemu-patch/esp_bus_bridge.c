@@ -1,4 +1,8 @@
 /*
+ * SPDX-FileCopyrightText: 2026 Prolific Lab
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ */
+/*
  * esp_bus_bridge -- forward MMIO out of QEMU to an external device model.
  *
  * This file lives in the BoardEmul repository and is copied into hw/misc/ at

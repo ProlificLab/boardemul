@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """emu/local_mirror.py (ADR 0174): which folders are shared from the host, and
 that what QEMU writes locally reaches the run's folder, as it grows and in
 full at the end."""

@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """Drive GPIO input pins from the host.
 
 The GPIO block itself moved into QEMU (ADR 0011): the SPI controller has to read

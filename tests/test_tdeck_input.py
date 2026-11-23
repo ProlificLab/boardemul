@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """The T-Deck's touch controller and keyboard.
 
 Both are read in ways that split across calls, which is the failure this

@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """ST7789 TFT controller, as the T-Deck drives it: 320x240, RGB565.
 
 Modelled from the wire (ADR 0006). The command set was read off a real run

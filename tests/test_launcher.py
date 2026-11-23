@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """One command starts BoardEmul (ADR 0159).
 
 Fast: the launcher's decisions, with Docker, the network and the server

@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """The T-Deck's two input devices, both on I2C0.
 
 The keyboard is not a matrix like the T-Deck Max's: it is a second

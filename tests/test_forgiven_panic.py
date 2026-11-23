@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """Which panic a board that reboots is forgiven, and how its boots are told
 apart (ADR 0114).
 

@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """The Bluetooth windows on the T-Deck: what the controller needed, and no more.
 
 Each is one wall the ROM link layer or the controller blob stopped at, read

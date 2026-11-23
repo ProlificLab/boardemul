@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """The T-Deck Max's face, laid out from LilyGO's own case (ADR 0130).
 
 Millimetres throughout, from the device's top-left corner, x right and y down.

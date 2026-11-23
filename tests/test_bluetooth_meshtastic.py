@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """A phone's view of Meshtastic over Bluetooth (ADRs 0157, 0168, 0169).
 
 A Meshtastic node with Bluetooth on is set to pair without a PIN through its

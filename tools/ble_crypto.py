@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """The cryptography a Bluetooth LE central needs, standard library only.
 
 - AES-128 encryption (FIPS-197), the block cipher everything below is built on.

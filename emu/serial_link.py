@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """Put a model on the other end of one of the machine's UARTs.
 
 Unlike the I2C and SPI buses, a UART needs nothing added to QEMU: the fork's

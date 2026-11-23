@@ -1,4 +1,8 @@
 /*
+ * SPDX-FileCopyrightText: 2026 Prolific Lab
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ */
+/*
  * esp_ble_core.c -- the ESP32-S3 Bluetooth link-layer core's register page
  * (0x60031000), on QEMU's own clock.
  *

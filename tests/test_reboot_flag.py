@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """Whether a guest reset ends the run or restarts the chip (ADR 0099).
 
 A board that panics resets itself and boots again. A run ends at that reset

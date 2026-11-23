@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """Write a test tone as a PCM WAV file, and say what tone a WAV file holds.
 
     python tools/tone.py write tone.wav --hz 440 --seconds 5

@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """The teardown watchdog: a hang leaves stacks and dies (ADR 0136).
 
 Fast, via a subprocess — the watchdog's exit is os._exit, which has no

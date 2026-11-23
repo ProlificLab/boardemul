@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """The Bosch BHI260AP sensor hub on the T-Deck Max's I2C bus (ADR 0108).
 
 A hub, not a sensor: it boots firmware the host uploads, and then serves

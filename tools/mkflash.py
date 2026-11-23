@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """Build a QEMU-ready flash image and eFuse blob from a vendor firmware image.
 
 See docs/adr/0003-flash-image-assembly.md for why this parses rather than

@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """CCMP: the 802.11 framing around AES-CCM, so a data frame is really encrypted.
 
 The cipher itself is in `emu/aes.py` (CCM over an AES-128 pinned to FIPS-197).

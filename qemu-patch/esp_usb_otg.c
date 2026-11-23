@@ -1,4 +1,8 @@
 /*
+ * SPDX-FileCopyrightText: 2026 Prolific Lab
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ */
+/*
  * esp_usb_otg.c -- the ESP32-S3's USB OTG controller in device mode, at
  * 0x60080000, and the cable to a host (ADR 0166).
  *

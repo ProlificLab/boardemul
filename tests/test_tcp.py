@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """The TCP endpoint, driven a segment at a time and checked at each step.
 
 There is nothing to quote against a published vector here -- it is a state

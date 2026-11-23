@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 # Run the slow tier N files at a time, then the files marked `alone` one at a
 # time with nothing else booting (ADR 0167). In the build container, from the
 # repository's root:

@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """Each board's hardware RNG seed (ADR 0098).
 
 The seed has two jobs that pull in opposite directions, and both are checked:

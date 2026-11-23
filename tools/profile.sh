@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 # Where QEMU spends the host's time during a run (ADR 0176). In the build
 # container, from /work:
 #

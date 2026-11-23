@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """Build the card's contents: an MBR with one FAT16 volume on it (ADR 0033).
 
 Written out rather than shipped, so what is on the card is readable as code.

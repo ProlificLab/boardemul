@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """The PSRAM line mode is the image's own, unless a person forces one (ADR 0144).
 
 ESP-IDF links one of two ESP32-S3 PSRAM drivers, and each logs under its own

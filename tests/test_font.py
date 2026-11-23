@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """The bitmap font and the baked legends (ADR 0135).
 
 Fast: a face's legends are data — text items with a position, a size and a

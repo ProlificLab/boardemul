@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """What ran after an EAPOL frame was delivered, in order, with names.
 
 A fixed window of log lines is the wrong unit: most lines are "Linking TBs"

@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """The Max launcher ignores its keyboard; its sub-screens consume it.
 
 The vendor's `peri_keypad.cpp` decodes TCA8418 events into its own queue

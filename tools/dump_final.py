@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """One run, all three: the key, the message, and the firmware's MIC output.
 
 Break at 0x4206e194 (the compare). a10=a1+124 holds the received MIC, a11 is

@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """The SIMCom A7682E LTE modem on the T-Deck Max's second UART (ADR 0105).
 
 An AT-command modem: a command is a line ending in a carriage return, echoed

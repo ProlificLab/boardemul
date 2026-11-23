@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """A glass touch key takes the vendor's interface back a screen.
 
 Slow: boots the Max's factory firmware under QEMU, taps an icon to open a

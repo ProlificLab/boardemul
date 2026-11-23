@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """GDEQ031T10 e-paper panel, 320x240, 1 bit per pixel.
 
 The panel is driven over SPI2 with chip-select and data/command on ordinary

@@ -1,4 +1,8 @@
 /*
+ * SPDX-FileCopyrightText: 2026 Prolific Lab
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ */
+/*
  * esp_i2c_master -- ESP32-S3 I2C master controller.
  *
  * SoC silicon (ADR 0011). It knows how a command list is assembled and how the

@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """A tiny bitmap font, so a face's legends can be baked into its own image.
 
 The Tk window draws legends as canvas text over the rendered face (ADR 0126,

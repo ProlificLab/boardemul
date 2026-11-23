@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """Build the restart probe and write the flash image its test boots (ADR 0123).
 
 The probe restarts the chip once from each core, by esp_restart() and by

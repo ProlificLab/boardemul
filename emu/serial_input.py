@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """What a person types into the chip's serial ports (ADR 0156).
 
 Each port reads a named pipe in the run's directory, given to QEMU as the

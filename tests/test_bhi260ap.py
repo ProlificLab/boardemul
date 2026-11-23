@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """The BHI260AP sensor hub's host interface (ADR 0108), as Bosch's driver
 speaks it: reset, upload, boot, parameters, sensor configuration, FIFOs."""
 

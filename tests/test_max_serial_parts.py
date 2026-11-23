@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """The T-Deck Max's serial parts and their ports (ADR 0105): a modem on the
 second UART, a u-blox receiver on the third. Fast: models and command lines.
 """

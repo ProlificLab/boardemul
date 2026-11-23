@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """Meshtastic over Bluetooth on a PIN, as a phone pairs with it (ADR 0171).
 
 A node set to a fixed PIN through its serial API (the USB OTG port, ADR

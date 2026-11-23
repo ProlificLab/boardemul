@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """The card in the slot, and what is on it (ADR 0033).
 
 The card is a byte stream: every byte the host clocks gets one back, and a

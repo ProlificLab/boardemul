@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """Device folders: identity and storage that outlive a run (ADR 0133).
 
 Fast: the folder format, the manifest's round trip, and the refusals the

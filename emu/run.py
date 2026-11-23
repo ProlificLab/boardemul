@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """Boot a vendor firmware image under QEMU and capture what it does.
 
 See docs/adr/0004-running-and-observing.md.

@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """tools/sample_report.py (ADR 0176): samples are placed by the memory map,
 threads are reported busiest first, and a guess at callers is offered."""
 

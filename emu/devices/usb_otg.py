@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """The host at the other end of the ESP32-S3's USB OTG cable (ADR 0166).
 
 The controller is a QEMU device, `esp-usb-otg` (qemu-patch/esp_usb_otg.c),

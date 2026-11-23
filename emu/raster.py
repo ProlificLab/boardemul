@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """A small anti-aliased rasteriser, standard library only (ADR 0126).
 
 Tk's canvas draws shapes without anti-aliasing, gradients or alpha, so a

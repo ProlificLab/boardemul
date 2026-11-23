@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 # Re-test ADR 0007 on the QEMU tag of ADR 0138: which PSRAM line mode each
 # firmware enumerates its PSRAM in. Run in the build container from /work.
 set -u

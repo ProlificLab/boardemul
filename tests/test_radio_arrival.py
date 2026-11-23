@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """The radio says a packet is arriving, and a sweep leaves RX (ADR 0141).
 
 Each test is one of the defects re-derived on 2026-11-18 from the datasheet

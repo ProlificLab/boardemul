@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """The WPA2 key schedule, and a handshake run against itself.
 
 The master key has published vectors and gets them. The rest has none that can

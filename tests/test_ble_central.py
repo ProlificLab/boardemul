@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """tools/ble_central.py's link layer, without a board (ADR 0171).
 
 What it puts on the air is checked against the Bluetooth Core

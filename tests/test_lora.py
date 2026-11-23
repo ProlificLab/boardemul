@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """Time on air (ADR 0037).
 
 The numbers are not invented and not tuned to make anything pass: they come

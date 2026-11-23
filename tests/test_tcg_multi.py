@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """The guest boots with a translation thread per core.
 
 `thread=multi` was unusable until ADR 0066. Upstream's IOMMU hook performed a

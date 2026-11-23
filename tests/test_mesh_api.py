@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """tools/mesh_api.py: Meshtastic's stream framing and the few messages it
 encodes, checked against the field numbers of meshtastic/protobufs."""
 

@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """Resolve every ROM symbol through its stub to the code it runs.
 
 The linker script names an address per function, and on this part that address

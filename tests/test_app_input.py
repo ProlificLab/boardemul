@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """The viewer's input path, checked without a display or a toolkit.
 
 The important property is that what the app writes is exactly what the emulator

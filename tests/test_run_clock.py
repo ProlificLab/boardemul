@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """Which clock a run's guest keeps (ADR 0178): instructions unless the host's
 is asked for, and never both at once."""
 

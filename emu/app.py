@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """A T-Deck Max on the desktop: the emulated panel inside a drawn device body.
 
 The panel model (emu/devices/epaper.py) rewrites logs/frames/latest.png on every

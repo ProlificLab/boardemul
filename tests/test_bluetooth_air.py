@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """Bluetooth on the air: what the controller staged, heard by someone else.
 
 The link layer has scheduled advertising events since ADR 0025 and carried

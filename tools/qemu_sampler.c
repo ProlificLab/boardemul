@@ -1,4 +1,8 @@
 /*
+ * SPDX-FileCopyrightText: 2026 Prolific Lab
+ * SPDX-License-Identifier: Apache-2.0
+ */
+/*
  * A sampling profiler without perf: run a command as our child, seize each
  * of its threads with ptrace, and every PERIOD microseconds stop each thread
  * for an instant and record where it is.

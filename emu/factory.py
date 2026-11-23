@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """The factory-test report: what the vendor firmware tells lilygo.local:8896.
 
 Once it has an address and the time, the vendor unit-test firmware connects to

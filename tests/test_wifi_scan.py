@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """The firmware finds a network the emulator puts on the air.
 
 This is the last thing on either board that had nothing behind it. The window

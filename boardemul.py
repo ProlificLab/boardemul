@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """Start BoardEmul: one command, from a clone (ADR 0159).
 
     python boardemul.py              # check, build what is missing, open the page

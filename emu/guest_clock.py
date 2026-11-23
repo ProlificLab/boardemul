@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """The guest's own clock, for the board's parts (ADR 0104).
 
 QEMU's `esp-guest-clock` device writes its virtual time, eight bytes

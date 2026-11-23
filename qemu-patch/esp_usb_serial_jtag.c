@@ -1,4 +1,8 @@
 /*
+ * SPDX-FileCopyrightText: 2026 Prolific Lab
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ */
+/*
  * ESP32-S3 USB Serial/JTAG controller: the serial side, with a host attached.
  *
  * ADR 0100. The fork maps a placeholder at this address that reads 0 and drops

@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """A minimal PNG writer, greyscale or truecolour.
 
 Split out of the e-paper model when a second panel arrived that has colour.

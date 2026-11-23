@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """Build a single self-contained HTML viewer from a run's captured frames.
 
 The frames are embedded as data URIs so the page works with no server and no

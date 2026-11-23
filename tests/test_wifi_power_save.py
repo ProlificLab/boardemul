@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """The access point acknowledges what is for it, and holds frames for a station
 that says it is dozing (ADR 0109). Driven with frames directly, no emulator."""
 

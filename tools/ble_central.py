@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """A Bluetooth Low Energy central on a run's Bluetooth air (ADRs 0045, 0168).
 
 It connects to the board, keeps the link with a packet every connection

@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """A UART whose FIFO is full loses a byte, on every run (ADRs 0122, 0138).
 
 Espressif took the fix as the UART's `rx-overflow` property, off by default,

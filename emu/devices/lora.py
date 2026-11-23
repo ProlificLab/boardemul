@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """How long a LoRa packet occupies the channel, and what that implies.
 
 Time on air is not a judgement call. It follows from the modulation the

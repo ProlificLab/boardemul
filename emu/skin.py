@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """Device layout and the input protocol, with no toolkit attached.
 
 Everything here is arithmetic and data: where the glass sits inside the body,

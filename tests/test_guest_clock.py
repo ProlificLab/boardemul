@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """The guest's clock, as the board's parts read it (ADR 0104)."""
 
 from __future__ import annotations

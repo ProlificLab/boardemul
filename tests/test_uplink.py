@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """The uplink's host end, against stand-ins on localhost (ADR 0097).
 
 The real internet is not reproducible, so nothing here touches it: a UDP echo, a

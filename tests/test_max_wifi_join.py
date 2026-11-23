@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """The Max joins a WPA2 network from its own screen (ADRs 0152, 0177).
 
 Slow: boots the factory firmware with a protected access point on the air

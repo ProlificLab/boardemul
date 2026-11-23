@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """tools/ble_crypto.py against published vectors: FIPS-197's AES example,
 RFC 4493's CMAC examples, RFC 3610's first CCM packet, and the Bluetooth Core
 Specification's sample data for f4, f5, f6 and g2 (Vol 3, Part H, Appendix D)

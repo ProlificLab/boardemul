@@ -1,4 +1,8 @@
 /*
+ * SPDX-FileCopyrightText: 2026 Prolific Lab
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ */
+/*
  * The guest's clock, for the board's parts in Python (ADR 0104).
  *
  * No registers: on a virtual-clock timer this writes the current virtual time,

@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """The authoritative resolver: it answers for its zone and refuses the rest.
 
 The captive resolver it replaces (ADR 0085/0086) answered every name with the

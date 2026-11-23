@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """Produce a Meshtastic filesystem that already has a region set.
 
 A node with no region never transmits, so two of them have nothing to say to

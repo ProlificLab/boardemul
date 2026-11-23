@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """The interface dims its own screen (ADR 0053).
 
 Meshtastic turns the backlight up when it draws, and after half a minute with

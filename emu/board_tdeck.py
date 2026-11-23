@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """The original LilyGO T-Deck: ESP32-S3, ST7789 LCD, GT911 touch.
 
 Second board. The display is modelled; touch, the keyboard and the radio are

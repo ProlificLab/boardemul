@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """The LED controller, which is what drives the screen's backlight.
 
 This window was claimed but not modelled, and of everything still claimed it is

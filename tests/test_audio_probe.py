@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """Sound goes into the microphone and comes out of the speaker (ADR 0146).
 
 The probe records a second from I2S1 through ESP-IDF 4.4's I2S driver and

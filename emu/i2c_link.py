@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """Serve completed I2C transactions from the in-QEMU controller (ADR 0011).
 
 The controller assembles a whole transaction -- address, everything written to

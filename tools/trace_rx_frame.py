@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """Single-step one chosen received frame through the ROM's receive path.
 
 The frame that matters is one in a hundred, so the naive form -- a breakpoint

@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """A central connects to the board over Bluetooth, and keeps the link.
 
 This is the peer the firmware was built for. Meshtastic never scans (ADR 0045),

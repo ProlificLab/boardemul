@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """A firmware whose Serial is the chip's USB port, heard through it (ADR 0100).
 
 WireScan is the vendor's I2C bus scanner for the T-Deck Max. Its Serial is

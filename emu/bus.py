@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """The host side of the MMIO bridge (ADR 0005).
 
 QEMU connects one socket per intercepted window and blocks on every access, so

@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """An SDHC card in SPI mode (ADR 0033).
 
 The host clocks a byte and gets a byte back, so this is a byte stream with a

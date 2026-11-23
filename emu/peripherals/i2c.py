@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """What an I2C device on this board has to implement.
 
 The controller itself moved into QEMU (ADR 0011): the driver builds one

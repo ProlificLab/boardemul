@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """Wrap a firmware image's segments in an ELF, so a real disassembler will read it.
 
 `tools/disas_rom.py` decodes enough Xtensa to read a function's shape, and that

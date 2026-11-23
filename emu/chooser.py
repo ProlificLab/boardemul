@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """The window's first screen: pick a device, start it (ADR 0134).
 
 The language is Material 3, dark: flat tonal surfaces — background, surface,

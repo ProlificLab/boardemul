@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """The Max's drawn face against LilyGO's own case (ADR 0130).
 
 The outline, the glass recess and the key openings are the case STL's, the

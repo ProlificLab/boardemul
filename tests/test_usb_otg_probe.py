@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """TinyUSB's CDC port on the OTG controller, end to end (ADR 0166).
 
 The probe is built as Meshtastic's T-Deck image is (ARDUINO_USB_MODE=0,

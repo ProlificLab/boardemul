@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """The window's device chooser and the run it starts (ADR 0134).
 
 Fast: the command a started run gets, and the no-run paths of the handle.

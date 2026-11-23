@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """AES-128, key wrap and CCM, written out because no standard library has them.
 
 Narrow on purpose (ADR 0065): one key length, encryption only, and the two

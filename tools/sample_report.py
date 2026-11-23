@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """Where the sampled threads were (ADR 0176): per thread, the share of
 samples in each function of QEMU or its libraries, or in TCG's generated
 code; or, with --callers NAME, the QEMU functions found above NAME on the

@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """The web front door against a real guest: boot, touch, see the frame move.
 
 Slow: starts a device through the server's own registry, long-polls the

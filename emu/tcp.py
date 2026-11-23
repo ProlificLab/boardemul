@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """A TCP endpoint: the transport, with nothing above it and nothing below.
 
 The peer used to accept a connection and read the first thing said on it, and no

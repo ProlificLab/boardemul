@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """Which ROM function pointers the flash driver replaces, and with what.
 
 The WiFi driver in flash installs its own implementations over the ROM's during

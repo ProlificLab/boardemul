@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """The LoRa radio, as far as a host can tell without one (ADR 0034).
 
 Everything the host learns about this part it learns over SPI, and every

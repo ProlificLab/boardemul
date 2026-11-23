@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """What a drawn face needs, shared by the boards with faces of their own.
 
 A face is a rendered body plus the legends the window draws as text over it

@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """A minimal GDB remote-serial-protocol client, stdlib only.
 
 QEMU's monitor can read guest memory and cannot write it, and it has no

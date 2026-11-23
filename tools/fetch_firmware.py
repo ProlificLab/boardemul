@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """Fetch the vendor firmware firmware/MANIFEST.toml pins, and check it (ADR 0147).
 
     python tools/fetch_firmware.py            # fetch whatever is missing

@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """Two boards, one air, and a packet that crosses between them.
 
 This is the thing the radio work was for, and until now it existed only as

@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """Files QEMU writes during a run, kept on local disk where the run's folder
 is shared from the host, and copied there as they grow (ADR 0174).
 

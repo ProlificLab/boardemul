@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """A device remembers what its guest saved (ADR 0133).
 
 Slow: creates a device from Meshtastic's image, boots it twice. The first

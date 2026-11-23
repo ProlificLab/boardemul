@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """The satellite receiver on the second serial port (ADRs 0052, 0116).
 
 What the firmware asks for is in its own strings: the commands it sends, the

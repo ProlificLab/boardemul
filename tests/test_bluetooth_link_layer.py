@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """The Bluetooth link carries control procedures both ways (ADR 0168).
 
 A central connects, as tests/test_bluetooth_connect.py's does, and then does

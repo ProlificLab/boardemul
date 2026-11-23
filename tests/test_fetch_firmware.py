@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """The firmware fetcher takes only what the manifest pins (ADR 0147).
 
 Fast: the downloads come from a function standing in for the network.

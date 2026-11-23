@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """Two boards on one timed air (ADR 0113), twice over (ADR 0115).
 
 On a timed air every board advances a quantum at a time with the others,

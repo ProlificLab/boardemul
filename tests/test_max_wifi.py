@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """The Max launcher's WiFi scan lists the access point (ADRs 0137, 0152).
 
 Slow: boots the factory firmware with an access point on the air, drives

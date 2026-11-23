@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """The chip's USB serial port is on every run, and its output is kept (ADR 0100).
 
 Fast: these check the command line. The slow half, a firmware whose Serial is

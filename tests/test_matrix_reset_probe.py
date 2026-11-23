@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """An interrupt held across a digital reset (ADRs 0142, 0154).
 
 The probe raises a GPIO edge interrupt with the CPU not taking it, resets the

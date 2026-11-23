@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 #
 # Fetch and build the pinned Espressif QEMU fork. See ADR 0001 and ADR 0002.
 #

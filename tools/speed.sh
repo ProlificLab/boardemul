@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 # How fast Meshtastic boots on the T-Deck under different scheduling choices
 # (ADR 0161). Run in the build container from /work:
 #

@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """The L76K satellite receiver on the board's second serial port.
 
 The firmware says what this part is and how it is spoken to, in its own

@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """The SAR ADC handshake the vendor firmware's analogRead() spins on."""
 
 from __future__ import annotations

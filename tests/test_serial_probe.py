@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """A person can type into both serial ports (ADR 0156).
 
 The probe answers each line typed into UART0 or the USB Serial/JTAG port.

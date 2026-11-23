@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """Meshtastic's WiFi set on the device's own screen, as a person sets it.
 
 The node's region is set through its serial API first, which takes it past

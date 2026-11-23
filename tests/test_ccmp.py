@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """The 802.11 framing around AES-CCM.
 
 The cipher has its own tests (`test_aes`); these check the wrapping that 802.11

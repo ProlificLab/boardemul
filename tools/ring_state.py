@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """What the receive ring and both cores are doing after a chosen frame.
 
 Written to answer one question -- why the driver stops picking frames up for a

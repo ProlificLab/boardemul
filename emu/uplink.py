@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """The uplink: guest flows out through the host's own sockets (ADR 0097).
 
 With `--wifi-uplink` the gateway routes what is not for the LAN to the real

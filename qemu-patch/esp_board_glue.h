@@ -1,4 +1,8 @@
 /*
+ * SPDX-FileCopyrightText: 2026 Prolific Lab
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ */
+/*
  * Shared declarations between the BoardEmul SoC models.
  *
  * These files live in the BoardEmul repository and are installed into the QEMU

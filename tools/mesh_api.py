@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """Speak Meshtastic's client API to a node over a serial port's TCP bridge.
 
 A Meshtastic node's API on a serial port is the stream protocol: each message

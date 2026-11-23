@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """The DHCP pool and BOOTP framing.
 
 The pool is where "a table of one" (ADR 0084) becomes a real allocator, so the

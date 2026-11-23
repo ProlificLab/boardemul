@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """The microphone codec the vendor firmware looks for and does not find.
 
 `ES7210 address not found` is the firmware saying it probed 0x40 and nothing

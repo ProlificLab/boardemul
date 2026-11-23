@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """Two Meshtastic devices, each in its own build container, on one named air
 (ADR 0145). Run on a host that starts runs in the container (Windows), with
 Docker running:

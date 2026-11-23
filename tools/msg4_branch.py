@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """Which way the transmit path branched, counted rather than deduplicated.
 
 tools/analyse_trace.py reports the distinct program counters of a window in the

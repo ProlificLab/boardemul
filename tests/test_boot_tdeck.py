@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """End-to-end tests for the T-Deck: the vendor firmware reaches its interface.
 
 There are no golden frames here, and deliberately: LVGL animates the launcher

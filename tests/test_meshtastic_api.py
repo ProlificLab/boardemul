@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """Meshtastic's client API on the T-Deck's USB OTG port (ADR 0166).
 
 Meshtastic's `Serial` on the T-Deck is TinyUSB's CDC port on the S3's OTG

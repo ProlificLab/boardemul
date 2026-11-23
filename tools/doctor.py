@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """Say what this machine lacks to run BoardEmul, and what fixes each (ADR 0147).
 
     python tools/doctor.py

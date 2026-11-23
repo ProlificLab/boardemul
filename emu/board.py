@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """The T-Deck Max: which windows QEMU handles, which we do, and what is wired up.
 
 The split follows ADR 0011. SoC silicon -- GPIO, the SPI master, the I2C master

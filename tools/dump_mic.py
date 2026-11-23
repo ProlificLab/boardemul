@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """Dump the two buffers the message-three MIC comparison compares.
 
 At 0x4206e194 the supplicant calls memcmp(a10, a11, a12) and bails at

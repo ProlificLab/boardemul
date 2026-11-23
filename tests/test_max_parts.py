@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """The T-Deck Max's factory demo checks its own parts, and says so.
 
 The demo brings each part up in turn and reports on it over its USB serial

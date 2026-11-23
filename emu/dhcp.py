@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """DHCP: a lease pool keyed by hardware address, and the BOOTP reply.
 
 The peer used to hand one fixed address to whoever asked (ADR 0084) -- a table

@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """A device folder: identity and storage that outlive a run (ADR 0133).
 
 A device is a directory with nothing else in it:

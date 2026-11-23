@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """Two boards on the air (ADR 0036), on the guest's clock (ADR 0112).
 
 Every radio here is told the guest's time by the test, as the SPI controller

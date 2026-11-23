@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """The T-Deck's trackball against LilyGO's test and Meshtastic (ADR 0128).
 
 Each step of roll toggles its line, as LilyGO's mouse_read() counts them;

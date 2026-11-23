@@ -1,4 +1,8 @@
 /*
+ * SPDX-FileCopyrightText: 2026 Prolific Lab
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ */
+/*
  * esp_wifi_mac.c -- the WiFi MAC's register page (0x60033000), and a way to
  * put a frame in front of the driver.
  *

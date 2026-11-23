@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """What the firmware runs after one kind of frame but not after another.
 
 Message one is answered: the station builds message two, submits it, and the

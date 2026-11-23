@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """A small authoritative DNS resolver: answer for a zone, refuse outside it.
 
 The peer used to answer every A query with the gateway's address (ADR 0085/0086),

@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """Meshtastic's setup dialog on the T-Deck, filled in as a person does: the
 short-name field's keyboard icon, the name typed, the keyboard put away, OK.
 

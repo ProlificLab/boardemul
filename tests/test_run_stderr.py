@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """The runner must never block QEMU on its own stderr.
 
 A pipe nobody drains fills at 64 KB and then stops QEMU on the next write,

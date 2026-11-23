@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """The factory-test report parser.
 
 Checked against the exact bytes the vendor firmware sent on the wire (ADR 0096)

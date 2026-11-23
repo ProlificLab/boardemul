@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """Typing into the serial ports, end to end except the guest (ADR 0156)."""
 
 from __future__ import annotations

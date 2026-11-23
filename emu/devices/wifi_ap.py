@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """An access point: what is on the air, and what to say back.
 
 The radio is a C device in QEMU because it walks descriptor chains in guest

@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """ADR 0176: a trace window is read from a shadow in QEMU, which answers as
 the Python model would, and every access still reaches the model."""
 

@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """Measure the host side of the MMIO bridge in isolation.
 
 QEMU blocks on every access, so what matters is round-trip latency, not

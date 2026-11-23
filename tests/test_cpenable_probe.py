@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """CPENABLE is 0xff out of every reset, as on silicon (ADR 0143).
 
 The probe reads CPENABLE in a C++ global constructor on the PRO CPU, before

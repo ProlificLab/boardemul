@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """Meshtastic navigates by the T-Deck's trackball (ADR 0128).
 
 Its own trackball code counts falling edges on the direction lines and starts

@@ -1,4 +1,8 @@
 /*
+ * SPDX-FileCopyrightText: 2026 Prolific Lab
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ */
+/*
  * esp_gpio_block -- ESP32-S3 GPIO: output levels, input levels, interrupts.
  *
  * SoC silicon, not board hardware (ADR 0011). It knows what a pin is and what

@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """The backlight controller (ADR 0053).
 
 The sequence replayed here is one a real run produced, taken off the bus log

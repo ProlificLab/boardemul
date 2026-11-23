@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """The cipher, against the bytes the standards publish.
 
 ADR 0065 is explicit about how far each layer can be proved, and this file is

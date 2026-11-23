@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """The station authenticates, associates, and gets an IP address.
 
 Two 802.11 exchanges that had never happened on either board. The scan came

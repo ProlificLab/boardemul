@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """I2C devices on the T-Deck Max.
 
 Addresses come from the vendor's own lib/TDeckMaxBoard/src/TDeckMaxBoard.h, not

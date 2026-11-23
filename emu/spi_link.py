@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """Receive completed SPI transactions from the in-QEMU controller (ADR 0011).
 
 The controller batches on chip-select and only sends a segment when a

@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """The busiest program counters just before something happened.
 
 After the four-way handshake completes the station transmits nothing for about

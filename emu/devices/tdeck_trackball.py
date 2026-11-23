@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """The T-Deck's trackball: four direction lines and a click (ADR 0128).
 
 LilyGO's own test (examples/UnitTest, mouse_read) counts every change of

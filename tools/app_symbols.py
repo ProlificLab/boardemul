@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """Name the vendor firmware's own functions, out of the strings it carries.
 
 The image has no symbol table, which is why years of this project's notes

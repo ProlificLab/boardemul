@@ -1,4 +1,8 @@
 /*
+ * SPDX-FileCopyrightText: 2026 Prolific Lab
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ */
+/*
  * esp_spi_master -- ESP32-S3 general-purpose SPI master (SPI2/SPI3).
  *
  * SoC silicon (ADR 0011). It knows how a transfer is started and how bytes are

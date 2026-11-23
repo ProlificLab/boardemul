@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 #
 # Download Espressif's official prebuilt QEMU for the same tag we build from
 # source. This is never used to run the emulator (ADR 0002, decision 6).

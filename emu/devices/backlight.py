@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """The T-Deck screen's backlight, as the firmware drives its pin (ADR 0151).
 
 GPIO 42 is the backlight's pin on the board (`BOARD_BL_PIN`, LilyGO's

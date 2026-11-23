@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """A chip select with nothing on it yet, that says what was clocked at it.
 
 ADR 0006: a device is modelled from what a firmware actually sends, not from a

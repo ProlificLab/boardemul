@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """The Max's three glass touch keys, as the vendor's own driver reads them.
 
 The report format, the key numbering and the press value are held to the

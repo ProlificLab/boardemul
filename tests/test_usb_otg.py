@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """The host on the USB OTG cable (ADR 0166), against a device written here.
 
 The controller is QEMU's (qemu-patch/esp_usb_otg.c); what reaches Python is

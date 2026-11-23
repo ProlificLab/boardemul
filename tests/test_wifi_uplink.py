@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """The station on the real internet, through --wifi-uplink (ADR 0097).
 
 The one test in the suite that is not reproducible by construction: it uses the

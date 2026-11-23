@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """Host-to-guest input events, delivered as a tailed file (ADR 0010).
 
 The emulator runs in a container and the viewer runs on the host, so the two

@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """Disassemble a range of the ROM image offline, enough of Xtensa to read it.
 
 QEMU's monitor disassembles, but only for a running guest, and a run costs

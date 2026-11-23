@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """The T-Deck keyboard against LilyGO's own sketch for it (ADR 0127).
 
 examples/Keyboard_ESP32C3 is the firmware on the keyboard's ESP32-C3, so each

@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """What each board claims about the SoC it is built around.
 
 These are declarations, not models, so a test can only check that they say what

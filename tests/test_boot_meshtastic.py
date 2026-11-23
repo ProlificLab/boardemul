@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """Meshtastic on the T-Deck: the flash reads back what is in it.
 
 Every SPI1 read used to arrive two bytes late (ADR 0022), which no firmware

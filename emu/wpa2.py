@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """The WPA2-PSK key schedule, and the EAPOL-Key frame that carries it.
 
 Everything here is hashing and bookkeeping. The hashing is `hashlib`'s --

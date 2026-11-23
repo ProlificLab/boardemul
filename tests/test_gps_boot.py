@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """The firmware finds a satellite receiver on the board's second UART.
 
 The vendor build probes that port at boot: it silences the module, asks it what

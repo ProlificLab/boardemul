@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """Light sleep wakes on its timer and on a pin (ADR 0165).
 
 The probe light-sleeps two seconds on the RTC timer, then until GPIO 0, the

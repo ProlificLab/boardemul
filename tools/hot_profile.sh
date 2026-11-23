@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 # Where a firmware spends its guest time (ADR 0161). Run in the build
 # container from /work:
 #

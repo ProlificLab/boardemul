@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """Arm breakpoints on named addresses and count which ones the guest reaches.
 
 The question this answers is "does execution get this far", which for a path

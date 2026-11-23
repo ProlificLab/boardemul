@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """Boards on one air keep one time (ADR 0113).
 
 The radio is handed what the other boards sent at each barrier, and judges it

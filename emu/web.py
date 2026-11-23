@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """The web front door: a localhost server serving the interface (ADR 0135).
 
     python -m emu.web [--port 8420] [--dir devices] [--no-open]

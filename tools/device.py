@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """Manage device folders: the VirtualBox ordinary case (ADR 0133).
 
     device.py create NAME --firmware F.bin [--board tdeck-max] [--mac ...]

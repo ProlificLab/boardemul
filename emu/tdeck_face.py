@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 """The T-Deck's face, laid out from LilyGO's own sources (ADR 0126).
 
 Millimetres throughout, from the board's top-left corner, x right and y down.
