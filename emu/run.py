@@ -405,15 +405,24 @@ def main(argv: list[str] | None = None) -> int:
                     help="the microphone hears this PCM WAV file, from its "
                          "start at each capture (ADR 0146)")
     ap.add_argument("--icount", action="store_true",
-                    help="drive the guest clock from executed instructions (ADR 0027): "
-                         "exact timer delivery and deterministic runs; the Bluetooth "
-                         "link layer needs it")
+                    help="drive the guest clock from executed instructions (ADR "
+                         "0027); the default since ADR 0178, still accepted")
+    ap.add_argument("--host-clock", action="store_true",
+                    help="drive the guest clock from the host's instead: faster, "
+                         "less faithful -- firmware deadlines can then be missed "
+                         "when the host is busy (ADRs 0141, 0178)")
     ap.add_argument("--reboot", action="store_true",
                     help="let a guest reset restart the chip, as the board does "
                          "after a panic, instead of ending the run (ADR 0099)")
     ap.add_argument("--tag", default=None,
                     help="name for this run's logs (default: firmware stem)")
     args = ap.parse_args(argv)
+    # Instructions count the guest's time unless the host's clock is asked
+    # for (ADR 0178).
+    if args.icount and args.host_clock:
+        raise SystemExit("--icount and --host-clock name two different clocks; "
+                         "give one")
+    args.icount = not args.host_clock
 
     # --device or a bare firmware, never both, never neither. The device is
     # identity: its storage, board and radio personality are the folder's,

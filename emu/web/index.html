@@ -456,7 +456,7 @@
     <div class="group">
       <h4>Running</h4>
       <label class="check"><input type="checkbox" id="s-reboot"> Restart after a panic, as the board does</label>
-      <label class="check"><input type="checkbox" id="s-icount"> Count the guest's time in instructions (Bluetooth needs it; the firmware's own timing is then a board's, at some cost in speed)</label>
+      <label class="check"><input type="checkbox" id="s-hostclock"> Use this computer's clock: faster, but the firmware can miss its own deadlines when the computer is busy</label>
       <label class="check" id="s-audio-field"><input type="checkbox" id="s-audio"> Record what the speaker plays</label>
     </div>
     <div class="row">
@@ -734,7 +734,7 @@ function openSettings(name) {
   $("s-gps").value = m["--gps"] || "";
   $("s-tcp").value = m["--serial-tcp"] || "";
   $("s-reboot").checked = !!m["--reboot"];
-  $("s-icount").checked = !!m["--icount"];
+  $("s-hostclock").checked = !!m["--host-clock"];
   $("s-audio").checked = !!m["--audio"];
   $("setsheet").classList.add("open");
   $("s-air").focus();
@@ -758,7 +758,7 @@ function settingsFromSheet() {
   if (val("s-gps")) out.push("--gps", val("s-gps"));
   if (val("s-tcp")) out.push("--serial-tcp", val("s-tcp"));
   if ($("s-reboot").checked) out.push("--reboot");
-  if ($("s-icount").checked) out.push("--icount");
+  if ($("s-hostclock").checked) out.push("--host-clock");
   if ($("s-audio").checked) out.push("--audio");
   return out;
 }

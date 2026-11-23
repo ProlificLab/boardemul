@@ -34,7 +34,7 @@ for run in $(seq 1 "$RUNS"); do
     out=/tmp/speed-$name-$run
     rm -rf "$out"
     env $assignments timeout $((SECONDS_WALL + 60)) python3 emu/run.py "$FW" \
-        --board tdeck --bus --timeout "$SECONDS_WALL" --stall "$SECONDS_WALL" \
+        --board tdeck --bus --host-clock --timeout "$SECONDS_WALL" --stall "$SECONDS_WALL" \
         --outdir "$out" > "$out.log" 2>&1
     uart=$(ls "$out"/*.uart.log 2>/dev/null | head -1)
     logo=$(millis_of 'boot/logo.png' "$uart")

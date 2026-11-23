@@ -62,6 +62,7 @@ RUN_FLAGS = {
     "--wifi-ap": True, "--wifi-wpa2": False, "--wifi-pass": True,
     "--wifi-uplink": False, "--gps": True, "--at": True, "--antenna": True,
     "--environment": True, "--obstruction": True, "--icount": False,
+    "--host-clock": False,
     "--reboot": False, "--air": True, "--ble-air": True,
     # What the speaker plays, to WAV files in the run's own directory (ADR
     # 0146). --mic names a file, so it stays on the command line.
