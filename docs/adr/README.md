@@ -184,3 +184,4 @@ superseded ADR is marked superseded and points forward.
 | [0176](0176-qemu-is-profiled-by-sampling-and-trace-windows-are-read-from-a-shadow.md) | QEMU is profiled by sampling, and trace windows are read from a shadow | Accepted (profiles ADR 0161's speed; amends 0011's protocol) |
 | [0177](0177-a-received-wifi-frame-has-a-signal-strength.md) | A received WiFi frame has a signal strength | Accepted (amends 0152; adds to 0063's receive header) |
 | [0178](0178-the-guest-counts-its-time-in-instructions-by-default.md) | The guest counts its time in instructions by default | Accepted (revises 0027's default) |
+| [0179](0179-prolific-lab-publishes-boardemul-under-two-licences.md) | Prolific Lab publishes BoardEmul under two licences | Accepted |
