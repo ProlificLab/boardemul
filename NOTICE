@@ -1,0 +1,19 @@
+BoardEmul
+Copyright 2026 Prolific Lab
+
+This product is licensed in two parts (docs/adr/0179):
+
+- Everything outside qemu-patch/ -- the Python emulator, its tools, tests
+  and documentation -- is licensed under the Apache License, Version 2.0,
+  in LICENSE.
+
+- The files in qemu-patch/ are compiled into QEMU and are licensed under
+  the GNU General Public License, version 2 or (at your option) any later
+  version, in qemu-patch/LICENSE.
+
+QEMU itself, fetched and built by tools/build_qemu.sh, is the QEMU
+project's and Espressif's, under their own licences.
+
+Firmware for the boards BoardEmul emulates is not part of this product: it
+is fetched from where its vendors publish it (firmware/MANIFEST.toml) and is
+under its vendors' terms.
