@@ -197,3 +197,19 @@ And the test itself:
   between, and the firmware reads TxDone about half a second after. Not
   yet reproduced under the trace; the next occurrence with it on will say
   whether an answer cancelled the rise or the rise reached no interrupt.
+  - *Explained, the same day.* Meshtastic enables its DIO1 interrupt, an
+    edge, only after `startTransmit()` returns ("Must be done AFTER ...",
+    `RadioLibInterface::startSend`), and its poll for missed edges looks for
+    RxDone alone (`pollMissedIrqs`). On a board that gap is microseconds
+    against a packet's second on the air. Without `-icount` the guest's
+    clock is the host's while its code runs several times slower, so a gap
+    longer than the air time lets the packet end, and DIO1 rise, before
+    anything listens for the edge: TxDone is lost for good. The failing run
+    fits: SetTx at guest 49.293 s, TxDone due at 50.303 s, `Started Tx`
+    printed in second 50; in eighteen runs that completed it was printed in
+    SetTx's own second. Provoked (`logs/dbg/stall_after_settx.py`, QEMU
+    paused 1.3 s three milliseconds after the model applied SetTx): without
+    `-icount` two transmissions of two never completed, 650 `busyTx` and
+    63 `Hardware Failure` reports; under `-icount`, two of two completed.
+    The same class as this ADR's assert: a firmware's timing on a clock
+    that follows the host's.
