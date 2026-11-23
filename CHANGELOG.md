@@ -21,7 +21,12 @@ What changed for someone running BoardEmul, newest first. The reasons are in
 - WiFi frames arrive with a signal strength (−45 dBm) instead of 0 dBm, at
   which a station that chooses its network by signal never chose one (0177).
 
-## 1.5.0 — 2026-11-21
+## Internal versions, before publication
+
+Numbered 1.0.0 to 1.5.0 while BoardEmul was unpublished; renamed so
+that its public versions can count from 0.1.0 (ADR 0181).
+
+## i1.5 — 2026-11-21
 
 **Faster**
 - On Windows and macOS, a run no longer waits on the folder its output is
@@ -50,7 +55,7 @@ What changed for someone running BoardEmul, newest first. The reasons are in
   and the device boot test survives the firmware's known panic as the
   other boot tests do (0125).
 
-## 1.4.0 — 2026-11-20
+## i1.4 — 2026-11-20
 
 **Reaching a device**
 - Meshtastic's WiFi is set on the T-Deck's own screen as a person sets it,
@@ -72,7 +77,7 @@ What changed for someone running BoardEmul, newest first. The reasons are in
   radio's init and reboots; recorded with its error code in ADR 0141, not yet
   explained.
 
-## 1.3.0 — 2026-11-20
+## i1.3 — 2026-11-20
 
 **Reaching a device**
 - Bluetooth pairs with a PIN and encrypts the link, as a phone does with
@@ -109,7 +114,7 @@ What changed for someone running BoardEmul, newest first. The reasons are in
 - A device whose run was killed no longer refuses snapshots, restores and
   cards until its `running` file is deleted by hand (0149).
 
-## 1.2.0 — 2026-11-20
+## i1.2 — 2026-11-20
 
 **Reaching a device**
 - The ESP32-S3's USB OTG port works, with a host on its cable: a firmware
@@ -135,7 +140,7 @@ What changed for someone running BoardEmul, newest first. The reasons are in
 - `tools/slow_suite.sh N` runs the slow tests N at a time, then the ones
   whose firmware keeps deadlines on the host's clock one at a time (0167).
 
-## 1.1.0 — 2026-11-19
+## i1.1 — 2026-11-19
 
 **Faster**
 - The two cores take turns of a millisecond instead of QEMU's tenth of a
@@ -169,7 +174,7 @@ What changed for someone running BoardEmul, newest first. The reasons are in
   (0133).
 - Text sent to a T-Deck through the scripting API is typed, not refused.
 
-## 1.0.0 — 2026-11-19
+## i1.0 — 2026-11-19
 
 The first version for operators.
 

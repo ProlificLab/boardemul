@@ -1,7 +1,8 @@
 # SPDX-FileCopyrightText: 2026 Prolific Lab
 # SPDX-License-Identifier: Apache-2.0
-"""BoardEmul's version (ADR 0162): the first number moves when a device folder
-or the scripting API changes incompatibly, the second when an operator can do
-something new, the third for fixes."""
+"""BoardEmul's version (ADRs 0162, 0181). Semantic versioning: before 1.0
+the second number moves when something stops working as it did, the third
+for anything else. The 1.x numbers before publication are internal (i1.0 to
+i1.5 in the changelog); the first public release is 0.1.0."""
 
-VERSION = "1.5.0"
+VERSION = "0.1.0.dev0"
