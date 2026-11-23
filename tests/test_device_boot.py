@@ -61,12 +61,17 @@ def stop(proc: subprocess.Popen) -> None:
 
 def boot(device_root: Path, outdir: Path, tag: str) -> subprocess.Popen:
     """With --reboot, as every single-board boot test (ADR 0125): the ipc1
-    canary Meshtastic trips now and then is survived, as the board does."""
+    canary Meshtastic trips now and then is survived, as the board does.
+
+    And on the instruction-counted clock. What this tests is the device
+    folder, not the clock, and on the host's a second boot once lost a
+    transmission's end and restarted a minute later, as a host-paced clock
+    lets it (ADR 0141)."""
     outdir.mkdir(parents=True, exist_ok=True)
     return subprocess.Popen(
         [sys.executable, "emu/run.py", "--device", str(device_root),
-         "--bus", "--outdir", str(outdir), "--tag", tag, "--reboot",
-         "--timeout", "600", "--stall", "600"],
+         "--bus", "--outdir", str(outdir), "--tag", tag, "--reboot", "--icount",
+         "--timeout", "900", "--stall", "900"],
         cwd=Path(__file__).resolve().parent.parent,
         stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT,
         creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == "win32" else 0)
@@ -106,7 +111,7 @@ def test_a_configured_device_comes_back_configured(node) -> None:
         # As a person fills it in, tapping again when a tap is lost: one OK in
         # a run of three went unread, nothing was saved, and the second boot
         # rightly asked again (tests/setup_dialog.py).
-        fill_in(first, NAME, seen, dialog_timeout=300.0)
+        fill_in(first, NAME, seen, dialog_timeout=480.0)
         assert seen.get("dialog"), "a fresh device never asked its setup dialog"
         assert seen.get("reboot_notice"), f"OK did not commit: {seen}"
         resets = seen["uart_before_commit"].count("rst:0x")
@@ -132,7 +137,7 @@ def test_a_configured_device_comes_back_configured(node) -> None:
     proc = boot(device.root, second, "boot2")
     try:
         frames = second / "frames"
-        assert wait_for_panel(second, lambda f: _ui_is_up(f, frames), 300.0), \
+        assert wait_for_panel(second, lambda f: _ui_is_up(f, frames), 480.0), \
             "the second boot never drew its interface"
         # A node with no region asks the setup dialog every boot (that is
         # ADR 0026's flow). This one has one, so no dialog may appear while

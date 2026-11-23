@@ -213,3 +213,7 @@ And the test itself:
     63 `Hardware Failure` reports; under `-icount`, two of two completed.
     The same class as this ADR's assert: a firmware's timing on a clock
     that follows the host's.
+    `test_device_boot`, whose subject is the device folder and which lost a
+    transmission this way one run in three, boots under `-icount` since:
+    three runs of three pass. Which clock a device runs by default is left
+    to the product's own decision; the host's stays the default meanwhile.
