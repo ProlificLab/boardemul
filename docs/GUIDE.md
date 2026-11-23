@@ -85,8 +85,9 @@ and card for the next start.
 - **Satellites**: a GPS position, in degrees.
 - **Host tools**: a TCP port that carries a serial port, for a terminal or
   a script on this computer (`127.0.0.1` only).
-- **Running**: restart after a panic, as the board does; count guest time
-  in instructions (Bluetooth needs it); record the speaker.
+- **Running**: restart after a panic, as the board does; use this
+  computer's clock instead of counting instructions (faster, less
+  faithful: see Limits); record the speaker.
 
 Settings apply from the next start.
 
@@ -158,8 +159,8 @@ To reach the node over WiFi instead, as the apps do on port 4403:
 
 To reach it over Bluetooth, as a phone does (ADRs 0169, 0171):
 
-1. Start the device with a Bluetooth air (`--ble-air DIR` and
-   `--icount`, which Bluetooth needs).
+1. Start the device with a Bluetooth air (`--ble-air DIR`), on the
+   instruction-counted clock it runs on by default, which Bluetooth needs.
 2. Meshtastic pairs with a PIN: on a device with a screen, a random one it
    shows when a central pairs, and its log says it too (`Enter passkey N on
    the peer side`). To know it in advance, fix it:
@@ -234,21 +235,19 @@ Each of these is decided and recorded in an ADR, not forgotten:
   by access address, as on the air (ADR 0173), but all of a run's Bluetooth
   shares one channel and nothing collides (ADR 0157, step 2).
 - The firmware runs slower than the chip: a few tens of millions of
-  instructions a second where the chip does two hundred and forty. On the
-  host's clock (the default) its own timeline stretches where it computes
-  hard, a first TLS certificate above all, and on a heavily loaded machine
-  Meshtastic's on-screen interface can ask for its configuration more than
-  once ("Resync") before it has it (ADR 0172). Counting the guest's time in
-  instructions keeps its timeline a board's, at the cost of a slower start
-  to the home screen.
+  instructions a second where the chip does two hundred and forty. Its
+  clock counts those instructions (ADR 0178), so its own timeline is a
+  board's, and a run takes longer on yours: Meshtastic is configured in
+  about thirty seconds.
 - On the Max, the audio codec answers its identity only. The modem answers
   the factory test and has no SIM.
 - GPS always has a fix at the position you give.
 - Runs go at a fraction of real time, slower with many devices at once:
   Meshtastic reaches its home screen in about forty seconds, where a board
   takes a few. Both cores share one host thread, taking turns of a
-  millisecond (ADR 0161). Without the instruction-counted clock, a heavily
-  loaded machine can make a firmware miss its own deadlines: if the host
-  holds the emulator for more than a second while Meshtastic waits on its
-  radio, the radio library gives up and the firmware restarts (ADR 0141).
-  With it, a pause on the host is no time to the firmware.
+  millisecond (ADR 0161). *Use this computer's clock* (`--host-clock`)
+  starts faster, about sixteen seconds to Meshtastic's configuration, but a
+  busy machine can then make a firmware miss its own deadlines: Meshtastic's
+  radio library gives up, or a transmission's end is lost, and the firmware
+  restarts (ADR 0141). On the default clock a pause on the host is no time
+  to the firmware.

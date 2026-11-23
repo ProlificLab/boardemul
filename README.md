@@ -226,7 +226,7 @@ raster, portrait like the panel behind it, with the board stating the mounting
 the little keyboard icon beside a field is what binds the keypad to it, typed
 characters land in that field, and OK commits and reboots. Tapping the field
 itself does not bind, which is the interface's own design.
-Run it with `--icount` (ADR 0027):
+It runs on the instruction-counted clock, the default (ADRs 0027, 0178):
 the Bluetooth link layer, which the device-ui switches on when its boot logo
 is held, needs the instruction-counted clock to keep its events on time; its
 core's clock, timers and interrupt FIFO are a C device read off the ROM

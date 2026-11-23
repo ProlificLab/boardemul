@@ -11,6 +11,12 @@ What changed for someone running BoardEmul, newest first. The reasons are in
   digits into the field, so give the access point a passphrase of them:
   `aaaa` types `22222222` (0152, 0177).
 
+**Changed**
+- Devices count their time in instructions by default: a firmware keeps a
+  board's timing, and Meshtastic no longer restarts after a lost radio
+  deadline. Boots take about 1.8 times as long; *Use this computer's clock*
+  (`--host-clock`) is the faster, less faithful choice (0141, 0178).
+
 **Fixed**
 - WiFi frames arrive with a signal strength (−45 dBm) instead of 0 dBm, at
   which a station that chooses its network by signal never chose one (0177).
