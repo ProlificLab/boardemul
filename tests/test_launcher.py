@@ -16,7 +16,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import boardemul  # noqa: E402
+from boardemul import launcher as boardemul  # noqa: E402
 from emu import device as device_folder  # noqa: E402
 from emu import web  # noqa: E402
 from tools import doctor, fetch_firmware  # noqa: E402
