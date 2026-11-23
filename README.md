@@ -12,17 +12,56 @@ Build, Device, Board, Part -- are in `GLOSSARY.md`.
 
 ## Getting started
 
-One command, from the repository's root, with Python 3.11+ and (on Windows)
-Docker Desktop running (ADR 0159):
+With Python 3.11+ and Docker (ADR 0183):
 
 ```
-python boardemul.py
+pipx install boardemul
+boardemul
 ```
 
-The first time it builds the `boardemul-runtime` image, which compiles QEMU
-once, fetches the vendor firmware `tools/firmware_manifest.toml` pins, and opens
-the page. **`docs/GUIDE.md` is the operator's guide**: devices, settings,
-snapshots and clones, a Meshtastic mesh, the scripting API, and the limits.
+The first time it pulls the runtime image, which carries QEMU, fetches the
+vendor firmware `tools/firmware_manifest.toml` pins, and opens the page; your
+devices, firmware and logs are kept in `~/.boardemul`. From a clone,
+`python boardemul.py` does the same and builds the image from the clone's
+own sources (ADR 0159). **`docs/GUIDE.md` is the operator's guide**:
+devices, settings, snapshots and clones, a Meshtastic mesh, the scripting
+API, and the limits.
+
+## Testing your firmware
+
+Point BoardEmul at your PlatformIO build folder: `firmware.bin`, and its
+filesystem image placed where `partitions.bin` says (ADR 0182).
+
+```python
+from boardemul import Lab
+
+with Lab() as lab:
+    node = lab.device("node", build=".pio/build/t-deck", board="tdeck")
+    node.start()
+    node.serial("usb").expect(r"ready", timeout=120)
+    node.tap(120, 80)
+    node.screen.wait(lambda shot: shot.pixel(160, 120) != (0, 0, 0), timeout=60)
+```
+
+With pytest, the `boardemul_lab` fixture gives each test session a `Lab`.
+From a shell or CI, `boardemul test` starts one device or several on one
+LoRa air, runs your command, and answers with its exit status:
+
+```
+boardemul test --build .pio/build/t-deck --devices 2 -- python -m pytest tests/
+```
+
+In a GitHub workflow:
+
+```yaml
+- uses: prolificlab/boardemul@v0.1.0
+  with:
+    build: .pio/build/t-deck
+    run: python -m pytest tests/emulated
+```
+
+Devices count their time in instructions, so a firmware keeps a board's
+timing whatever the host is doing (ADR 0178).
 
 Developing the emulator itself uses the development image and builds QEMU
 into `third_party/` (ADR 0147):

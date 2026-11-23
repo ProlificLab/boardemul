@@ -5,6 +5,19 @@ What changed for someone running BoardEmul, newest first. The reasons are in
 
 ## Unreleased
 
+**For firmware developers**
+- Test your own build from Python: `boardemul.Lab` makes devices from a
+  PlatformIO build folder and reads and drives their serial ports, screen
+  and inputs; several on one LoRa air hear each other (0182).
+- `boardemul test --build DIR -- COMMAND` runs a build and your tests, in a
+  shell or CI, and a GitHub Action calls it (0182).
+- `pipx install boardemul`: an installed BoardEmul keeps your things in
+  `~/.boardemul` and pulls its runtime image (0183).
+
+**Licensing**
+- BoardEmul is Prolific Lab's, under Apache-2.0, with `qemu-patch/` under
+  GPL-2.0-or-later; contributions carry a sign-off (0179).
+
 **Reaching a device**
 - The T-Deck Max joins a WPA2 network from its own WiFi screen: scan, tap
   the network, type the password, Connect. Its factory firmware types keypad
