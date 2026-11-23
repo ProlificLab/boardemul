@@ -182,3 +182,18 @@ And the test itself:
     of 2026-10-03, seen after an assert's reboot under sixteen guests on
     fourteen cores, where a starved guest's thread could well be held a
     second; the model is right to keep what it was told. Closed.
+- *Open, seen 2026-11-23: a transmission whose end never reaches the
+  firmware.* Twice: one node of `test_mesh` in a full slow-tier run, and
+  `test_device_boot`'s second boot run alone, on local disk, one run in
+  three. The model sent the packet (`sent a 102-byte packet at guest
+  49.293391 s for 1009.664 ms`); Meshtastic logged `Started Tx` and never
+  `Completed sending`, then `Can not send yet, busyTx` until, sixty seconds
+  on, `Hardware Failure! busyTx for more than 60s` and a reboot. Its light
+  sleep came later and is not the cause. Hunted with every command and
+  every DIO1 answer traced (`logs/dbg/trace_tx.py`, `logs/dbg/tx_hunt.sh`):
+  eighteen transmissions on nine nodes, three and six booting at once, all
+  completed, and the traffic around each is clean -- SetTx's answer
+  schedules DIO1's rise at the packet's end, nothing on the bus answers in
+  between, and the firmware reads TxDone about half a second after. Not
+  yet reproduced under the trace; the next occurrence with it on will say
+  whether an answer cancelled the rise or the rise reached no interrupt.
