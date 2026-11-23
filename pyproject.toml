@@ -1,0 +1,51 @@
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
+# The boardemul package on PyPI (ADR 0183): the Python side only, standard
+# library only. QEMU comes in the runtime image an installed copy pulls.
+
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "boardemul"
+dynamic = ["version"]
+description = "Run and test ESP32-S3 firmware without the board"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+authors = [{ name = "Prolific Lab" }]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Framework :: Pytest",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Topic :: Software Development :: Embedded Systems",
+    "Topic :: Software Development :: Testing",
+    "Topic :: System :: Emulators",
+]
+
+[project.urls]
+Homepage = "https://github.com/prolificlab/boardemul"
+Issues = "https://github.com/prolificlab/boardemul/issues"
+Changelog = "https://github.com/prolificlab/boardemul/blob/main/CHANGELOG.md"
+
+[project.scripts]
+boardemul = "boardemul.__main__:main"
+
+[project.entry-points.pytest11]
+boardemul = "boardemul.pytest_plugin"
+
+[tool.setuptools.dynamic]
+version = { attr = "emu.version.VERSION" }
+
+[tool.setuptools.packages.find]
+include = ["boardemul", "emu", "emu.*", "tools"]
+namespaces = true
+
+[tool.setuptools.package-data]
+emu = ["web/*.html"]
+tools = ["firmware_manifest.toml"]

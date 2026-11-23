@@ -19,3 +19,7 @@ build/
 # Python bytecode
 __pycache__/
 *.pyc
+
+# Packaging outputs (ADR 0183).
+dist/
+*.egg-info/
