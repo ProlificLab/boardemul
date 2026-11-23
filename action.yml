@@ -1,0 +1,66 @@
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
+# Test a firmware build on emulated boards in a GitHub workflow (ADR 0182):
+#
+#   - uses: prolificlab/boardemul@v0.1.0
+#     with:
+#       build: .pio/build/t-deck
+#       board: tdeck
+#       run: python -m pytest tests/emulated
+#
+# It installs the boardemul package of the same version, pulls the runtime
+# image, and runs `boardemul test`; the step fails when the command does.
+name: BoardEmul test
+description: Run a firmware build on emulated ESP32-S3 boards and test it
+author: Prolific Lab
+branding:
+  icon: cpu
+  color: gray-dark
+
+inputs:
+  build:
+    description: The build folder (firmware.bin, and its filesystem and partitions.bin)
+    required: true
+  run:
+    description: The test command, run once the devices have started
+    required: true
+  board:
+    description: tdeck or tdeck-max
+    default: tdeck
+  devices:
+    description: How many devices run the build; more than one share a LoRa air
+    default: "1"
+  settings:
+    description: Run settings for every device, space separated (for example --host-clock)
+    default: ""
+  logs:
+    description: Where each device's logs are kept
+    default: boardemul-logs
+  version:
+    description: The BoardEmul version; the action's own by default
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-python@v5
+      with:
+        python-version: "3.12"
+    - name: Install BoardEmul
+      shell: bash
+      env:
+        VERSION: ${{ inputs.version || github.action_ref }}
+      run: |
+        version="${VERSION#v}"
+        python -m pip install "boardemul==$version"
+        docker pull "ghcr.io/prolificlab/boardemul:$version"
+    - name: Run the test
+      shell: bash
+      env:
+        BOARDEMUL_HOME: ${{ runner.temp }}/boardemul
+      run: |
+        settings=()
+        for s in ${{ inputs.settings }}; do settings+=("--setting=$s"); done
+        boardemul test --build "${{ inputs.build }}" --board "${{ inputs.board }}" \
+            --devices "${{ inputs.devices }}" --logs "${{ inputs.logs }}" \
+            "${settings[@]}" -- bash -c "${{ inputs.run }}"

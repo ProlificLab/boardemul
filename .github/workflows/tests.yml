@@ -1,6 +1,9 @@
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 # The fast test tier on every push and pull request (ADR 0162). It needs no
 # QEMU and no vendor firmware: what needs them is the slow tier, which skips
-# without them and runs where both are built (ADR 0012).
+# without them and runs where both are built (ADR 0012). A pull request's
+# commits each carry a sign-off (ADR 0179).
 name: tests
 
 on:
@@ -17,3 +20,24 @@ jobs:
           python-version: "3.12"
       - run: python -m pip install pytest
       - run: python -m pytest --basetemp=/tmp/pytest
+
+  signed-off:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Every commit carries a Developer Certificate of Origin sign-off
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          missing=0
+          for commit in $(git rev-list "$BASE..$HEAD"); do
+            if ! git log -1 --format=%B "$commit" | grep -q '^Signed-off-by: '; then
+              echo "::error::$(git log -1 --format='%h %s' "$commit") has no Signed-off-by line (git commit -s; see CONTRIBUTING.md)"
+              missing=1
+            fi
+          done
+          exit $missing
