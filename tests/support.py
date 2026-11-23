@@ -430,7 +430,7 @@ def _frames(outdir: Path) -> list[Path]:
 
 def run_emulator(outdir: Path, *, firmware: Path = FIRMWARE,
                  board: str = "tdeck-max", tap: tuple[int, int] | None = None,
-                 wait_frames: int = 0, timeout: int = 150,
+                 wait_frames: int = 0, timeout: int = 300,
                  settle: int = 25, overlays: tuple[str, ...] = (),
                  icount: bool = False, extra: tuple[str, ...] = (),
                  script=None, until=None, env: dict[str, str] | None = None) -> Run:

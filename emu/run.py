@@ -424,6 +424,13 @@ def main(argv: list[str] | None = None) -> int:
     if args.icount and args.host_clock:
         raise SystemExit("--icount and --host-clock name two different clocks; "
                          "give one")
+    # Two translation threads cannot count instructions, so they keep the
+    # host's clock, as they always did; asking for both is refused.
+    if os.environ.get("BOARDEMUL_TCG_THREADS") == "multi":
+        if args.icount:
+            raise SystemExit("--icount needs one translation thread; "
+                             "BOARDEMUL_TCG_THREADS=multi asks for two")
+        args.host_clock = True
     args.icount = not args.host_clock
 
     # --device or a bare firmware, never both, never neither. The device is

@@ -35,7 +35,12 @@ under `-icount`, against 20.2, 13.1 and 15.0 s on the host's clock: about
    offer it under that description.
 
 3. **What measures the host's clock asks for it**: `tools/speed.sh`, whose
-   milestones are wall time.
+   milestones are wall time. Two translation threads
+   (`BOARDEMUL_TCG_THREADS=multi`, ADR 0041) cannot count instructions and
+   keep the host's clock; `--icount` with them is refused.
+
+4. **Tests wait longer**: `run_emulator`'s ceiling is 300 s of wall time
+   where it was 150. A run still stops as soon as it has what it came for.
 
 ## Consequences
 
