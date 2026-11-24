@@ -116,3 +116,18 @@ joins and the API server.
 - The node has to be on WiFi, which on Meshtastic turns its Bluetooth off.
 - One station is forwarded to: the first that holds a lease. A run has one
   device, so its access point has one station.
+
+## Amendment — 2026-11-24: the classic screen no longer sticks on WiFi
+
+Trying the same path through the test library (ADR 0182), the colour
+interface undid it. Since ADR 0172 made the card fast, the interface
+finishes taking its configuration, and on a node with WiFi configured it
+writes the display back as colour a few guest seconds after each change and
+at each boot. Read back over the serial API: with the region set and no
+network, `display-mode default` holds; with a network set, before or after
+it, the node reads colour again, starts its colour interface, and serves
+neither its web server nor its TCP API. The 2026-11-19 proof above held
+only because the interface never finished its configuration then. The
+forward itself is unchanged and its tests pass; reaching Meshtastic's
+servers through it now needs the classic screen set some other way, which
+is not yet found. The attempt is in `logs/wifi-lib/`.
