@@ -13,6 +13,7 @@ saying each one as it goes.
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 import time
 import tomllib
@@ -20,7 +21,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from boardemul.build import Build, BuildError
-from boardemul.lab import SERIAL_PORTS, LabError, Shot
+from boardemul.lab import SERIAL_PORTS, LabError, Shot, WiFi
 
 DEFAULT_TIMEOUT = 60.0
 AIR = "boardemul-scenario"      # the LoRa air a scenario's devices share
@@ -35,6 +36,7 @@ ACTIONS: dict[str, tuple[str, ...]] = {
     "screen": ("tolerance", "timeout"),
     "pixel": ("rgb", "timeout"),
     "save_screen": ("timeout",),
+    "http": ("port", "status", "body", "timeout"),
 }
 
 
@@ -48,6 +50,7 @@ class DeviceSpec:
     build: Path
     board: str = "tdeck"
     settings: tuple[str, ...] = ()
+    wifi: WiFi | None = None
 
 
 @dataclass
@@ -105,10 +108,10 @@ def parse(text: str, path: Path) -> Scenario:
     devices: list[DeviceSpec] = []
     for n, entry in enumerate(raw_devices, 1):
         what = f"device {n}"
-        extra = sorted(set(entry) - {"name", "build", "board", "settings"})
+        extra = sorted(set(entry) - {"name", "build", "board", "settings", "wifi"})
         if extra:
             fail(f"{what} has {', '.join(map(repr, extra))}; it takes name, "
-                 "build, board and settings")
+                 "build, board, settings and wifi")
         name = entry.get("name", "dut" if len(raw_devices) == 1 else "")
         if not isinstance(name, str) or not name:
             fail(f"{what} needs a `name` when there are several")
@@ -125,7 +128,8 @@ def parse(text: str, path: Path) -> Scenario:
         settings = entry.get("settings", [])
         if not isinstance(settings, list) or not all(isinstance(s, str) for s in settings):
             fail(f"{what} ({name}): `settings` is a list of run settings")
-        devices.append(DeviceSpec(name, base / build, board, tuple(settings)))
+        wifi = _wifi(fail, f"{what} ({name})", entry.get("wifi"))
+        devices.append(DeviceSpec(name, base / build, board, tuple(settings), wifi))
 
     names = [d.name for d in devices]
     steps: list[Step] = []
@@ -157,12 +161,40 @@ def parse(text: str, path: Path) -> Scenario:
     return Scenario(path, devices, steps)
 
 
+def _wifi(fail, what: str, table) -> WiFi | None:
+    """A device's network: [device.wifi] name, password, uplink, and
+    forward = [[HOSTPORT, DEVICEPORT], ...]."""
+    if table is None:
+        return None
+    if not isinstance(table, dict):
+        fail(f"{what}: `wifi` is a table, [device.wifi]")
+    extra = sorted(set(table) - {"name", "password", "uplink", "forward"})
+    if extra:
+        fail(f"{what}: wifi has {', '.join(map(repr, extra))}; it takes name, "
+             "password, uplink and forward")
+    forward = table.get("forward", [])
+    if not (isinstance(forward, list) and all(
+            isinstance(pair, list) and len(pair) == 2
+            and all(isinstance(v, int) and not isinstance(v, bool) for v in pair)
+            for pair in forward)):
+        fail(f"{what}: wifi's forward is [[HOSTPORT, DEVICEPORT], ...]")
+    if not isinstance(table.get("uplink", False), bool):
+        fail(f"{what}: wifi's uplink is true or false")
+    try:
+        return WiFi(name=str(table.get("name", "")),
+                    password=(str(table["password"]) if "password" in table else None),
+                    uplink=table.get("uplink", False),
+                    forward={host: device for host, device in forward})
+    except ValueError as exc:
+        fail(f"{what}: {exc}")
+
+
 def _number(value) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool)
 
 
 def _check(fail, what, action, value, options, base: Path) -> None:
-    if action in ("expect", "send", "key", "type", "screen", "save_screen") \
+    if action in ("expect", "send", "key", "type", "screen", "save_screen", "http") \
             and not isinstance(value, str):
         fail(f"{what}: `{action}` is text")
     if action in ("tap", "pixel") and not (
@@ -180,6 +212,13 @@ def _check(fail, what, action, value, options, base: Path) -> None:
         fail(f"{what}: no picture at {base / value}")
     if "port" in options and options["port"] not in SERIAL_PORTS:
         fail(f"{what}: `port` is one of {', '.join(SERIAL_PORTS)}")
+    if action == "http" and "port" in options and not (
+            isinstance(options["port"], int) and 1 <= options["port"] <= 65535):
+        fail(f"{what}: an http step's `port` is the device's, 1 to 65535")
+    if "status" in options and not isinstance(options["status"], int):
+        fail(f"{what}: `status` is an HTTP status, such as 200")
+    if "body" in options and not isinstance(options["body"], str):
+        fail(f"{what}: `body` is a regular expression the reply must match")
     for key in ("timeout", "hold", "tolerance"):
         if key in options and not (_number(options[key]) and options[key] >= 0):
             fail(f"{what}: `{key}` is a number")
@@ -215,6 +254,13 @@ def play(step: Step, device, out=print) -> None:
             x, y = step.value
             rgb = tuple(step.options["rgb"])
             device.screen.wait(lambda shot: shot.pixel(x, y)[:3] == rgb, timeout)
+        elif step.action == "http":
+            _status, body = device.http(step.value, int(step.options.get("port", 80)),
+                                        timeout, int(step.options.get("status", 200)))
+            wanted = step.options.get("body")
+            if wanted is not None and not re.search(wanted, body.decode("utf-8", "replace")):
+                raise StepFailed(f"the reply does not match {wanted!r}: "
+                                 f"{body[:200].decode('utf-8', 'replace')!r}")
         elif step.action == "save_screen":
             shot = device.screen.wait(lambda shot: True, timeout)
             Path(step.value).parent.mkdir(parents=True, exist_ok=True)
@@ -232,8 +278,11 @@ def run(scenario: Scenario, lab, logs: Path | None = None, out=print) -> bool:
             build = Build.from_dir(spec.build)
             made[spec.name] = lab.device(spec.name, build, board=spec.board,
                                          settings=spec.settings)
+        specs = {spec.name: spec for spec in scenario.devices}
         for device in made.values():
-            device.start(air=AIR if len(made) > 1 else None)
+            wifi = specs[device.name].wifi
+            device.start(air=AIR if len(made) > 1 else None,
+                         **({"wifi": wifi} if wifi is not None else {}))
         out(f"started {', '.join(made)}")
         for step in scenario.steps:
             began = time.monotonic()

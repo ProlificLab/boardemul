@@ -75,3 +75,16 @@ partial line counted; `expect` then asked for the lines after it, and the
 line, once whole, was behind it for good. It depended on when the read
 fell, which is why it failed one boot in two or three. While a run is
 alive the page now serves only the lines a newline ends.
+
+## Amendment — 2026-11-24: WiFi in the library
+
+`WiFi(name, password=None, uplink=False, forward={})` is the run settings
+ADRs 0057, 0093, 0097 and 0164 already gave the page: an access point,
+WPA2 when it has a passphrase, the host's internet behind it, and host
+ports forwarded to the device's. `Device.start(wifi=...)` passes them, and
+`Device.http(path, port)` asks a server the firmware runs through the
+forwarded port, trying until it answers or the timeout passes. A scenario
+gives a device `[device.wifi]` and has an `http` step (ADR 0185). The
+forwarding itself was shown end to end with Meshtastic's TCP API in ADR
+0164; the library's part is tested against a real HTTP server on the
+host. Bluetooth is still not in the library.

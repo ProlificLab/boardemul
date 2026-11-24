@@ -30,12 +30,49 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import zlib
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from boardemul.build import Build
 
 SERIAL_PORTS = ("uart", "usb", "otg")
 START_TIMEOUT = 300.0
+
+
+@dataclass(frozen=True)
+class WiFi:
+    """An access point for a device to join (ADRs 0057, 0093, 0097, 0164).
+
+    `password` makes it WPA2; without one it is open. `uplink` lets the
+    device reach the internet through the host. `forward` maps ports of the
+    host's loopback to the device's own, so a test reaches a server the
+    firmware runs: {8080: 80} is the device's port 80 at 127.0.0.1:8080.
+    """
+    name: str
+    password: str | None = None
+    uplink: bool = False
+    forward: dict[int, int] = field(default_factory=dict)
+
+    def __post_init__(self):
+        if not self.name or "," in self.name:
+            raise ValueError("a network's name is not empty and has no comma")
+        if self.password is not None and not 8 <= len(self.password) <= 63:
+            raise ValueError("a WPA2 passphrase is 8 to 63 characters")
+        for host, device in self.forward.items():
+            if not (1024 <= int(host) <= 65535 and 1 <= int(device) <= 65535):
+                raise ValueError(f"forward {host}->{device}: the host port is "
+                                 "1024 to 65535, the device's 1 to 65535")
+
+    def args(self) -> list[str]:
+        """The run settings that make this network."""
+        out = ["--wifi-ap", self.name]
+        if self.password is not None:
+            out += ["--wifi-wpa2", "--wifi-pass", self.password]
+        if self.uplink:
+            out.append("--wifi-uplink")
+        for host, device in self.forward.items():
+            out += ["--wifi-forward", f"{int(host)}:{int(device)}"]
+        return out
 
 
 class LabError(RuntimeError):
@@ -192,13 +229,48 @@ class Device:
         self.lab, self.name = lab, name
         self.screen = Screen(self)
         self._serial: dict[str, Serial] = {}
+        self._forward: dict[int, int] = {}      # device port -> host port
 
-    def start(self, air: str | None = None, args: tuple[str, ...] = ()) -> None:
+    def start(self, air: str | None = None, args: tuple[str, ...] = (),
+              wifi: WiFi | None = None) -> None:
         """Run it; devices started on the same air hear each other's LoRa
-        radios."""
+        radios, and with `wifi` there is an access point to join."""
         extra = list(args) + (["--air", air] if air else [])
+        if wifi is not None:
+            extra += wifi.args()
         self.lab.api.ok("POST", f"/api/devices/{_q(self.name)}/start", {"args": extra})
         self._serial.clear()
+        self._forward = ({device: host for host, device in wifi.forward.items()}
+                         if wifi is not None else {})
+
+    def http(self, path: str = "/", port: int = 80, timeout: float = 60.0,
+             expect_status: int | None = 200) -> tuple[int, bytes]:
+        """GET `path` from a server the firmware runs on its `port`, through
+        the host port `WiFi.forward` gave it; tried until it answers with
+        `expect_status` (any status, with None) or `timeout` passes."""
+        host_port = self._forward.get(int(port))
+        if host_port is None:
+            raise LabError(f"{self.name}: no host port reaches its port {port}; "
+                           f"start it with WiFi(forward={{HOSTPORT: {port}}})")
+        url = f"http://127.0.0.1:{host_port}/{path.lstrip('/')}"
+        deadline = time.monotonic() + timeout
+        last = "nothing answered"
+        while True:
+            try:
+                with urllib.request.urlopen(url, timeout=10) as reply:
+                    status, body = reply.status, reply.read()
+            except urllib.error.HTTPError as exc:
+                status, body = exc.code, exc.read()
+            except (urllib.error.URLError, OSError) as exc:
+                status, body, last = None, b"", str(getattr(exc, "reason", exc))
+            if status is not None:
+                if expect_status is None or status == expect_status:
+                    return status, body
+                last = f"status {status}"
+            if time.monotonic() >= deadline:
+                raise Timeout(f"{self.name}: GET {path} on port {port}: {last} "
+                              f"in {timeout:.0f} s")
+            time.sleep(1.0)
 
     def stop(self) -> None:
         self.lab.api.call("POST", f"/api/devices/{_q(self.name)}/stop", {})

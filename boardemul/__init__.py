@@ -8,7 +8,7 @@ drives devices.
 """
 
 from boardemul.build import Build, BuildError
-from boardemul.lab import Device, Lab, LabError, Screen, Serial, Shot, Timeout
+from boardemul.lab import Device, Lab, LabError, Screen, Serial, Shot, Timeout, WiFi
 
 __all__ = ["Build", "BuildError", "Device", "Lab", "LabError", "Screen", "Serial",
-           "Shot", "Timeout"]
+           "Shot", "Timeout", "WiFi"]
