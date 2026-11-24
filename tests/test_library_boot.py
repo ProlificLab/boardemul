@@ -82,3 +82,42 @@ def test_boardemul_test_answers_with_the_command_s_status(build, tmp_path) -> No
     assert done.returncode == 7, done.stderr[-2000:]
     kept = sorted(p.name for p in (tmp_path / "logs").glob("*.zip"))
     assert kept == ["dut1.zip", "dut2.zip"]
+
+
+def test_a_scenario_runs_two_devices_one_on_a_described_board(build, tmp_path) -> None:
+    """`boardemul scenario` (ADR 0185) on the same build: a device on the
+    T-Deck and one on its description (ADR 0184), on one air, each waited
+    for on its OTG port, and a frame kept."""
+    described = REPO_ROOT / "emu" / "boards" / "tdeck.toml"
+    file = tmp_path / "pair.toml"
+    file.write_text(
+        "[[device]]\n"
+        'name = "hand"\n'
+        f'build = "{build.as_posix()}"\n'
+        "[[device]]\n"
+        'name = "described"\n'
+        f'build = "{build.as_posix()}"\n'
+        f'board = "{described.as_posix()}"\n'
+        "[[step]]\n"
+        'device = "hand"\n'
+        'expect = "SX126x init result 0"\n'
+        'port = "otg"\n'
+        "timeout = 900\n"
+        "[[step]]\n"
+        'device = "described"\n'
+        'expect = "SX126x init result 0"\n'
+        'port = "otg"\n'
+        "timeout = 900\n"
+        "[[step]]\n"
+        'device = "described"\n'
+        'save_screen = "shots/described.png"\n')
+    done = subprocess.run(
+        [sys.executable, "-m", "boardemul", "scenario", str(file),
+         "--logs", str(tmp_path / "logs")],
+        cwd=REPO_ROOT, capture_output=True, text=True, timeout=2400)
+    print(done.stdout)
+    assert done.returncode == 0, (done.stdout[-2000:], done.stderr[-2000:])
+    assert "ok   step 3" in done.stdout and done.stdout.rstrip().endswith("passed")
+    assert (tmp_path / "shots" / "described.png").read_bytes()[:4] == b"\x89PNG"
+    kept = sorted(p.name for p in (tmp_path / "logs").glob("*.zip"))
+    assert kept == ["described.zip", "hand.zip"]

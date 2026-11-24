@@ -11,6 +11,9 @@ def main(argv: list[str] | None = None) -> int:
     if argv[:1] == ["test"]:
         from boardemul.cli import test
         return test(argv[1:])
+    if argv[:1] == ["scenario"]:
+        from boardemul.scenario import main as scenario
+        return scenario(argv[1:])
     from boardemul.launcher import main as launch
     return launch(argv)
 
