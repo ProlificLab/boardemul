@@ -26,7 +26,7 @@ def test_the_tdeck_description_reads():
     assert [(p.part, p.address) for p in desc.i2c[0]] == [
         ("gt911", 0x5D), ("tdeck-keyboard", 0x55), ("es7210", 0x40)]
     assert desc.i2c[1] == []
-    assert desc.uart1.part == "l76k"
+    assert desc.uart[1].part == "l76k"
     assert desc.screen().part == "st7789"
     assert desc.source.startswith("# SPDX")
 
@@ -52,7 +52,7 @@ def test_a_minimal_board_is_a_name():
      '[[i2c1.parts]]\npart = "es7210"\naddress = 0x5d', "both at 0x5d"),
     ('name = "x"\n[[i2c0.parts]]\npart = "es7210"\naddress = 0x80', "7-bit"),
     ('name = "x"\n[[spi2.parts]]\npart = "sdcard"\ncs = 4\nsize_mb = 0', "positive int"),
-    ('name = "x"\n[uart1]\npart = "gt911"', "goes on i2c, not uart1"),
+    ('name = "x"\n[uart1]\npart = "gt911"', "goes on i2c, not uart"),
     ('name = "x"\n' + "".join(f'[[spi2.parts]]\npart = "sdcard"\ncs = {n}\n'
                               for n in range(4)), "3 selects"),
     ('name = [', "not TOML"),
@@ -96,6 +96,50 @@ def test_the_described_tdeck_builds_the_hand_written_one(tmp_path):
                         stop()
                     except Exception:
                         pass
+
+
+TDECK_MAX = TDECK.with_name("tdeck-max.toml")
+
+
+def _serials(board) -> list[str]:
+    args = board.qemu_args()
+    return [Path(args[i + 1].removeprefix("unix:")).name
+            for i, a in enumerate(args) if a == "-serial"]
+
+
+def test_the_described_max_has_the_hand_written_ones_parts(tmp_path):
+    """Its parts, selects, addresses and UARTs are emu/board.py's; its chip
+    is the T-Deck's, as every described board's (ADR 0184, decision 3)."""
+    from emu import board as max_board
+
+    made = max_board.build(tmp_path / "hand")
+    ours = described.module(described.load(TDECK_MAX)).build(tmp_path / "described")
+    try:
+        spi = dict(map(_options, made.devices))["esp-spi-master"]
+        assert dict(map(_options, ours.devices))["esp-spi-master"] == spi
+        assert {s: type(d) for s, d in ours.spi.devices.items()} == \
+            {s: type(d) for s, d in made.spi.devices.items()}
+        for bus in ("i2c0", "i2c1"):
+            assert {a: type(d) for a, d in getattr(ours, bus).devices.items()} == \
+                {a: type(d) for a, d in getattr(made, bus).devices.items()}
+        assert _serials(ours) == _serials(made) == ["modem.sock", "gps.sock"]
+        assert ours.held_high == [max_board.EPD_BUSY_PIN]
+    finally:
+        for board in (made, ours):
+            for link in (board.gpio, board.spi, board.i2c0, board.i2c1, board.gps,
+                         board.modem, getattr(board, "reports", None), board.clock,
+                         board.usb_otg):
+                stop = getattr(link, "stop", None) or getattr(link, "close", None)
+                if stop:
+                    try:
+                        stop()
+                    except Exception:
+                        pass
+
+
+def test_a_board_has_one_satellite_receiver():
+    assert "two satellite receivers" in refused(
+        'name = "x"\n[uart1]\npart = "l76k"\n[uart2]\npart = "ublox-m10"')
 
 
 def test_a_device_keeps_its_description(tmp_path, monkeypatch):

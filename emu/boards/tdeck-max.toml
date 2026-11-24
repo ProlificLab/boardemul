@@ -1,0 +1,62 @@
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
+#
+# The LilyGO T-Deck Max as a board description (ADR 0184): an ESP32-S3 and
+# the catalogue parts on its pins, from the vendor's
+# lib/TDeckMaxBoard/src/TDeckMaxBoard.h. tests/test_described.py holds its
+# parts to emu/board.py's. Its chip is the T-Deck's, as every described
+# board's is (decision 3), where the hand-written Max claims fewer windows.
+
+name = "T-Deck Max (described)"
+chip = "esp32s3"
+
+[spi2]
+dc = 35                     # the panel's data/command line
+
+[[spi2.parts]]
+part = "epaper"             # the e-paper panel
+cs = 34
+busy = 37
+
+[[spi2.parts]]
+part = "sx1262"             # the LoRa radio
+cs = 3
+busy = 6
+reset = 4
+irq = 5                     # DIO1
+
+[[spi2.parts]]
+part = "sdcard"
+cs = 8
+size_mb = 32
+
+[[i2c0.parts]]
+part = "es8311"             # the speaker codec, at 0x18
+
+[[i2c0.parts]]
+part = "cst328"             # the touch controller, at 0x1a
+irq = 12
+
+[[i2c0.parts]]
+part = "xl9555"             # the I/O expander, at 0x20
+
+[[i2c0.parts]]
+part = "bhi260ap"           # the motion sensor, at 0x28
+
+[[i2c0.parts]]
+part = "tca8418"            # the keyboard matrix, at 0x34
+
+[[i2c0.parts]]
+part = "bq27220"            # the fuel gauge, at 0x55
+
+[[i2c0.parts]]
+part = "drv2605"            # the haptic driver, at 0x5a
+
+[[i2c0.parts]]
+part = "sy6970"             # the charger, at 0x6a
+
+[uart1]
+part = "a7682e"             # the LTE modem
+
+[uart2]
+part = "ublox-m10"          # the GPS receiver, built in

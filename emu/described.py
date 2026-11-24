@@ -20,6 +20,7 @@ import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import SimpleNamespace
+import os
 
 from emu import board_tdeck as chip
 from emu import sdimage
@@ -27,8 +28,12 @@ from emu.board import Board
 from emu.bus import Region
 from emu.devices.air import HOST as AIR_LOOPBACK, AirMedium, air_host, keep_time
 from emu.devices.backlight import Backlight, GpioReports
+from emu.devices.epaper import EPaperPanel
 from emu.devices.es7210 import Es7210
-from emu.devices.gps import L76K
+from emu.devices.gps import L76K, UBloxM10
+from emu.devices.i2c_devices import (BHI260AP, BQ27220, CST328, DRV2605, ES8311,
+                                     SY6970, TCA8418, XL9555)
+from emu.devices.modem import A7682E
 from emu.devices.lcd import St7789Panel
 from emu.devices.ledc import Ledc
 from emu.devices.sdcard import SdCard
@@ -50,6 +55,12 @@ SUFFIX = ("", "1", "2")     # its per-select property names: cs_gpio, cs1_gpio, 
 SD_CARD_MB = chip.SD_CARD_MB    # a card's size when the description says none
 
 
+# The Max's I2C parts that need nothing but their address.
+MAX_I2C = {"es8311": ES8311, "cst328": CST328, "xl9555": XL9555,
+           "tca8418": TCA8418, "bq27220": BQ27220, "drv2605": DRV2605,
+           "sy6970": SY6970}
+
+
 class DescriptionError(ValueError):
     """What is wrong with a board description, said so its author can fix it."""
 
@@ -57,15 +68,18 @@ class DescriptionError(ValueError):
 @dataclass(frozen=True)
 class Kind:
     """A catalogue part: where it sits and what it takes."""
-    bus: str                                # spi2, i2c, uart1 or gpio
+    bus: str                                # spi2, i2c, uart or gpio
     needs: tuple[str, ...] = ()             # pins it must be given
     may: tuple[str, ...] = ()               # pins it may be given
     options: dict[str, type] = field(default_factory=dict)
     address: int | None = None              # an I2C part's own address
     screen: bool = False
     drives_miso: bool = False               # an SPI part that answers
+    receiver: bool = False                  # a satellite receiver, on a UART
 
 
+# The T-Deck's parts, then the T-Deck Max's (ADR 0184, decision 2), with the
+# addresses their vendors' headers give them.
 CATALOGUE: dict[str, Kind] = {
     "st7789": Kind("spi2", needs=("cs",), may=("backlight",), screen=True),
     "sx1262": Kind("spi2", needs=("cs",), may=("busy", "reset", "irq"),
@@ -75,9 +89,22 @@ CATALOGUE: dict[str, Kind] = {
     "gt911": Kind("i2c", may=("irq",), address=GT911.address),
     "tdeck-keyboard": Kind("i2c", address=TDeckKeyboard.address),
     "es7210": Kind("i2c", address=Es7210.address),
-    "l76k": Kind("uart1"),
+    "l76k": Kind("uart", receiver=True),
     "tdeck-trackball": Kind("gpio", needs=("press", "left", "right", "up", "down")),
+    # The T-Deck Max's.
+    "epaper": Kind("spi2", needs=("cs", "busy"), screen=True),
+    "es8311": Kind("i2c", address=0x18),
+    "cst328": Kind("i2c", may=("irq",), address=0x1A),
+    "xl9555": Kind("i2c", address=0x20),
+    "bhi260ap": Kind("i2c", address=0x28),
+    "tca8418": Kind("i2c", address=0x34),
+    "bq27220": Kind("i2c", address=0x55),
+    "drv2605": Kind("i2c", address=0x5A),
+    "sy6970": Kind("i2c", address=0x6A),
+    "ublox-m10": Kind("uart", receiver=True),
+    "a7682e": Kind("uart"),
 }
+UARTS = (1, 2)              # the machine's second and third; the first is the console
 
 
 @dataclass
@@ -96,13 +123,13 @@ class Description:
     spi_dc: int | None = None
     spi: list[Placed] = field(default_factory=list)
     i2c: tuple[list[Placed], list[Placed]] = field(default_factory=lambda: ([], []))
-    uart1: Placed | None = None
+    uart: dict[int, Placed] = field(default_factory=dict)    # by UART number
     gpio: list[Placed] = field(default_factory=list)
     source: str = ""                        # the file's text, kept with a device
 
     def parts(self) -> list[Placed]:
         return (self.spi + self.i2c[0] + self.i2c[1] + self.gpio
-                + ([self.uart1] if self.uart1 else []))
+                + list(self.uart.values()))
 
     def screen(self) -> Placed | None:
         return next((p for p in self.spi if CATALOGUE[p.part].screen), None)
@@ -139,7 +166,7 @@ class _Reader:
 
     def read(self, data: dict) -> Description:
         self.only(data, "the description", ("name", "chip", "spi2", "i2c0", "i2c1",
-                                           "uart1", "gpio"))
+                                           "uart1", "uart2", "gpio"))
         name = data.get("name")
         if not isinstance(name, str) or not name.strip():
             self.fail("`name` is required: what the board is called")
@@ -176,9 +203,12 @@ class _Reader:
                 seen[p.address] = p.part
             desc.i2c[bus].extend(placed)
 
-        uart = self.table(data, "uart1")
-        if uart:
-            desc.uart1 = self.part(uart, "uart1", "[uart1]")
+        for number in UARTS:
+            uart = self.table(data, f"uart{number}")
+            if uart:
+                desc.uart[number] = self.part(uart, "uart", f"[uart{number}]")
+        if sum(CATALOGUE[p.part].receiver for p in desc.uart.values()) > 1:
+            self.fail("two satellite receivers; a board has one")
 
         gpio = self.table(data, "gpio")
         self.only(gpio, "[gpio]", ("parts",))
@@ -290,6 +320,7 @@ def build(desc: Description, outdir: Path, air: str | None = None,
                        timed=bool(air_boards)) if air else None
 
     panel = None
+    held_high: list[int] = []               # lines that rest high from power-on
     spi_parts: dict[int, object] = {}
     spec = f"esp-spi-master,name=spi2,base=0x{chip.SPI2_BASE:x},"
     lines: list[str] = []
@@ -302,6 +333,13 @@ def build(desc: Description, outdir: Path, air: str | None = None,
             panel = St7789Panel(outdir / "frames")
             panel.writer = FrameWriter()
             backlight_pin = placed.pins.get("backlight")
+            spi_parts[slot] = panel
+        elif placed.part == "epaper":
+            panel = EPaperPanel(outdir / "frames",
+                                quarter_turns=int(os.environ.get("BOARDEMUL_ROTATE", "0")))
+            panel.writer = FrameWriter()
+            # Its BUSY idles high; the board sets it, not the SPI master.
+            held_high.append(placed.pins["busy"])
             spi_parts[slot] = panel
         elif placed.part == "sx1262":
             irq = placed.pins.get("irq")
@@ -317,7 +355,7 @@ def build(desc: Description, outdir: Path, air: str | None = None,
             size = int(placed.options.get("size_mb", SD_CARD_MB))
             spi_parts[slot] = SdCard(sdimage.build(size_mb=size))
         for line in ("busy", "reset", "irq"):
-            if line in placed.pins:
+            if line in placed.pins and not kind.screen:
                 lines.append(f"{line}{SUFFIX[slot]}_gpio={placed.pins[line]}")
         if kind.drives_miso:
             miso_mask |= 1 << slot
@@ -341,15 +379,34 @@ def build(desc: Description, outdir: Path, air: str | None = None,
                 made.append(TDeckKeyboard(address=placed.address))
             elif placed.part == "es7210":
                 made.append(Es7210(address=placed.address))
+            elif placed.part == "bhi260ap":
+                made.append(BHI260AP(placed.address, clock=clock.seconds))
+            else:
+                made.append(MAX_I2C[placed.part](placed.address))
         buses.append(I2CServer(outdir / f"i2c{bus}.sock", made, name=f"i2c{bus}"))
 
-    receiver = None
-    if desc.uart1 is not None and desc.uart1.part == "l76k" and gps:
-        # Only when the run says where the board is, as on the T-Deck (ADR 0052).
-        receiver = SerialServer(outdir / "gps.sock",
-                                L76K(latitude=gps[0], longitude=gps[1],
-                                     altitude_m=gps[2], clock=clock.seconds),
-                                name="gps")
+    receiver, receiver_uart, modem, modem_uart = None, 1, None, 1
+    for number, placed in desc.uart.items():
+        if placed.part == "l76k" and gps:
+            # Only when the run says where the board is, as on the T-Deck (ADR 0052).
+            receiver = SerialServer(outdir / "gps.sock",
+                                    L76K(latitude=gps[0], longitude=gps[1],
+                                         altitude_m=gps[2], clock=clock.seconds),
+                                    name="gps")
+            receiver_uart = number
+        elif placed.part == "ublox-m10":
+            # Built in, so always there; indoors, with no fix, without --gps
+            # (ADR 0105).
+            receiver = SerialServer(
+                outdir / "gps.sock",
+                UBloxM10(latitude=gps[0] if gps else None,
+                         longitude=gps[1] if gps else None,
+                         altitude_m=gps[2] if gps else 0.0, clock=clock.seconds),
+                name="gps")
+            receiver_uart = number
+        elif placed.part == "a7682e":
+            modem = SerialServer(outdir / "modem.sock", A7682E(), name="modem")
+            modem_uart = number
 
     regions: list[Region] = [chip._claim(n, b) for n, b in chip.UNMODELLED.items()]
     for name, (base, size) in chip.EXTRA_REGIONS.items():
@@ -386,8 +443,11 @@ def build(desc: Description, outdir: Path, air: str | None = None,
                               outdir / f"{air_name or outdir.name}.otg.log")
     board = DescribedBoard(regions=regions, gpio=gpio, spi=spi, i2c0=buses[0],
                            i2c1=buses[1], panel=panel or _NoScreen(), gps=receiver,
+                           gps_uart=receiver_uart, modem=modem,
                            devices=devices, frames=frames, clock=clock, usb_otg=usb)
     board.description = desc
+    board.held_high = held_high
+    board.modem_uart = modem_uart
     parts = [d for b in buses for d in b.devices.values()]
     board.touch = next((d for d in parts if isinstance(d, GT911)), None)
     board.keypad = next((d for d in parts if isinstance(d, TDeckKeyboard)), None)
@@ -410,10 +470,35 @@ class DescribedBoard(Board):
         self.i2c1.start()
         if self.gps:
             self.gps.start()
+        if self.modem:
+            self.modem.start()
         if self.frames:
             self.frames.start()
         if self.usb_otg is not None:
             self.usb_otg.start()
+        # Set before QEMU connects; the client replays them on connect.
+        for pin in getattr(self, "held_high", ()):
+            self.gpio.drive(pin, 1)
+
+    def qemu_args(self) -> list[str]:
+        """The hand-written boards' arguments, with each serial part on the
+        UART its description names."""
+        args: list[str] = []
+        for spec in self.devices:
+            args += ["-device", spec]
+        if self.clock:
+            args += ["-device", self.clock.device()]
+        if self.usb_otg is not None:
+            args += self.usb_otg.qemu_args()
+        uarts: dict[int, SerialServer] = {}
+        if self.gps:
+            uarts[self.gps_uart] = self.gps
+        if self.modem:
+            uarts[getattr(self, "modem_uart", 1)] = self.modem
+        for number in range(1, max(uarts, default=0) + 1):
+            link = uarts.get(number)
+            args += ["-serial", f"unix:{link.socket_path}" if link else "null"]
+        return args
 
     def not_wired(self) -> list[str]:
         """What the firmware talked to that the description does not wire
@@ -429,8 +514,16 @@ def module(desc: Description) -> SimpleNamespace:
     screen = desc.screen()
     touch = next((p for bus in desc.i2c for p in bus if p.part == "gt911"), None)
     trackball = next((p for p in desc.gpio if p.part == "tdeck-trackball"), None)
+    max_touch = next((p for bus in desc.i2c for p in bus if p.part == "cst328"), None)
+    max_keys = any(p.part == "tca8418" for bus in desc.i2c for p in bus)
 
     def attach(server, board, outdir):
+        if (max_touch or max_keys) and not (touch or trackball):
+            # The Max's parts take input the Max's way (ADRs 0010, 0131).
+            from emu import board as max_board
+            return max_board.attach_input(
+                server, board, outdir,
+                touch_int=max_touch.pins.get("irq") if max_touch else None)
         return chip.attach_input(
             server, board, outdir,
             touch_int=touch.pins.get("irq") if touch else None,

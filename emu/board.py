@@ -454,7 +454,8 @@ def build(outdir: Path, air: str | None = None, ble_air: str | None = None,
                  frames=frames, devices=devices, usb_otg=usb)
 
 
-def attach_input(server: BusServer, board: Board, outdir: Path) -> InputTail:
+def attach_input(server: BusServer, board: Board, outdir: Path,
+                 touch_int: int | None = TOUCH_INT_PIN) -> InputTail:
     """Route host input events to the devices that report them.
 
     The touch controller waits on a GPIO interrupt rather than polling, so
@@ -463,8 +464,13 @@ def attach_input(server: BusServer, board: Board, outdir: Path) -> InputTail:
     interrupt line at all (ADR 0010).
     """
     tail = InputTail(Path(outdir) / "input.jsonl")
-    keypad = board.i2c0.devices.get(0x34)
-    touch = board.i2c0.devices.get(0x1A)
+    # By kind on either bus: a board description may put them elsewhere
+    # (ADR 0184); on this board they are 0x34 and 0x1a on i2c0.
+    parts = [d for bus in (board.i2c0, board.i2c1) for d in bus.devices.values()]
+    keypad = next((d for d in parts if isinstance(d, TCA8418)), None)
+    touch = next((d for d in parts if isinstance(d, CST328)), None)
+    if touch_int is None:
+        touch = None            # wired to no pin, it cannot interrupt
 
     def pump() -> None:
         for event in tail.drain():
@@ -477,12 +483,12 @@ def attach_input(server: BusServer, board: Board, outdir: Path) -> InputTail:
                 down = bool(event.get("down", True))
                 touch.touch = ((int(event.get("x", 0)), int(event.get("y", 0)))
                                if down else None)
-                board.gpio.pulse_low(TOUCH_INT_PIN)
+                board.gpio.pulse_low(touch_int)
             elif kind == "touchkey" and isinstance(touch, CST328):
                 # A glass touch key reports through the same controller and
                 # the same INT line as a finger (ADR 0131).
                 touch.key = (int(event.get("key", 0)), bool(event.get("down", True)))
-                board.gpio.pulse_low(TOUCH_INT_PIN)
+                board.gpio.pulse_low(touch_int)
             elif kind == "serial":
                 # Typed into a serial port (ADR 0156).
                 serial = getattr(board, "serial_in", None)
@@ -501,7 +507,7 @@ def attach_input(server: BusServer, board: Board, outdir: Path) -> InputTail:
             if isinstance(touch, CST328) and (
                     touch.touch is not None
                     or (touch.key is not None and touch.key[1])):
-                board.gpio.pulse_low(TOUCH_INT_PIN)
+                board.gpio.pulse_low(touch_int)
             time.sleep(period)
 
     threading.Thread(target=ticker, name="input", daemon=True).start()

@@ -67,3 +67,34 @@ def test_its_parts_answer_where_the_description_puts_them(booted: Run) -> None:
     not_wired = _manifest(booted)["not_wired"]
     for address in ("0x5d", "0x55", "0x40"):
         assert f"i2c0 {address}" not in not_wired, not_wired
+
+
+# -- the T-Deck Max, described ----------------------------------------------
+
+from tests.support import FIRMWARE as FIRMWARE_MAX, region_digest  # noqa: E402
+
+TDECK_MAX = TDECK.with_name("tdeck-max.toml")
+GOLDEN = Path(__file__).resolve().parent / "golden"
+SETTING_ICON = (120, 75)    # as tests/test_boot.py taps it
+
+
+@pytest.fixture(scope="module")
+def max_tapped(tmp_path_factory) -> Run:
+    if not FIRMWARE_MAX.exists():
+        pytest.skip("T-Deck Max vendor firmware not present")
+    if not qemu_available():
+        pytest.skip("no qemu-system-xtensa; run tools/build_qemu.sh")
+    return run_emulator(tmp_path_factory.mktemp("described-max"),
+                        firmware=FIRMWARE_MAX, board=str(TDECK_MAX),
+                        tap=SETTING_ICON, wait_frames=3)
+
+
+def test_the_described_max_draws_its_launcher_and_opens_settings(max_tapped: Run) -> None:
+    """The hand-written Max's golden frames, on the described one: the e-paper
+    draws the launcher, and a tap through the CST328 on its described line
+    opens settings (tests/test_boot.py)."""
+    assert "ictype:[328]" in max_tapped.uart
+    assert "Guru Meditation" not in max_tapped.uart
+    digests = max_tapped.digests()
+    assert region_digest(GOLDEN / "launcher.png") in digests, digests
+    assert region_digest(GOLDEN / "settings.png") in digests, digests
