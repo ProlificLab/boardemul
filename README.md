@@ -63,6 +63,35 @@ In a GitHub workflow:
 Devices count their time in instructions, so a firmware keeps a board's
 timing whatever the host is doing (ADR 0178).
 
+## Scenarios
+
+A test that is a sequence -- wait for this line, tap there, wait for that
+picture -- can be a TOML file instead of Python (ADR 0185):
+
+```toml
+[[device]]
+build = ".pio/build/t-deck"
+board = "tdeck"
+
+[[step]]
+expect = "setup done"           # a line on the serial port
+port = "usb"
+timeout = 120
+
+[[step]]
+tap = [120, 80]
+
+[[step]]
+screen = "golden/menu.png"      # wait for a frame that matches
+timeout = 30
+```
+
+`boardemul scenario checks/menu.toml` runs it, says each step as it
+passes, stops at the first that does not, and answers 0 or 1. The steps
+are `expect`, `send`, `tap`, `key`, `type`, `wait`, `screen`, `pixel` and
+`save_screen`; several `[[device]]` entries share one LoRa air, and each
+step names its `device`.
+
 ## Your own board
 
 A board of your own, built from an ESP32-S3 and parts BoardEmul already

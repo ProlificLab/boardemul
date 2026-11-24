@@ -13,6 +13,14 @@ What changed for someone running BoardEmul, newest first. The reasons are in
   to that the description does not wire. Both boards are written as
   descriptions, `emu/boards/tdeck.toml` and `emu/boards/tdeck-max.toml`,
   and each boots its vendor firmware as its hand-written board does (0184).
+- Scenarios: a TOML file of devices and steps (wait for a serial line,
+  send one, tap, press keys, type, wait for a picture or a pixel, keep a
+  frame), run by `boardemul scenario FILE` (0185).
+
+**Fixed**
+- `Serial.expect` could miss a line for good when it read the log while
+  the guest was writing that line; the page serves only whole lines now
+  (0182).
 
 ## 0.1.0 — 2026-11-24
 
