@@ -16,6 +16,10 @@ What changed for someone running BoardEmul, newest first. The reasons are in
 - Scenarios: a TOML file of devices and steps (wait for a serial line,
   send one, tap, press keys, type, wait for a picture or a pixel, keep a
   frame), run by `boardemul scenario FILE` (0185).
+- WiFi in the library: `Device.start(wifi=WiFi("lab", password=...,
+  forward={8080: 80}))` gives a device a network to join, and
+  `Device.http("/status")` asks the firmware's own server through the
+  forwarded port; a scenario has `[device.wifi]` and an `http` step (0182).
 
 **Fixed**
 - `Serial.expect` could miss a line for good when it read the log while

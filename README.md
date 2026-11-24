@@ -89,8 +89,24 @@ timeout = 30
 `boardemul scenario checks/menu.toml` runs it, says each step as it
 passes, stops at the first that does not, and answers 0 or 1. The steps
 are `expect`, `send`, `tap`, `key`, `type`, `wait`, `screen`, `pixel` and
-`save_screen`; several `[[device]]` entries share one LoRa air, and each
-step names its `device`.
+`save_screen`, and `http` for a server the firmware runs over WiFi; several
+`[[device]]` entries share one LoRa air, and each step names its `device`.
+
+A device joins a network when it is given one, in Python
+(`node.start(wifi=WiFi("lab", password="correct horse", forward={8080: 80}))`,
+then `node.http("/status")`) or in a scenario:
+
+```toml
+[device.wifi]
+name = "lab"
+password = "correct horse"
+forward = [[8080, 80]]          # the host's 8080 is the device's 80
+
+[[step]]
+http = "/status"
+body = "ok"                     # the reply must match
+timeout = 600
+```
 
 ## Your own board
 
