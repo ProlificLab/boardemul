@@ -238,7 +238,13 @@ def create(devices: Path, name: str, firmware: Path, board: str = "tdeck-max",
             # (ADR 0150); the device records it among its overlays.
             from tools.fetch_firmware import companion_overlays
             overlays = tuple(companion_overlays(firmware)[0])
-        flash, efuse = build(firmware, root, mac, list(overlays))
+        try:
+            flash, efuse = build(firmware, root, mac, list(overlays))
+        except SystemExit as exc:
+            # mkflash says why on its output and refuses with SystemExit; a
+            # page or a tool asking for a device gets a reason, not an exit.
+            raise DeviceError(f"{firmware.name} is not an image this can flash: "
+                              f"{exc}") from None
         if description is not None:
             board = description.name
             (root / BOARD_FILE).write_text(description.source, encoding="utf-8")
