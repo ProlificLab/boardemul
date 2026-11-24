@@ -3,7 +3,7 @@
 What changed for someone running BoardEmul, newest first. The reasons are in
 `docs/adr/`, numbered as below.
 
-## Unreleased
+## 0.1.0 — 2026-11-24
 
 **For firmware developers**
 - Test your own build from Python: `boardemul.Lab` makes devices from a
