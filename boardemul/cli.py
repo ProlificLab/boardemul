@@ -33,7 +33,8 @@ def test(argv: list[str]) -> int:
     ap.add_argument("--build", required=True,
                     help="the build folder: firmware.bin, and its filesystem and "
                          "partitions.bin if it has one (a PlatformIO .pio/build/ENV)")
-    ap.add_argument("--board", default="tdeck", help="tdeck or tdeck-max")
+    ap.add_argument("--board", default="tdeck",
+                    help="tdeck, tdeck-max, or a board description, NAME.toml (ADR 0184)")
     ap.add_argument("--devices", type=int, default=1,
                     help="how many devices run the build; more than one share an air")
     ap.add_argument("--name", default="dut", help="the devices' name, numbered if several")

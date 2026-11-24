@@ -25,7 +25,7 @@ inputs:
     description: The test command, run once the devices have started
     required: true
   board:
-    description: tdeck or tdeck-max
+    description: tdeck, tdeck-max, or the path of a board description (NAME.toml)
     default: tdeck
   devices:
     description: How many devices run the build; more than one share a LoRa air

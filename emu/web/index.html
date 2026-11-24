@@ -608,7 +608,7 @@ function renderDetail() {
     ["settings", (d.settings || []).join(" ") || "none"],
     ...(d.cloned_from ? [["cloned from", d.cloned_from]] : []),
   ].map(([k, v]) => `<tr><td>${k}</td><td>${escapeHtml(String(v))}</td></tr>`).join("");
-  $("d-face").src = `/api/skin/${d.board}.png`;
+  $("d-face").src = `/api/skin/${d.look || d.board}.png`;
   renderStorage(d);
 }
 
@@ -921,7 +921,7 @@ async function start(name) {
   try {
     const r = await api(`/api/devices/${encodeURIComponent(name)}/start`,
                         { method: "POST" });
-    showRun(r.id, r.board);
+    showRun(r.id, r.look || r.board);
   } catch (err) {
     snack(`${name} did not start: ${err.message || err}`);
     checkMachine();
@@ -929,7 +929,7 @@ async function start(name) {
 }
 function openRun(name) {
   const d = devices.find(x => x.name === name);
-  if (d) showRun(name, d.board);
+  if (d) showRun(name, d.look || d.board);
 }
 async function showRun(id, board) {
   current = id;

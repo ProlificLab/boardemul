@@ -73,6 +73,12 @@ BROWSER_KEYSYMS = {"Enter": "Return", "Backspace": "BackSpace",
                    "Control": "Control_L", "Alt": "Alt_L", " ": "space"}
 
 
+def look(device) -> str:
+    """Which board's face and keys a device wears: its own, or the T-Deck's
+    for a described board, whose parts are the T-Deck's (ADR 0184)."""
+    return "tdeck" if device.board_file.is_file() else device.board
+
+
 class KeyBridge:
     """Host key events in, device key events out, for one run."""
 
@@ -143,14 +149,16 @@ class ServerState:
                 # Idempotent: starting a running device opens it, however
                 # many times the button is pressed.
                 return {"id": name, "outdir": str(existing.outdir),
-                        "board": existing.device.board}
+                        "board": existing.device.board,
+                        "look": look(existing.device)}
             device = device_folder.load(device_folder.folder(self.devices, name))
             handle = device_folder.RunHandle(device, extra=extra)
             handle.start()
             self.runs[name] = handle
             self.writers[name] = InputWriter(handle.outdir / "input.jsonl")
-            self.bridges[name] = KeyBridge(device.board, self.writers[name])
-        return {"id": name, "outdir": str(handle.outdir), "board": device.board}
+            self.bridges[name] = KeyBridge(look(device), self.writers[name])
+        return {"id": name, "outdir": str(handle.outdir), "board": device.board,
+                "look": look(device)}
 
     def stop(self, name: str) -> None:
         with self.lock:
@@ -279,6 +287,7 @@ def device_json(device) -> dict:
     return {
         "name": device.name,
         "board": device.board,
+        "look": look(device),
         "firmware": Path(device.firmware).name,
         "mac": device.mac,
         "storage": _storage(device),
@@ -677,11 +686,24 @@ class Handler(BaseHTTPRequestHandler):
         if device_folder.folder(self.server.state.devices,
                                 body.get("name", "")).exists():
             raise Conflict(f"{body.get('name')!r} already exists")
+        description = None
+        if body.get("board_description"):
+            # A board its user described, as the file's text (ADR 0184).
+            from emu import described
+            try:
+                description = described.parse(str(body["board_description"]),
+                                              where="the board description")
+            except described.DescriptionError as exc:
+                return self._json({"error": str(exc)}, 400)
+        elif body.get("board", "tdeck-max") not in ("tdeck-max", "tdeck"):
+            return self._json({"error": f"no board {body.get('board')!r}: tdeck-max, "
+                                        "tdeck, or a board_description"}, 400)
         device = device_folder.create(
             self.server.state.devices, body.get("name", ""),
             Path(firmware), board=body.get("board", "tdeck-max"),
             psram_octal=bool(body.get("psram_octal", False)),
-            overlays=tuple(body.get("overlays", ())))
+            overlays=tuple(body.get("overlays", ())),
+            description=description)
         # It restarts after a panic, as the board does (ADR 0145, decision 6).
         device = device_folder.set_settings(device, device_folder.OPERATOR_SETTINGS)
         self._json(device_json(device), 201)

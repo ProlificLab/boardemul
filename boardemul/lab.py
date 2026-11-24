@@ -125,9 +125,12 @@ class Lab:
             time.sleep(0.5)
         raise Timeout(f"no page answered at {self.url} in {timeout:.0f} s")
 
-    def device(self, name: str, build: str | Path | Build, board: str = "tdeck",
+    def device(self, name: str, build: str | Path | Build, board: str | Path = "tdeck",
                settings: tuple[str, ...] = ()) -> "Device":
-        """A device made from `build`, replacing one of that name."""
+        """A device made from `build`, replacing one of that name.
+
+        `board` is tdeck, tdeck-max, or the path of a board description,
+        NAME.toml (ADR 0184)."""
         build = build if isinstance(build, Build) else Build.from_dir(build)
         existing = {d["name"] for d in self.api.ok("GET", "/api/devices")["devices"]}
         if name in existing:
@@ -138,7 +141,7 @@ class Lab:
         if build.filesystem is not None:
             path = self._upload(build.filesystem)
             overlays.append(f"0x{build.filesystem_offset:x}={path}")
-        made = self.api.ok("POST", "/api/devices", {"name": name, "board": board,
+        made = self.api.ok("POST", "/api/devices", {"name": name, **_board(board),
                                                      "firmware": application,
                                                      "overlays": overlays})
         if settings:
@@ -362,3 +365,14 @@ def decode_png(data: bytes) -> tuple[int, int, int, bytes]:
         out += line
         previous = line
     return width, height, channels, bytes(out)
+
+
+def _board(board: str | Path) -> dict:
+    """The board as the page's API takes it: a name, or a description's text."""
+    if isinstance(board, Path) or str(board).endswith(".toml"):
+        path = Path(board)
+        try:
+            return {"board_description": path.read_text(encoding="utf-8")}
+        except OSError as exc:
+            raise LabError(f"no board description at {path}: {exc.strerror or exc}") from None
+    return {"board": str(board)}

@@ -120,6 +120,28 @@ def test_firmware_upload_then_create_then_list(server):
     assert [d["name"] for d in listing["devices"]] == ["pocket"]
 
 
+def test_a_device_from_a_board_description(server):
+    """The page makes a device from a description's text: the folder keeps
+    it, the board is its name, and it wears the T-Deck's face (ADR 0184)."""
+    client, devices, _s = server
+    _s2, body, _h = call(client, "POST", "/api/firmware?name=demo.bin", FIRMWARE_BYTES)
+    text = 'name = "tracker"\n[[i2c0.parts]]\npart = "es7210"\n'
+    status, made, _h = call(client, "POST", "/api/devices", {
+        "name": "t1", "board_description": text, "firmware": body["path"]})
+    assert status == 201, made
+    assert made["board"] == "tracker" and made["look"] == "tdeck"
+    assert (devices / "t1" / "board.toml").read_text() == text
+    assert not (devices / "t1" / "sdcard.img").exists()     # it wires no card
+
+    status, refused, _h = call(client, "POST", "/api/devices", {
+        "name": "t2", "board_description": 'name = "x"\nchip = "esp32"',
+        "firmware": body["path"]})
+    assert status == 400 and "esp32s3 only" in refused["error"]
+    status, refused, _h = call(client, "POST", "/api/devices", {
+        "name": "t3", "board": "tdeck-mini", "firmware": body["path"]})
+    assert status == 400 and "tdeck-mini" in refused["error"]
+
+
 def test_creating_a_duplicate_conflicts(server):
     client, devices, _s = server
     path = _up(client, devices)
