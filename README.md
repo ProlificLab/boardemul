@@ -63,6 +63,38 @@ In a GitHub workflow:
 Devices count their time in instructions, so a firmware keeps a board's
 timing whatever the host is doing (ADR 0178).
 
+## Your own board
+
+A board of your own, built from an ESP32-S3 and parts BoardEmul already
+models, is a TOML file that says which part is on which pins (ADR 0184).
+`emu/boards/tdeck.toml` is the T-Deck written that way; copy it and change
+it:
+
+```toml
+name = "my-tracker"
+chip = "esp32s3"
+
+[[spi2.parts]]
+part = "sx1262"
+cs = 9
+busy = 13
+reset = 17
+irq = 45
+
+[uart1]
+part = "l76k"
+```
+
+The catalogue: `st7789` (screen), `sx1262` (LoRa radio) and `sdcard` on
+`spi2`, three at most; `gt911` (touch), `tdeck-keyboard` and `es7210`
+(microphone codec) on `i2c0` or `i2c1`; `l76k` (GPS) on `uart1`; and
+`tdeck-trackball` on plain pins. Pass the file wherever a board goes:
+`lab.device("node", build=..., board="my-tracker.toml")`,
+`boardemul test --board my-tracker.toml`, or `--board` to `emu/run.py`. A
+mistyped key or a pin used twice is refused with what is wrong. At the end
+of a run, "not wired" lists what the firmware talked to that the
+description leaves empty.
+
 Developing the emulator itself uses the development image and builds QEMU
 into `third_party/` (ADR 0147):
 

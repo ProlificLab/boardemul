@@ -3,6 +3,16 @@
 What changed for someone running BoardEmul, newest first. The reasons are in
 `docs/adr/`, numbered as below.
 
+## Unreleased
+
+**For firmware developers**
+- Describe your own board: a TOML file names an ESP32-S3 and which of
+  BoardEmul's parts are on which pins, and every way of making a device
+  takes it (the library, `boardemul test`, the page's API,
+  `tools/device.py`, `emu/run.py`). A run lists what the firmware talked
+  to that the description does not wire. The T-Deck, written as one, boots
+  its vendor firmware as the hand-written board does (0184).
+
 ## 0.1.0 — 2026-11-24
 
 **For firmware developers**
