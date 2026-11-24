@@ -108,6 +108,9 @@ body = "ok"                     # the reply must match
 timeout = 600
 ```
 
+`examples/wifi-http` is a whole one: a PlatformIO project whose firmware
+joins WiFi and serves `/status`, and `check.toml`, which tests it.
+
 ## Your own board
 
 A board of your own, built from an ESP32-S3 and parts BoardEmul already

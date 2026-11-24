@@ -88,3 +88,25 @@ gives a device `[device.wifi]` and has an `http` step (ADR 0185). The
 forwarding itself was shown end to end with Meshtastic's TCP API in ADR
 0164; the library's part is tested against a real HTTP server on the
 host. Bluetooth is still not in the library.
+
+## Amendment — 2026-11-24: a PlatformIO build is placed as a flash is
+
+The first firmware built for an example (`examples/wifi-http`, `pio run`)
+was refused: a PlatformIO build's `firmware.bin` is the application alone,
+with `bootloader.bin` and `partitions.bin` beside it, and the emulator
+flashes a whole image. Every earlier check had used a vendor's merged image
+under that name. `Build.from_dir` now places the three as a flash is
+written when they are all there and `firmware.bin` holds no partition
+table: the bootloader at 0x0 (the ESP32-S3's), the table at 0x8000, the
+application at its first application partition. The image is made once
+per content in the system's temporary folder, not in the build folder. A
+refused image is now a device error the page answers with, where the
+refusal used to end the request without a reply.
+
+Measured on the same example, with this and the WiFi of the amendment
+above: the firmware joined the scenario's network and answered
+`GET /status` through the forwarded port in 0.2 s. It did so only with
+its modem sleep off. A station in modem sleep is not woken for the frames
+the access point holds for it (ADR 0109), so it never gets its replies;
+that is the emulator's to fix, and the example keeps its radio awake until
+it is.
