@@ -22,12 +22,6 @@ void setup() {
     Serial.begin(115200);
     Serial.println("wifi-http: joining " WIFI_NAME);
     WiFi.mode(WIFI_STA);
-    // BoardEmul does not yet wake a station in modem sleep for the frames
-    // its access point holds (the default on Arduino), so replies are lost;
-    // until it does, keep the radio awake. See CHANGELOG, "Known limits".
-#ifndef BOARDEMUL_MODEM_SLEEP
-    WiFi.setSleep(false);
-#endif
     WiFi.begin(WIFI_NAME, WIFI_PASSWORD);
     while (WiFi.status() != WL_CONNECTED) {
         delay(250);

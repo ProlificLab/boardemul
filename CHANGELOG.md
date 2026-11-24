@@ -12,15 +12,15 @@ What changed for someone running BoardEmul, newest first. The reasons are in
   now only a merged image under that name was accepted (0182).
 - An image BoardEmul cannot flash is refused with the reason, where the
   page used to close the request without a reply.
+- A firmware whose WiFi is in modem sleep, Arduino's default, gets its
+  replies: the station's clock (TSF), its target beacon times and their
+  interrupt are modelled, beacons carry the access point's time and come on
+  its target beacon times, and a joined station hears its access point's
+  beacons (0186).
 
 **Examples**
 - `examples/wifi-http`: a firmware that joins WiFi and serves HTTP, and
   `check.toml`, the scenario that tests it without the board.
-
-**Known limits**
-- A firmware whose WiFi is in modem sleep, Arduino's default, does not get
-  its replies: the emulator does not yet wake it for the frames its access
-  point holds. Turn it off (`WiFi.setSleep(false)`) to test on BoardEmul.
 
 ## 0.2.0 — 2026-11-24
 
