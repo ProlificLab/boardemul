@@ -856,6 +856,11 @@ class Handler(BaseHTTPRequestHandler):
         except OSError:
             return self._json({"lines": [], "total": 0})
         lines = text.splitlines()
+        if lines and text[-1] not in "\r\n" and handle.alive:
+            # A line still being written is not a line yet. Counted now, it
+            # was skipped once whole: a reader asks for what comes after the
+            # lines it has, and `expect` missed "SX126x init result 0" so.
+            lines.pop()
         return self._json({"lines": lines[after:], "total": len(lines)})
 
 

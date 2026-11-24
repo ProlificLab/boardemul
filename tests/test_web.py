@@ -691,6 +691,15 @@ def test_the_console_reads_either_port_and_takes_typing(server):
     assert call(client, "GET", "/api/runs/pocket/uart?port=usb")[1]["lines"] == ["hwcdc says hi"]
     assert call(client, "GET", "/api/runs/pocket/uart")[1]["lines"] == ["rom"]
     assert call(client, "GET", "/api/runs/pocket/uart?port=jtag")[0] == 400
+
+    # A line still being written is not served until it is whole, so a
+    # reader that asks for what follows the lines it has never skips it.
+    (outdir / "pocket.otg.log").write_text("boot\nSX126x init re")
+    first = call(client, "GET", "/api/runs/pocket/uart?port=otg&after=0")[1]
+    assert first == {"lines": ["boot"], "total": 1}
+    (outdir / "pocket.otg.log").write_text("boot\nSX126x init result 0\n")
+    later = call(client, "GET", "/api/runs/pocket/uart?port=otg&after=1")[1]
+    assert later["lines"] == ["SX126x init result 0"]
     status, _b, _h = call(client, "POST", "/api/runs/pocket/input",
                           {"events": [{"type": "serial", "port": "usb", "text": "ls\n"}]})
     assert status == 200

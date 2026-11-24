@@ -65,3 +65,13 @@ the offset of its data partition.
 
 - A test pays an HTTP round trip per call, and polls for what it waits on.
 - WiFi and Bluetooth are not in the library yet (ADR 0180).
+
+## Amendment — 2026-11-24: only whole lines are served
+
+A scenario run (ADR 0185) waited 900 s for `SX126x init result 0` that the
+device's OTG log held at line 201. The page counted a serial log's lines
+with `splitlines()` while the guest was still writing the last one, so a
+partial line counted; `expect` then asked for the lines after it, and the
+line, once whole, was behind it for good. It depended on when the read
+fell, which is why it failed one boot in two or three. While a run is
+alive the page now serves only the lines a newline ends.
