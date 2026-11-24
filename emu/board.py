@@ -472,13 +472,40 @@ def attach_input(server: BusServer, board: Board, outdir: Path,
     if touch_int is None:
         touch = None            # wired to no pin, it cannot interrupt
 
+    # A key is held for as long as the host held it, on the guest's clock
+    # (ADR 0187): the press goes in at once and the release when the guest
+    # has run that long. V3.1 types a digit per scan of a held key, so a
+    # hold the guest saw shorter or longer typed another password.
+    pressed: dict[str, tuple[float, float]] = {}   # key -> (guest, wall) at press
+    releases: list[tuple[float, str]] = []         # (guest due, key)
+
+    def guest_now() -> float | None:
+        return board.clock.seconds() if board.clock is not None else None
+
+    def release_due() -> None:
+        now = guest_now()
+        for due, name in list(releases):
+            if now is None or now >= due:
+                releases.remove((due, name))
+                keypad.key_event(name, False)
+
     def pump() -> None:
         for event in tail.drain():
             kind = event.get("type")
             if kind == "key" and isinstance(keypad, TCA8418):
-                if not keypad.key_event(str(event.get("key", "")),
-                                        bool(event.get("down", True))):
-                    log.warning("no key mapping for %r", event.get("key"))
+                name = str(event.get("key", ""))
+                down = bool(event.get("down", True))
+                guest = guest_now()
+                if down:
+                    if not keypad.key_event(name, True):
+                        log.warning("no key mapping for %r", name)
+                    elif guest is not None:
+                        pressed[name] = (guest, time.monotonic())
+                elif name in pressed:
+                    at_guest, at_wall = pressed.pop(name)
+                    releases.append((at_guest + (time.monotonic() - at_wall), name))
+                else:
+                    keypad.key_event(name, False)
             elif kind == "touch" and isinstance(touch, CST328):
                 down = bool(event.get("down", True))
                 touch.touch = ((int(event.get("x", 0)), int(event.get("y", 0)))
@@ -504,6 +531,8 @@ def attach_input(server: BusServer, board: Board, outdir: Path,
         period = 1.0 / TOUCH_REPORT_HZ
         while not tail._stop.is_set():
             pump()
+            if releases:
+                release_due()
             if isinstance(touch, CST328) and (
                     touch.touch is not None
                     or (touch.key is not None and touch.key[1])):

@@ -17,6 +17,10 @@ What changed for someone running BoardEmul, newest first. The reasons are in
   interrupt are modelled, beacons carry the access point's time and come on
   its target beacon times, and a joined station hears its access point's
   beacons (0186).
+- A key held on the T-Deck Max is held for the same time on the guest's
+  clock, so what is typed is what the firmware gets; the Max's WiFi join
+  from its own screen typed a wrong passphrase on the instruction-counted
+  clock (0187).
 
 **Examples**
 - `examples/wifi-http`: a firmware that joins WiFi and serves HTTP, and
