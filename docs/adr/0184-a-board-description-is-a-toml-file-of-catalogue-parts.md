@@ -57,7 +57,8 @@ already a NACK, counted per bus (`emu/i2c_link.py`).
 
    Up to three parts on `spi2`, at most one of them a screen; any number on
    `i2c0` and `i2c1`, at their catalogue address unless `address` says
-   another; one on `uart1`; and `[[gpio.parts]]` for parts on plain pins
+   another; one on `uart1` and one on `uart2`, of which at most one is a
+   satellite receiver; and `[[gpio.parts]]` for parts on plain pins
    (the trackball). A pin is a number from 0 to 48. Two parts on one
    select, two on one address, or one pin given two jobs is refused, and so
    is any key a part does not take: a description is read strictly,
@@ -65,19 +66,26 @@ already a NACK, counted per bus (`emu/i2c_link.py`).
 
 2. **The catalogue is what the two boards are built from**, each part with
    the bus it sits on, the pins it takes and which of them it needs:
-   `st7789`, `sx1262`, `sdcard`, `gt911`, `tdeck-keyboard`, `es7210`,
-   `l76k` and `tdeck-trackball` first, which are the T-Deck's; the Max's
-   parts join it as its description is written. A part's behaviour is its
-   model's, unchanged.
+   the T-Deck's `st7789`, `sx1262`, `sdcard`, `gt911`, `tdeck-keyboard`,
+   `es7210`, `l76k` and `tdeck-trackball`, and the Max's `epaper`,
+   `es8311`, `cst328`, `xl9555`, `bhi260ap`, `tca8418`, `bq27220`,
+   `drv2605`, `sy6970`, `ublox-m10` and `a7682e`. A part's behaviour is its
+   model's, unchanged; an e-paper's BUSY line rests high from power-on, as
+   on the Max, and the Max's touch controller and keyboard take input the
+   Max's way.
 
 3. **The chip is the T-Deck's**: a described board gets the same windows,
    WiFi, Bluetooth, I2S and USB as the T-Deck, which is the board that
    modelled the chip most completely.
 
-4. **The T-Deck is written as a description** (`boards/tdeck.toml`), and a
-   test holds that it builds the same QEMU devices and the same parts on
-   the same selects and addresses as `emu/board_tdeck.py`. That is what
-   keeps the described path honest, until the module can be retired.
+4. **Both boards are written as descriptions** (`emu/boards/tdeck.toml`,
+   `emu/boards/tdeck-max.toml`). A test holds that the T-Deck's builds the
+   same QEMU devices and the same parts on the same selects and addresses
+   as `emu/board_tdeck.py`, and that the Max's has `emu/board.py`'s parts,
+   selects, addresses and UARTs; its chip windows are the T-Deck's, by
+   decision 3. Each boots its vendor firmware as its hand-written board
+   does. That is what keeps the described path honest, until the modules
+   can be retired.
 
 5. **Unwired is reported.** At the end of a run a described board lists
    the I2C addresses the firmware asked for and nobody answered, and the
@@ -101,6 +109,8 @@ already a NACK, counted per bus (`emu/i2c_link.py`).
 
 - Three parts on SPI2 is QEMU's model's limit, not the chip's; a board
   with more waits for the model to grow.
-- A screen's touch mapping and the window's look stay the catalogue part's
-  defaults (the T-Deck's): a described board with another panel geometry
-  shows the frames as the part draws them.
+- A screen's touch mapping and the window's look are those of the board
+  the parts come from: the page shows a described board with the Max's
+  e-paper, touch controller or keyboard in the Max's face, and any other
+  in the T-Deck's. A described board with another panel geometry shows
+  the frames as the part draws them.

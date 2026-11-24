@@ -85,10 +85,13 @@ irq = 45
 part = "l76k"
 ```
 
-The catalogue: `st7789` (screen), `sx1262` (LoRa radio) and `sdcard` on
-`spi2`, three at most; `gt911` (touch), `tdeck-keyboard` and `es7210`
-(microphone codec) on `i2c0` or `i2c1`; `l76k` (GPS) on `uart1`; and
-`tdeck-trackball` on plain pins. Pass the file wherever a board goes:
+The catalogue is the two boards' parts. On `spi2`, three at most:
+`st7789` or `epaper` (screens), `sx1262` (LoRa radio), `sdcard`. On `i2c0`
+or `i2c1`: `gt911` and `cst328` (touch), `tdeck-keyboard` and `tca8418`
+(keyboards), `es7210` and `es8311` (audio codecs), `xl9555`, `bhi260ap`,
+`bq27220`, `drv2605`, `sy6970`. On `uart1` or `uart2`: `l76k` or
+`ublox-m10` (GPS), `a7682e` (LTE modem). On plain pins: `tdeck-trackball`.
+`emu/boards/tdeck-max.toml` is the other board written this way. Pass the file wherever a board goes:
 `lab.device("node", build=..., board="my-tracker.toml")`,
 `boardemul test --board my-tracker.toml`, or `--board` to `emu/run.py`. A
 mistyped key or a pin used twice is refused with what is wrong. At the end
