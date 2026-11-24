@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # Test a firmware build on emulated boards in a GitHub workflow (ADR 0182):
 #
-#   - uses: prolificlab/boardemul@v0.1.0
+#   - uses: prolificlab/boardemul@v0.2.0
 #     with:
 #       build: .pio/build/t-deck
 #       board: tdeck

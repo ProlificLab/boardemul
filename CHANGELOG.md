@@ -3,7 +3,7 @@
 What changed for someone running BoardEmul, newest first. The reasons are in
 `docs/adr/`, numbered as below.
 
-## Unreleased
+## 0.2.0 — 2026-11-24
 
 **For firmware developers**
 - Describe your own board: a TOML file names an ESP32-S3 and which of
