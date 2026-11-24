@@ -296,7 +296,7 @@ class Network:
         capability = 0x0011 if self.wpa2 else 0x0001
         out = bytearray()
         out += bytes(8)                                 # timestamp
-        out += (100).to_bytes(2, "little")              # beacon interval
+        out += min(self.beacon_ms, 0xFFFF).to_bytes(2, "little")   # interval, TU
         out += capability.to_bytes(2, "little")
         out += bytes([0x00, len(name)]) + name          # the name
         out += bytes([0x01, 0x08, 0x82, 0x84, 0x8B, 0x96, 0x0C, 0x12, 0x18, 0x24])
@@ -378,6 +378,10 @@ class AccessPoint:
         self.counts: dict[str, int] = {}
         self.channel = network.channel
         self.last_beacon = 0
+        # The next target beacon time, on the access point's TSF, which is
+        # the guest's clock (ADR 0186): beacons go out on multiples of the
+        # interval, as a station that sleeps between them expects.
+        self.next_tbtt_us = 0
         # A monotonic packet number for the CCMP header on frames we send once
         # the station is connected (ADR 0084). The cipher is identity, so the
         # number only has to advance, not be secret.
@@ -581,7 +585,11 @@ class AccessPoint:
         # A beacon only when one is due. Offering one on every opportunity is
         # what filled the driver's descriptors and left none for the frames
         # that matter.
-        if clock - self.last_beacon < self.network.beacon_ms:
+        # On a target beacon time (ADR 0186), and not sooner than a period
+        # after the last frame offered: a busy access point skips a target
+        # time, and a dozing station listens again at the next.
+        if (clock * 1000 < self.next_tbtt_us
+                or clock - self.last_beacon < self.network.beacon_ms):
             self._count("nothing due")
             return None
         if free < 2:
@@ -592,6 +600,8 @@ class AccessPoint:
             self._count("beacon held back")
             return None
         self.last_beacon = clock
+        period_us = max(self.network.beacon_ms, 1) * 1024
+        self.next_tbtt_us = (clock * 1000 // period_us + 1) * period_us
         self._count("beacon")
         # Not awaited: a beacon nobody hears is a beacon missed, and the next
         # one is twenty milliseconds away. Its TIM names every station with

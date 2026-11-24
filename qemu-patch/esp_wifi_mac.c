@@ -129,6 +129,14 @@ OBJECT_DECLARE_SIMPLE_TYPE(EspWifiMac, ESP_WIFI_MAC)
  * being routed, and was never serviced. */
 #define R_RX_ENABLE     0x0d8
 #define RX_ENABLED      0x00000100u
+/* Bit 1, set by a station once it has joined: 0x47 for as long as it stays
+ * on the network, where scanning keeps 0x45 and 0x155. A joined station
+ * hears its own access point's beacons, so this model reads the register as
+ * a receive filter -- bit 8 everything, bit 1 the station's network -- not
+ * as the receiver being off. Inferred from those values, not read in the
+ * driver (ADR 0186); without it no beacon reached a joined station, and a
+ * dozing one never learned its frames were waiting. */
+#define RX_OWN_BSS      0x00000002u
 #define RX_QUEUE_MASK   0x7FFu
 /* This page is not blank paper. Before this device existed it was served by
  * the board's PhyGates model, which answers the waits the firmware makes
@@ -417,9 +425,57 @@ static uint32_t frame_check(const uint8_t *data, size_t length)
     return ~crc;
 }
 
+/* The station's clock and its wake-ups, in the WDEV page (ADR 0186): four
+ * TSF counters, the target beacon time of each, four timers, and the "pwr"
+ * events they raise on interrupt source 2. Every offset below was read from
+ * Espressif's libpp.a (hal_tsf.o, IDF 4.4.6), whose functions keep their
+ * names; tools/annotate_literals.py shows each one's registers. The page's
+ * RNG word at +0x07c stays with the machine's own model, so this window
+ * stops short of it. BOARDEMUL_TSF_TRACE logs the driver's writes here, the
+ * loads and starts, the first events, and each beacon that syncs the TSF. */
+#define TSF_BASE        0x60035000u
+#define TSF_SPAN        0x07cu              /* up to the RNG at +0x07c */
+#define PWR_OFFSET      0x100u              /* the events, +0x100.. */
+#define PWR_SPAN        0x020u
+#define R_TSF_CMD       0x00c   /* bit n latch TSF n, 0x10<<n load it,
+                                   0x100<<n start its target beacon time */
+#define R_TSF_LOAD_LO   0x010
+#define R_TSF_LOAD_HI   0x014
+#define R_TSF_READ_LO   0x018
+#define R_TSF_READ_HI   0x01c
+#define R_TBTT_START    0x020   /* low 26 bits of the TSF */
+#define TBTT_START_MASK 0x03ffffffu
+#define TSF_CTRL(n)     (0x028 + 0x0c * (n))   /* 0x98000000 on, bit 26 TBTT */
+#define TSF_CTRL_TBTT   0x04000000u
+#define TSF_CFG(n)      (0x030 + 0x0c * (n))   /* low 16 interval TU, high 16
+                                                  wake-ahead */
+#define TIMER_CTRL(m)   (0x05c + 0x08 * (m))   /* bit 31 on */
+#define TIMER_ON        0x80000000u
+#define TIMER_TARGET(m) (0x060 + 0x08 * (m))
+#define R_PWR_ENABLE    0x110
+#define R_PWR_STATUS    0x118
+#define R_PWR_CLEAR     0x11c
+#define PWR_TBTT(n)     (0x10u >> (n))
+#define PWR_TIMER(m)    (0x100u >> (m))
+#define TSF_COUNT       4
+
 struct EspWifiMac {
     DeviceState parent_obj;
     MemoryRegion iomem;
+    MemoryRegion tsf_iomem;
+    MemoryRegion pwr_iomem;
+    uint32_t tsf_regs[TSF_SPAN / 4 + 1];
+    int64_t tsf_offset[TSF_COUNT];       /* TSF n = guest microseconds + this */
+    int64_t tbtt_next[TSF_COUNT];        /* its next target, in its own TSF */
+    bool tbtt_armed[TSF_COUNT];
+    uint32_t tbtt_start[TSF_COUNT];      /* the 26-bit start, its phase */
+    bool timer_fired[TSF_COUNT];
+    uint32_t pwr_enable;
+    uint32_t pwr_status;
+    QEMUTimer *tsf_timer;
+    int32_t pwr_irq_source;
+    qemu_irq pwr_line;
+    int pwr_level;
 
     char *intc_type;
     uint64_t base;
@@ -648,6 +704,249 @@ static int64_t wifi_not_taken(EspWifiMac *s)
     }
     return 0;
 }
+
+static int64_t tsf_guest_us(void)
+{
+    return qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) / 1000;
+}
+
+static int64_t tsf_now(EspWifiMac *s, unsigned n)
+{
+    return tsf_guest_us() + s->tsf_offset[n];
+}
+
+static void tsf_update_irq(EspWifiMac *s)
+{
+    int level = (s->pwr_status & s->pwr_enable) != 0;
+    if (s->pwr_line && level != s->pwr_level) {
+        s->pwr_level = level;
+        qemu_set_irq(s->pwr_line, level);
+    }
+}
+
+/* The next instant anything here is due, in guest microseconds, or -1. */
+static int64_t tsf_next_due(EspWifiMac *s)
+{
+    int64_t due = -1;
+    for (unsigned n = 0; n < TSF_COUNT; n++) {
+        if (s->tbtt_armed[n] && (s->tsf_regs[TSF_CTRL(n) / 4] & TSF_CTRL_TBTT)) {
+            int64_t ahead = s->tsf_regs[TSF_CFG(n) / 4] >> 16;
+            int64_t at = s->tbtt_next[n] - ahead - s->tsf_offset[n];
+            if (due < 0 || at < due) {
+                due = at;
+            }
+        }
+        if ((s->tsf_regs[TIMER_CTRL(n) / 4] & TIMER_ON) && !s->timer_fired[n]) {
+            uint32_t target = s->tsf_regs[TIMER_TARGET(n) / 4];
+            int32_t left = (int32_t)(target - (uint32_t)tsf_now(s, n));
+            int64_t at = tsf_guest_us() + (left > 0 ? left : 0);
+            if (due < 0 || at < due) {
+                due = at;
+            }
+        }
+    }
+    return due;
+}
+
+static void tsf_reschedule(EspWifiMac *s)
+{
+    int64_t due = tsf_next_due(s);
+    if (due < 0) {
+        timer_del(s->tsf_timer);
+        return;
+    }
+    int64_t now = tsf_guest_us();
+    timer_mod_ns(s->tsf_timer, (due > now ? due : now) * 1000);
+}
+
+/* Whatever is due now: a target beacon time raises its event and moves on by
+ * its interval, as the hardware does -- the driver programs the interval and
+ * starts it once (pm_set_next_tbtt only sets the interval); a timer raises
+ * its event once per programming. */
+static void tsf_fire(void *opaque)
+{
+    EspWifiMac *s = opaque;
+    int64_t now = tsf_guest_us();
+    for (unsigned n = 0; n < TSF_COUNT; n++) {
+        if (s->tbtt_armed[n] && (s->tsf_regs[TSF_CTRL(n) / 4] & TSF_CTRL_TBTT)) {
+            int64_t ahead = s->tsf_regs[TSF_CFG(n) / 4] >> 16;
+            int64_t interval = (int64_t)(s->tsf_regs[TSF_CFG(n) / 4] & 0xffffu) * 1024;
+            if (s->tbtt_next[n] - ahead <= now + s->tsf_offset[n]) {
+                s->pwr_status |= PWR_TBTT(n);
+                if (interval) {
+                    while (s->tbtt_next[n] - ahead <= now + s->tsf_offset[n]) {
+                        s->tbtt_next[n] += interval;
+                    }
+                } else {
+                    s->tbtt_armed[n] = false;
+                }
+            }
+        }
+        if ((s->tsf_regs[TIMER_CTRL(n) / 4] & TIMER_ON) && !s->timer_fired[n]) {
+            uint32_t target = s->tsf_regs[TIMER_TARGET(n) / 4];
+            if ((int32_t)(target - (uint32_t)tsf_now(s, n)) <= 0) {
+                s->pwr_status |= PWR_TIMER(n);
+                s->timer_fired[n] = true;
+            }
+        }
+    }
+    static unsigned fired;
+    if (fired++ < 40 && getenv("BOARDEMUL_TSF_TRACE")) {
+        qemu_log_mask(LOG_UNIMP, "esp-wifi-mac: pwr events 0x%03x (enabled 0x%03x) "
+                      "at guest %lld us%c", s->pwr_status, s->pwr_enable,
+                      (long long)now, 10);
+    }
+    tsf_update_irq(s);
+    tsf_reschedule(s);
+}
+
+/* The next target beacon time after now on TSF n: the start's low 26 bits,
+ * moved on by whole intervals (the driver starts it on a target a beacon
+ * ago), or by the field's wrap without an interval. */
+static void tsf_retarget(EspWifiMac *s, unsigned n)
+{
+    int64_t tsf = tsf_now(s, n);
+    int64_t interval = (int64_t)(s->tsf_regs[TSF_CFG(n) / 4] & 0xffffu) * 1024;
+    int64_t at = (tsf & ~(int64_t)TBTT_START_MASK) | s->tbtt_start[n];
+    if (interval) {
+        /* Same phase, nearest after now: the comparator sees the low bits. */
+        at = tsf + interval - (((tsf - at) % interval) + interval) % interval;
+        if (at <= tsf) {
+            at += interval;
+        }
+    } else if (at <= tsf) {
+        at += (int64_t)TBTT_START_MASK + 1;
+    }
+    s->tbtt_next[n] = at;
+}
+
+/* A beacon from the station's access point sets its TSF to the beacon's
+ * timestamp, in the MAC (ADR 0186): the driver loads a placeholder
+ * (0x1_00000000, read off a run) and starts its target beacon time on a
+ * phase of the interval, and relies on this for the rest. */
+static void tsf_sync(EspWifiMac *s, uint64_t stamp)
+{
+    static unsigned syncs;
+    if (syncs++ < 30 && getenv("BOARDEMUL_TSF_TRACE")) {
+        qemu_log_mask(LOG_UNIMP, "esp-wifi-mac: beacon at guest %lld us, ctrl 0x%08x, tsf %lld%c",
+                      (long long)stamp, s->tsf_regs[TSF_CTRL(0) / 4],
+                      (long long)tsf_now(s, 0), 10);
+    }
+    if (!(s->tsf_regs[TSF_CTRL(0) / 4] & 0x80000000u)) {
+        return;
+    }
+    s->tsf_offset[0] = (int64_t)stamp - tsf_guest_us();
+    if (s->tbtt_armed[0]) {
+        tsf_retarget(s, 0);
+    }
+    tsf_reschedule(s);
+}
+
+static uint64_t tsf_read(void *opaque, hwaddr offset, unsigned size)
+{
+    EspWifiMac *s = opaque;
+    return offset < TSF_SPAN ? s->tsf_regs[offset / 4] : 0;
+}
+
+static void tsf_write(void *opaque, hwaddr offset, uint64_t value, unsigned size)
+{
+    EspWifiMac *s = opaque;
+    if (offset >= TSF_SPAN) {
+        return;
+    }
+    uint32_t v = (uint32_t)value;
+    static unsigned writes;
+    if (writes++ < 120 && getenv("BOARDEMUL_TSF_TRACE")) {
+        uint64_t pc = current_cpu ? CPU_GET_CLASS(current_cpu)->get_pc(current_cpu) : 0;
+        qemu_log_mask(LOG_UNIMP, "esp-wifi-mac: tsf wr +0x%03x = 0x%08x at guest %lld us "
+                      "from pc 0x%08llx%c", (unsigned)offset, v, (long long)tsf_guest_us(),
+                      (unsigned long long)pc, 10);
+    }
+    if (offset == R_TSF_CMD) {
+        for (unsigned n = 0; n < TSF_COUNT; n++) {
+            if (v & (0x10u << n)) {
+                int64_t load = ((int64_t)s->tsf_regs[R_TSF_LOAD_HI / 4] << 32)
+                             | s->tsf_regs[R_TSF_LOAD_LO / 4];
+                s->tsf_offset[n] = load - tsf_guest_us();
+                if (getenv("BOARDEMUL_TSF_TRACE")) qemu_log_mask(LOG_UNIMP, "esp-wifi-mac: tsf %u loaded %lld at guest %lld us%c",
+                              n, (long long)load, (long long)tsf_guest_us(), 10);
+            }
+            if (v & (0x100u << n)) {
+                int64_t tsf = tsf_now(s, n);
+                s->tbtt_start[n] = s->tsf_regs[R_TBTT_START / 4] & TBTT_START_MASK;
+                tsf_retarget(s, n);
+                int64_t at = s->tbtt_next[n];
+                s->tbtt_armed[n] = true;
+                if (getenv("BOARDEMUL_TSF_TRACE")) qemu_log_mask(LOG_UNIMP, "esp-wifi-mac: tsf %u target beacon time %lld "
+                              "(tsf %lld), interval %u TU, ahead %u, ctrl 0x%08x%c", n,
+                              (long long)at, (long long)tsf,
+                              s->tsf_regs[TSF_CFG(n) / 4] & 0xffffu,
+                              s->tsf_regs[TSF_CFG(n) / 4] >> 16,
+                              s->tsf_regs[TSF_CTRL(n) / 4], 10);
+            }
+            if (v & (1u << n)) {
+                uint64_t tsf = (uint64_t)tsf_now(s, n);
+                s->tsf_regs[R_TSF_READ_LO / 4] = (uint32_t)tsf;
+                s->tsf_regs[R_TSF_READ_HI / 4] = (uint32_t)(tsf >> 32);
+            }
+        }
+        /* The load and start strobes act and are gone; the latch is the
+         * driver's to clear. */
+        v &= ~0xff0u;
+    }
+    for (unsigned m = 0; m < TSF_COUNT; m++) {
+        if (offset == TIMER_TARGET(m) || offset == TIMER_CTRL(m)) {
+            s->timer_fired[m] = false;
+        }
+    }
+    s->tsf_regs[offset / 4] = v;
+    tsf_reschedule(s);
+}
+
+static uint64_t pwr_read(void *opaque, hwaddr offset, unsigned size)
+{
+    EspWifiMac *s = opaque;
+    switch (offset + PWR_OFFSET) {
+    case R_PWR_ENABLE:
+        return s->pwr_enable;
+    case R_PWR_STATUS:
+        return s->pwr_status & s->pwr_enable;
+    default:
+        return 0;               /* the clear register reads nothing back */
+    }
+}
+
+static void pwr_write(void *opaque, hwaddr offset, uint64_t value, unsigned size)
+{
+    EspWifiMac *s = opaque;
+    switch (offset + PWR_OFFSET) {
+    case R_PWR_ENABLE:
+        s->pwr_enable = (uint32_t)value;
+        break;
+    case R_PWR_CLEAR:
+        s->pwr_status &= ~(uint32_t)value;
+        break;
+    default:
+        break;
+    }
+    tsf_update_irq(s);
+}
+
+static const MemoryRegionOps tsf_ops = {
+    .read = tsf_read,
+    .write = tsf_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid.min_access_size = 4,
+    .valid.max_access_size = 4,
+};
+
+static const MemoryRegionOps pwr_ops = {
+    .read = pwr_read,
+    .write = pwr_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid.min_access_size = 4,
+    .valid.max_access_size = 4,
+};
 
 static void wifi_raise(EspWifiMac *s, int level)
 {
@@ -1128,7 +1427,7 @@ static void wifi_deliver(void *opaque)
     if (!exempt_all
         && ((s->regs[R_MAC_HOLD / 4] & MAC_HELD)
             || (!exempt_receiver
-                && !(s->regs[R_RX_ENABLE / 4] & RX_ENABLED)))) {
+                && !(s->regs[R_RX_ENABLE / 4] & (RX_ENABLED | RX_OWN_BSS))))) {
         /* Which half closed it, counted apart, because the two mean opposite
          * things for what may be done about it. A held MAC is a radio retuned
          * to another channel, and a frame put on the air into that is one that
@@ -1139,6 +1438,16 @@ static void wifi_deliver(void *opaque)
             s->stalled[1]++;
         } else {
             s->stalled[4]++;
+        }
+        {
+            static unsigned told;
+            if (s->offered_len && s->offered[0] == 0x80 && told++ < 30
+                && getenv("BOARDEMUL_TSF_TRACE")) {
+                qemu_log_mask(LOG_UNIMP, "esp-wifi-mac: beacon not taken at guest %lld us: "
+                              "%s (rx 0x%08x hold 0x%08x)%c", (long long)tsf_guest_us(),
+                              (s->regs[R_MAC_HOLD / 4] & MAC_HELD) ? "mac held" : "receiver off",
+                              s->regs[R_RX_ENABLE / 4], s->regs[R_MAC_HOLD / 4], 10);
+            }
         }
         /* The station's radio did not take it. An individually addressed
          * frame is retried as 802.11 retries an unacknowledged one, up to the
@@ -1259,6 +1568,19 @@ static void wifi_deliver(void *opaque)
             return;
         }
     }
+    /* A beacon or a probe response carries its sender's TSF, written as it
+     * goes out (ADR 0186). The access point's TSF is the guest's clock in
+     * microseconds, so a station that loads its own from this wakes when the
+     * next beacon, due on a multiple of the interval, is. */
+    if (frame_len >= 32 && (frame[0] == 0x80 || frame[0] == 0x50)) {
+        uint64_t stamp = (uint64_t)tsf_guest_us();
+        for (unsigned i = 0; i < 8; i++) {
+            frame[24 + i] = (uint8_t)(stamp >> (8 * i));
+        }
+        if (frame[0] == 0x80) {
+            tsf_sync(s, stamp);
+        }
+    }
     uint32_t fcs = frame_check(frame, frame_len);
 
     /* The frame's length, in the two places the stack reads it.
@@ -1301,6 +1623,12 @@ static void wifi_deliver(void *opaque)
      * `cnx_choose_rc` keeps the candidate whose utility beats zero, unsigned,
      * and that utility is this byte. A room's distance instead (ADR 0177). */
     header[0] = 0x30000000u | (uint8_t)RX_RSSI_DBM;
+    /* Word 3 is left zero. The public header names it the receive time
+     * (`wifi_pkt_rx_ctrl_t.timestamp`, esp_wifi_types.h), and writing the
+     * guest's microseconds there broke the WPA2 handshake of the T-Deck's
+     * 250620 and the Max's vendor firmware (message two's MIC failed); the
+     * station's TSF does not need it, the beacon's timestamp sets that
+     * (ADR 0186). */
     for (unsigned i = 0; i < RX_HEADER / 4; i++) {
         if (s->header_set & (1u << i)) {
             header[i] = s->header_words[i];
@@ -1788,6 +2116,15 @@ static void wifi_reset(void *opaque)
 {
     EspWifiMac *s = opaque;
     memset(s->regs, 0, sizeof(s->regs));
+    memset(s->tsf_regs, 0, sizeof(s->tsf_regs));
+    memset(s->tsf_offset, 0, sizeof(s->tsf_offset));
+    memset(s->tbtt_armed, 0, sizeof(s->tbtt_armed));
+    memset(s->timer_fired, 0, sizeof(s->timer_fired));
+    s->pwr_enable = s->pwr_status = 0;
+    if (s->tsf_timer) {
+        timer_del(s->tsf_timer);
+    }
+    tsf_update_irq(s);
     s->ring = 0;
     s->tx_pending = 0;
     s->pending_len = 0;
@@ -1817,6 +2154,9 @@ static void wifi_realize(DeviceState *dev, Error **errp)
             return;
         }
         s->irq_line = qdev_get_gpio_in(DEVICE(intc), s->irq_source);
+        if (s->pwr_irq_source >= 0) {
+            s->pwr_line = qdev_get_gpio_in(DEVICE(intc), s->pwr_irq_source);
+        }
     }
     /* The peer, if this run asked for one. Connected here rather than lazily
      * so that a socket that is not there is a complaint at start-up and not a
@@ -1915,6 +2255,17 @@ static void wifi_realize(DeviceState *dev, Error **errp)
                           TYPE_ESP_WIFI_MAC, REG_SPAN);
     memory_region_add_subregion_overlap(get_system_memory(), s->base,
                                         &s->iomem, s->priority);
+    /* The station's clock and wake-ups (ADR 0186), in the same device rather
+     * than an overlay of their own (ADR 0165), and short of the RNG word. */
+    s->tsf_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, tsf_fire, s);
+    memory_region_init_io(&s->tsf_iomem, OBJECT(s), &tsf_ops, s,
+                          TYPE_ESP_WIFI_MAC "-tsf", TSF_SPAN);
+    memory_region_add_subregion_overlap(get_system_memory(), TSF_BASE,
+                                        &s->tsf_iomem, s->priority);
+    memory_region_init_io(&s->pwr_iomem, OBJECT(s), &pwr_ops, s,
+                          TYPE_ESP_WIFI_MAC "-pwr", PWR_SPAN);
+    memory_region_add_subregion_overlap(get_system_memory(), TSF_BASE + PWR_OFFSET,
+                                        &s->pwr_iomem, s->priority);
 }
 
 static Property wifi_props[] = {
@@ -1924,6 +2275,8 @@ static Property wifi_props[] = {
     /* The WiFi MAC's own source number. Which one the driver actually listens
      * on is not settled, so it is a property rather than a constant. */
     DEFINE_PROP_INT32("irq", EspWifiMac, irq_source, 0),
+    /* ETS_WIFI_PWR_INTR_SOURCE: where the TSF's events go (ADR 0186). */
+    DEFINE_PROP_INT32("pwr-irq", EspWifiMac, pwr_irq_source, 2),
     /* An access point in the air: how often it beacons in milliseconds (zero
      * for none), where the peer that speaks for it listens, and the one channel
      * it is on (ADR 0110). */

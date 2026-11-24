@@ -191,4 +191,4 @@ superseded ADR is marked superseded and points forward.
 | [0183](0183-boardemul-installs-from-pypi-and-pulls-its-runtime.md) | BoardEmul installs from PyPI and pulls its runtime | Accepted |
 | [0184](0184-a-board-description-is-a-toml-file-of-catalogue-parts.md) | A board description is a TOML file of catalogue parts | Accepted |
 | [0185](0185-a-scenario-is-a-toml-file-of-devices-and-steps.md) | A scenario is a TOML file of devices and steps | Accepted |
-| [0186](0186-a-dozing-station-wakes-at-its-target-beacon-time.md) | A dozing station wakes at its target beacon time | Proposed |
+| [0186](0186-a-dozing-station-wakes-at-its-target-beacon-time.md) | A dozing station wakes at its target beacon time | Accepted |
