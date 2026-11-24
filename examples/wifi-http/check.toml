@@ -1,0 +1,26 @@
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
+#
+# The example on an emulated T-Deck, without the board (ADR 0185):
+#
+#   pio run
+#   boardemul scenario check.toml
+
+[[device]]
+name = "web"
+build = ".pio/build/t-deck"
+board = "tdeck"
+
+[device.wifi]
+name = "boardemul-lab"
+password = "correct-horse-battery"
+forward = [[18080, 80]]         # the host's 18080 is the firmware's port 80
+
+[[step]]
+expect = "wifi-http: serving on port 80"
+timeout = 300
+
+[[step]]
+http = "/status"
+body = '"ok": true'
+timeout = 120
