@@ -261,7 +261,8 @@ def create(devices: Path, name: str, firmware: Path, board: str = "tdeck-max",
 
 def _force_clear(root: Path) -> None:
     """A failed create leaves nothing behind: a half device is a lie."""
-    for path in (root / SDCARD, root / FLASH, root / EFUSE, root / MANIFEST):
+    for path in (root / SDCARD, root / FLASH, root / EFUSE, root / MANIFEST,
+                 root / BOARD_FILE):
         path.unlink(missing_ok=True)
     if root.is_dir():
         root.rmdir()
@@ -338,7 +339,7 @@ def set_settings(device: Device, settings) -> Device:
 
 def remove(device: Device) -> None:
     for path in (device.sdcard, device.flash, device.efuse, device.root / MANIFEST,
-                 device.root / RUNNING):
+                 device.root / RUNNING, device.board_file):
         path.unlink(missing_ok=True)
     shutil.rmtree(device.root / SNAPSHOTS, ignore_errors=True)
     if device.root.is_dir():
@@ -532,6 +533,9 @@ def clone(device: Device, name: str, mac: str | None = None) -> Device:
         shutil.copy2(device.flash, target / FLASH)
         if device.sdcard.is_file():
             shutil.copy2(device.sdcard, target / SDCARD)
+        if device.board_file.is_file():
+            # The same board, so the same description (ADR 0184).
+            shutil.copy2(device.board_file, target / BOARD_FILE)
         (target / EFUSE).write_bytes(efuse)
         made = Device(**{**device.__dict__, "root": target, "name": name, "mac": mac,
                          "cloned_from": device.name,

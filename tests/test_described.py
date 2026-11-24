@@ -170,6 +170,13 @@ def test_a_device_keeps_its_description(tmp_path, monkeypatch):
     plain = device_folder.create(tmp_path / "devices", "p1", firmware, board="tdeck")
     assert plain.description() is None
 
+    # A clone is the same board; and a device goes as any device goes, its
+    # description with it.
+    twin = device_folder.clone(loaded, "l2")
+    assert twin.description().name == "logger"
+    device_folder.remove(loaded)
+    assert not device.root.exists()
+
 
 def test_the_library_sends_a_description_by_its_path(tmp_path):
     from boardemul.lab import LabError, _board
