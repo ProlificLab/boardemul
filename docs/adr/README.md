@@ -189,3 +189,4 @@ superseded ADR is marked superseded and points forward.
 | [0181](0181-the-first-public-version-is-0-1-0.md) | The first public version is 0.1.0 | Accepted (supersedes 0162's numbering) |
 | [0182](0182-the-test-library-drives-the-page-s-api.md) | The test library drives the page's API | Accepted |
 | [0183](0183-boardemul-installs-from-pypi-and-pulls-its-runtime.md) | BoardEmul installs from PyPI and pulls its runtime | Accepted |
+| [0184](0184-a-board-description-is-a-toml-file-of-catalogue-parts.md) | A board description is a TOML file of catalogue parts | Accepted |
