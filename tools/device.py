@@ -55,11 +55,22 @@ def _firmware_arg(args) -> Path:
 
 def cmd_create(args) -> int:
     devices = devices_dir(args.dir)
+    description = None
+    if args.board.endswith(".toml"):
+        # A board its user described (ADR 0184).
+        from emu import described
+        try:
+            description = described.load(args.board)
+        except described.DescriptionError as exc:
+            raise SystemExit(str(exc))
+    elif args.board not in ("tdeck-max", "tdeck"):
+        raise SystemExit(f"--board {args.board}: tdeck-max, tdeck, or a "
+                         "board description, NAME.toml")
     try:
         device = device_folder.create(
             devices, args.name, _firmware_arg(args), board=args.board,
             mac=args.mac, psram_mb=args.psram, psram_octal=args.psram_octal,
-            overlays=tuple(args.overlay))
+            overlays=tuple(args.overlay), description=description)
         # It restarts after a panic, as the board does (ADR 0145, decision 6).
         device = device_folder.set_settings(device, device_folder.OPERATOR_SETTINGS)
     except device_folder.DeviceError as exc:
@@ -243,7 +254,8 @@ def main(argv: list[str] | None = None) -> int:
     create.add_argument("name")
     create.add_argument("--firmware", required=True)
     create.add_argument("--board", default="tdeck-max",
-                        choices=("tdeck-max", "tdeck"))
+                        help="tdeck-max, tdeck, or a board description, "
+                             "NAME.toml (ADR 0184)")
     create.add_argument("--mac", default=None,
                         help="default: the first MAC no other device in the "
                              "folder has, from 02:54:44:4D:00:01 up (ADR 0155)")

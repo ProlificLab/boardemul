@@ -35,9 +35,12 @@ NOTCH = 6               # the window's unit of roll: three cycles of a line
 class Trackball:
     """The five lines' levels, driven through `drive(pin, level)`."""
 
-    def __init__(self, drive: Callable[[int, int], None]):
+    def __init__(self, drive: Callable[[int, int], None],
+                 pins: dict[str, int] | None = None):
         self.drive = drive
-        self.levels = {name: 1 for name in PINS}
+        # The T-Deck's lines unless a board description wires others (ADR 0184).
+        self.pins = dict(PINS if pins is None else pins)
+        self.levels = {name: 1 for name in self.pins}
         self.queue: deque[str] = deque()
         self.pressed = False            # what the host says
         self._release_at: float | None = None
@@ -77,4 +80,4 @@ class Trackball:
 
     def _set(self, name: str, level: int) -> None:
         self.levels[name] = level
-        self.drive(PINS[name], level)
+        self.drive(self.pins[name], level)

@@ -46,6 +46,8 @@ OPERATOR_SETTINGS = ("--reboot",)
 # Boards that have a card, with the size their board module builds; both
 # today build the same one, and the folder says so rather than assuming.
 SD_BOARDS: dict[str, int] = {"tdeck-max": 32, "tdeck": 32}
+# A device made from a board description keeps it here (ADR 0184, decision 6).
+BOARD_FILE = "board.toml"
 
 
 class DeviceError(Exception):
@@ -177,6 +179,21 @@ class Device:
     def has_sdcard(self) -> bool:
         return self.sdcard.exists()
 
+    @property
+    def board_file(self) -> Path:
+        return self.root / BOARD_FILE
+
+    def description(self):
+        """The board description the device was made from, or None for one of
+        the hand-written boards (ADR 0184)."""
+        if not self.board_file.is_file():
+            return None
+        from emu import described
+        try:
+            return described.load(self.board_file)
+        except described.DescriptionError as exc:
+            raise DeviceError(str(exc)) from None
+
 
 def folder(devices: Path, name: str) -> Path:
     if not name or "/" in name or "\\" in name or name in (".", ".."):
@@ -187,7 +204,7 @@ def folder(devices: Path, name: str) -> Path:
 def create(devices: Path, name: str, firmware: Path, board: str = "tdeck-max",
            mac: str | None = None, psram_mb: int = 8,
            psram_octal: bool = False, overlays: tuple[str, ...] = (),
-           build=None) -> Device:
+           build=None, description=None) -> Device:
     """Make the folder and assemble its storage once.
 
     `build` is the assembler, injected so tests can watch for its use: it
@@ -197,6 +214,9 @@ def create(devices: Path, name: str, firmware: Path, board: str = "tdeck-max",
 
     Without a `mac` the device gets one no other device in the folder has
     (ADR 0155, decision 5).
+
+    With a `description` (an `emu.described.Description`) the device is that
+    board: the folder keeps its text, and `board` is its name (ADR 0184).
     """
     if build is None:
         from emu.run import build_images as build
@@ -219,8 +239,12 @@ def create(devices: Path, name: str, firmware: Path, board: str = "tdeck-max",
             from tools.fetch_firmware import companion_overlays
             overlays = tuple(companion_overlays(firmware)[0])
         flash, efuse = build(firmware, root, mac, list(overlays))
-        if board in SD_BOARDS:
-            (root / SDCARD).write_bytes(bytes(sdimage.build(size_mb=SD_BOARDS[board])))
+        if description is not None:
+            board = description.name
+            (root / BOARD_FILE).write_text(description.source, encoding="utf-8")
+        card_mb = _card_mb(board, description)
+        if card_mb:
+            (root / SDCARD).write_bytes(bytes(sdimage.build(size_mb=card_mb)))
         device = Device(
             root=root, name=name, board=board,
             firmware=firmware.as_posix(), firmware_sha256=_sha256(firmware),
@@ -521,11 +545,21 @@ def clone(device: Device, name: str, mac: str | None = None) -> Device:
 
 # -- the card, in and out (ADR 0149) ------------------------------------------
 
+def _card_mb(board: str, description=None) -> int:
+    """The size in MiB of the card a board builds, 0 for none."""
+    if description is not None:
+        from emu.described import SD_CARD_MB
+        card = next((p for p in description.spi if p.part == "sdcard"), None)
+        return int(card.options.get("size_mb", SD_CARD_MB)) if card else 0
+    return SD_BOARDS.get(board, 0)
+
+
 def card_bytes(device: Device) -> int:
     """The size of the card the device's board builds."""
-    if device.board not in SD_BOARDS:
+    size = _card_mb(device.board, device.description())
+    if not size:
         raise DeviceError(f"a {device.board} has no card")
-    return SD_BOARDS[device.board] * 1024 * 1024
+    return size * 1024 * 1024
 
 
 def _before_card(device: Device) -> Snapshot:
@@ -562,7 +596,7 @@ def card_from_files(device: Device, files: list[tuple[str, bytes]]) -> Snapshot:
     room = card_bytes(device) - sdimage.PARTITION_LBA * sdimage.SECTOR - 2 * 1024 * 1024
     if sum(len(data) for _name, data in files) > room:
         raise DeviceError("the files are more than the card holds")
-    image = sdimage.build(size_mb=SD_BOARDS[device.board],
+    image = sdimage.build(size_mb=card_bytes(device) // (1024 * 1024),
                           files=tuple(sdimage.File(name, data)
                                       for name, (_n, data) in zip(names, files)))
     return replace_card(device, bytes(image))

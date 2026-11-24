@@ -29,6 +29,10 @@ from tools import mkflash  # noqa: E402
 from tools.fetch_firmware import companion_overlays as firmware_companions  # noqa: E402
 from emu import board  # noqa: E402
 from emu import board_tdeck  # noqa: E402
+from emu import described  # noqa: E402
+
+# The boards written by hand; any other is a description (ADR 0184).
+HAND_WRITTEN = ("tdeck-max", "tdeck")
 from emu.devices import lora  # noqa: E402
 from emu.devices.air import HOST as AIR_LOOPBACK, air_host  # noqa: E402
 from emu.serial_input import SerialBridge, SerialInput  # noqa: E402
@@ -105,6 +109,9 @@ class RunResult:
     # What the host on the USB OTG cable saw (ADR 0166).
     usb_otg: str = ""
     usb_otg_bytes: int = 0
+    # What the firmware talked to that a described board does not wire
+    # (ADR 0184, decision 5): "i2c0 0x3c", "spi2 select 2".
+    not_wired: list[str] = field(default_factory=list)
 
 
 def find_qemu(explicit: str | None = None) -> Path:
@@ -334,9 +341,10 @@ def main(argv: list[str] | None = None) -> int:
                     help="splice a vendor filesystem image into the flash (ADR "
                          "0021). With --device the storage is already built "
                          "and this is refused")
-    ap.add_argument("--board", default=None, choices=("tdeck-max", "tdeck"),
-                    help="which board to wire up (default: tdeck-max, or the "
-                         "device's)")
+    ap.add_argument("--board", default=None,
+                    help="which board to wire up: tdeck-max, tdeck, or a board "
+                         "description file, NAME.toml (ADR 0184); default "
+                         "tdeck-max, or the device's")
     ap.add_argument("--qemu", default=None)
     ap.add_argument("-v", "--verbose", action="store_true",
                     help="log every bus transaction at DEBUG")
@@ -437,6 +445,16 @@ def main(argv: list[str] | None = None) -> int:
     # --device or a bare firmware, never both, never neither. The device is
     # identity: its storage, board and radio personality are the folder's,
     # and a flag only overrides where it also says something for this run.
+    # A board by name, or one its user described (ADR 0184).
+    description = None
+    if args.board is not None and args.board not in HAND_WRITTEN:
+        if not args.board.endswith(".toml"):
+            raise SystemExit(f"--board {args.board}: the boards are "
+                             f"{', '.join(HAND_WRITTEN)}, or a description, NAME.toml")
+        try:
+            description = described.load(args.board)
+        except described.DescriptionError as exc:
+            raise SystemExit(str(exc))
     if (args.device is None) == (args.firmware is None):
         raise SystemExit("give either a firmware image or --device PATH")
     if args.device is not None:
@@ -444,6 +462,11 @@ def main(argv: list[str] | None = None) -> int:
             device = device_folder.load(args.device)
         except device_folder.DeviceError as exc:
             raise SystemExit(str(exc))
+        if args.board is None:
+            try:
+                description = device.description()
+            except device_folder.DeviceError as exc:
+                raise SystemExit(str(exc))
         # Until this run ends the folder is not a state the device was ever in:
         # a snapshot or a new card waits for it (ADR 0149).
         device_folder.hold(device)
@@ -520,7 +543,10 @@ def main(argv: list[str] | None = None) -> int:
                      reboot=args.reboot, usb=mirror.local(usb),
                      serial_in=serial_input.paths)
 
-    hw_module = {"tdeck-max": board, "tdeck": board_tdeck}[board_name]
+    if description is not None:
+        hw_module = described.module(description)
+    else:
+        hw_module = {"tdeck-max": board, "tdeck": board_tdeck}[board_name]
     # SoC-level, so it applies with or without --bus: these describe the chip
     # the board is built around, not the peripherals we model in Python.
     for spec in hw_module.SOC_DEVICES:
@@ -820,6 +846,8 @@ def main(argv: list[str] | None = None) -> int:
     if hw is not None and hw.usb_otg is not None:
         result.usb_otg = hw.usb_otg.summary()
         result.usb_otg_bytes = hw.usb_otg.bytes_in
+    if hw is not None and hasattr(hw, "not_wired"):
+        result.not_wired = hw.not_wired()
 
     manifest = args.outdir / f"{tag}.manifest.json"
     manifest.write_text(json.dumps(asdict(result), indent=2))
@@ -889,6 +917,11 @@ def _report_bus(server: BusServer, tail=None, irq=None, hw=None) -> None:
                           f"{dev.delivered} character(s) delivered, "
                           f"{len(dev.pending)} still queued")
         print(f"  gpio: {hw.gpio.sent} pin level(s) driven from the host")
+        if hasattr(hw, "not_wired"):
+            missing = hw.not_wired()
+            print(f"  not wired: {', '.join(missing) if missing else 'nothing'}"
+                  + (" -- the firmware talked to these and the description "
+                     "puts no part there" if missing else ""))
         backlight = hw.region("ledc")
         if backlight is not None and hasattr(backlight, "summary"):
             print(f"  {backlight.summary()}")

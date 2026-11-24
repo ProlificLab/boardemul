@@ -1,0 +1,51 @@
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
+#
+# The LilyGO T-Deck as a board description (ADR 0184): an ESP32-S3 and the
+# catalogue parts on its pins, from the vendor's examples/UnitTest/utilities.h.
+# tests/test_described.py holds it to emu/board_tdeck.py part by part. Copy
+# it and change the pins for a board of your own.
+
+name = "T-Deck (described)"
+chip = "esp32s3"
+
+[spi2]
+dc = 11                     # the screen's data/command line
+
+[[spi2.parts]]
+part = "st7789"             # the 320x240 screen
+cs = 12
+backlight = 42
+
+[[spi2.parts]]
+part = "sx1262"             # the LoRa radio
+cs = 9
+busy = 13
+reset = 17
+irq = 45                    # DIO1
+
+[[spi2.parts]]
+part = "sdcard"
+cs = 39
+size_mb = 32
+
+[[i2c0.parts]]
+part = "gt911"              # the touch controller, at 0x5d
+irq = 16
+
+[[i2c0.parts]]
+part = "tdeck-keyboard"     # the keyboard's microcontroller, at 0x55
+
+[[i2c0.parts]]
+part = "es7210"             # the microphone codec, at 0x40
+
+[uart1]
+part = "l76k"               # the GPS module, when a run gives a position
+
+[[gpio.parts]]
+part = "tdeck-trackball"
+press = 0
+left = 1
+right = 2
+up = 3
+down = 15

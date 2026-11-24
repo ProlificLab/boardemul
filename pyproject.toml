@@ -47,5 +47,5 @@ include = ["boardemul", "emu", "emu.*", "tools"]
 namespaces = true
 
 [tool.setuptools.package-data]
-emu = ["web/*.html"]
+emu = ["web/*.html", "boards/*.toml"]
 tools = ["firmware_manifest.toml"]

@@ -379,8 +379,14 @@ def write_state(path: Path, state: dict) -> None:
     os.replace(part, path)
 
 
-def attach_input(server, board: Board, outdir: Path) -> InputTail:
+def attach_input(server, board: Board, outdir: Path,
+                 touch_int: int | None = TOUCH_INT_PIN,
+                 backlight_pin: int | None = TFT_BACKLIGHT,
+                 trackball_pins: dict[str, int] | None = TRACKBALL_PINS) -> InputTail:
     """Route host input to the touch controller and the keyboard.
+
+    The pins are the T-Deck's unless a board description wires the same parts
+    to others (ADR 0184); a board without a trackball passes None for it.
 
     Same shape as the first board, and the same reason for the ticker: with
     GPIO, SPI and I2C all serviced in C, an idle UI produces almost no
@@ -390,14 +396,16 @@ def attach_input(server, board: Board, outdir: Path) -> InputTail:
     which is why a held finger has to keep producing edges rather than being
     delivered once.
     """
-    radio = board.spi.devices.get(SPI_RADIO)
+    radio = next((d for d in board.spi.devices.values() if isinstance(d, Sx1262)), None)
     on_air = radio if getattr(radio, "air", None) is not None else None
 
     tail = InputTail(Path(outdir) / "input.jsonl")
-    touch = board.i2c0.devices.get(GT911().address)
-    keypad = board.i2c0.devices.get(TDeckKeyboard().address)
+    parts = [d for bus in (board.i2c0, board.i2c1) for d in bus.devices.values()]
+    touch = next((d for d in parts if isinstance(d, GT911)), None)
+    keypad = next((d for d in parts if isinstance(d, TDeckKeyboard)), None)
     # Rolls and clicks, paced onto the five lines by the ticker (ADR 0128).
-    trackball = Trackball(board.gpio.drive)
+    trackball = (Trackball(board.gpio.drive, trackball_pins)
+                 if trackball_pins is not None else None)
     # What the window needs that is not pixels, beside the frames (ADR 0129).
     state_path = Path(outdir) / "frames" / "board.json"
     shown: dict = {}
@@ -413,7 +421,7 @@ def attach_input(server, board: Board, outdir: Path) -> InputTail:
         if backlight is not None and reports is not None:
             # The screen's backlight, from what drives its pin (ADR 0151).
             for pin, level, out_sel, ns in reports.poll():
-                if pin == TFT_BACKLIGHT:
+                if pin == backlight_pin:
                     log.debug("backlight pin: level %d, signal %d, at guest %d ns",
                               level, out_sel, ns)
                     backlight.report(level, out_sel, ns)
@@ -431,11 +439,11 @@ def attach_input(server, board: Board, outdir: Path) -> InputTail:
     def pump() -> None:
         for event in tail.drain():
             kind = event.get("type")
-            if kind == "key" and event.get("key") in TRACKBALL_KEYS:
+            if kind == "key" and trackball is not None and event.get("key") in TRACKBALL_KEYS:
                 # A direction's name is a notch of roll that way.
                 if bool(event.get("down", True)):
                     trackball.roll(str(event["key"]).lower())
-            elif kind == "trackball":
+            elif kind == "trackball" and trackball is not None:
                 if "press" in event:
                     trackball.press(bool(event["press"]), time.monotonic())
                 elif not trackball.roll(str(event.get("roll", "")),
@@ -452,7 +460,7 @@ def attach_input(server, board: Board, outdir: Path) -> InputTail:
                 # Characters, each pressed as the chord that types it on the
                 # device (ADR 0127).
                 keypad.type_text(str(event.get("text", "")))
-            elif kind == "touch" and isinstance(touch, GT911):
+            elif kind == "touch" and touch is not None and touch_int is not None:
                 down = bool(event.get("down", True))
                 if down:
                     touch.touch(*touch_point(int(event.get("x", 0)),
@@ -466,7 +474,7 @@ def attach_input(server, board: Board, outdir: Path) -> InputTail:
                 # A level, and the model's to state: it follows the trigger
                 # mode the firmware wrote, or rests low until one is written
                 # (ADR 0029). The Max's CST328 next door pulses instead.
-                board.gpio.drive(TOUCH_INT_PIN, touch.int_level)
+                board.gpio.drive(touch_int, touch.int_level)
             elif kind == "serial":
                 # Typed into a serial port (ADR 0156).
                 serial = getattr(board, "serial_in", None)
@@ -484,13 +492,14 @@ def attach_input(server, board: Board, outdir: Path) -> InputTail:
                 # almost no register accesses, which is the same reason the
                 # touch controller is driven from here.
                 on_air.pump()
-            trackball.tick(time.monotonic())
+            if trackball is not None:
+                trackball.tick(time.monotonic())
             publish()
-            if isinstance(touch, GT911):
+            if touch is not None and touch_int is not None:
                 # Idempotent: the client sends nothing for an unchanged level.
                 # This is where a mode write with no finger down moves the
                 # line's rest level (ADR 0029).
-                board.gpio.drive(TOUCH_INT_PIN, touch.int_level)
+                board.gpio.drive(touch_int, touch.int_level)
             time.sleep(period)
 
     threading.Thread(target=ticker, name="input", daemon=True).start()
