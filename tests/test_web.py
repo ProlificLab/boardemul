@@ -133,6 +133,13 @@ def test_a_device_from_a_board_description(server):
     assert (devices / "t1" / "board.toml").read_text() == text
     assert not (devices / "t1" / "sdcard.img").exists()     # it wires no card
 
+    # One with the Max's e-paper wears the Max's face.
+    max_text = (Path(__file__).resolve().parent.parent / "emu" / "boards"
+                / "tdeck-max.toml").read_text()
+    status, made, _h = call(client, "POST", "/api/devices", {
+        "name": "m1", "board_description": max_text, "firmware": body["path"]})
+    assert status == 201 and made["look"] == "tdeck-max", made
+
     status, refused, _h = call(client, "POST", "/api/devices", {
         "name": "t2", "board_description": 'name = "x"\nchip = "esp32"',
         "firmware": body["path"]})

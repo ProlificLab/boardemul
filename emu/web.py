@@ -74,9 +74,17 @@ BROWSER_KEYSYMS = {"Enter": "Return", "Backspace": "BackSpace",
 
 
 def look(device) -> str:
-    """Which board's face and keys a device wears: its own, or the T-Deck's
-    for a described board, whose parts are the T-Deck's (ADR 0184)."""
-    return "tdeck" if device.board_file.is_file() else device.board
+    """Which board's face and keys a device wears: its own, or for a described
+    board the one whose screen and keyboard it carries -- the Max's with an
+    e-paper or the Max's keyboard, the T-Deck's otherwise (ADR 0184)."""
+    if not device.board_file.is_file():
+        return device.board
+    try:
+        description = device.description()
+    except device_folder.DeviceError:
+        return "tdeck"
+    parts = {p.part for p in description.parts()}
+    return "tdeck-max" if parts & {"epaper", "tca8418", "cst328"} else "tdeck"
 
 
 class KeyBridge:
