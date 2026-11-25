@@ -99,10 +99,18 @@ def test_a_container_run_off_the_air_is_started_as_before(tmp_path):
     assert "--network" not in cmd and "BOARDEMUL_AIR_HOST=auto" not in cmd
 
 
-def test_a_run_on_this_host_keeps_its_airs_beside_the_folders(tmp_path):
+def test_a_run_on_this_host_keeps_its_airs_in_the_temporary_folder(tmp_path):
+    """One base per folder of devices, under the machine's temporary folder
+    (ADR 0145, amended): two homes do not share an air of the same name."""
+    import tempfile
     root = tmp_path / "devices" / "node"
     cmd = device_folder.launch_command(root, tmp_path / "o", ("--air", "mesh"))
-    assert cmd[-2:] == ["--air", f"{(tmp_path / 'devices').resolve().as_posix()}/.air/lora/mesh"]
+    base = device_folder.local_air_base(root)
+    assert cmd[-2:] == ["--air", f"{base}/lora/mesh"]
+    assert base.startswith((Path(tempfile.gettempdir()) / "boardemul-air").as_posix())
+    other = device_folder.local_air_base(tmp_path / "elsewhere" / "node")
+    assert other != base
+    assert device_folder.local_air_base(tmp_path / "devices" / "twin") == base
 
 
 def test_a_run_is_told_the_devices_settings_then_its_own(tmp_path, firmware,
@@ -123,7 +131,7 @@ def test_a_run_is_told_the_devices_settings_then_its_own(tmp_path, firmware,
     RunHandle(device, logs=tmp_path / "logs", extra=("--icount",)).start()
     tail = seen[0][-4:]
     assert tail[0] == "--reboot" and tail[1] == "--air"
-    assert tail[2].endswith("/.air/lora/mesh") and tail[3] == "--icount"
+    assert tail[2].endswith("/lora/mesh") and tail[3] == "--icount"
 
 
 @pytest.mark.parametrize("bad", [["--air", "/tmp/x"], ["--qemu", "q"], ["--gps"]])

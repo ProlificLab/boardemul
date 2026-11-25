@@ -683,9 +683,16 @@ def launch_command(root: Path, outdir: Path, extra: tuple[str, ...] = (),
 
 
 def local_air_base(root: Path) -> str:
-    """Where a run on this host keeps its named airs: beside the device
-    folders (ADR 0145)."""
-    return (Path(root).resolve().parent / ".air").as_posix()
+    """Where a run on this host keeps its named airs: in the machine's
+    temporary folder, one per folder of devices (ADR 0145, amended). An air
+    is a file per board saying its port, nothing to keep; beside the device
+    folders it was on whatever disk they are on, and over a shared folder
+    (the build container's /work) every look at it held the guest."""
+    import hashlib
+    import tempfile
+    home = Path(root).resolve().parent
+    tag = hashlib.sha256(home.as_posix().encode()).hexdigest()[:12]
+    return (Path(tempfile.gettempdir()) / "boardemul-air" / tag).as_posix()
 
 
 def runs_natively() -> bool:
@@ -732,6 +739,30 @@ def container_command(root: Path, outdir: Path, extra: tuple[str, ...] = (),
             + air + ["-w", "/work", image, "python3", "emu/run.py"]
             + _run_flags("/device", "/out", root.name)
             + list(place_airs(tuple(extra), AIR_MOUNT)))
+
+
+def ble_air(settings: tuple[str, ...]) -> str | None:
+    """The Bluetooth air a run with these settings is on, by name."""
+    for i, flag in enumerate(settings[:-1]):
+        if flag == "--ble-air":
+            return settings[i + 1]
+    return None
+
+
+def central_command(root: Path, air: str, ops_json: str) -> list[str]:
+    """A Bluetooth central on the device's air, where its run is (ADR 0188):
+    this host's Python beside the device folders, or the build container on
+    the airs' volume and network, as container_command places a run."""
+    if runs_natively():
+        return [sys.executable, str(REPO_ROOT / "tools" / "ble_central.py"),
+                f"{local_air_base(root)}/{NAMED_AIRS['--ble-air']}/{air}",
+                "ops", "--ops", ops_json]
+    image = os.environ.get("BOARDEMUL_IMAGE") or DEFAULT_IMAGE
+    return (["docker", "run", "--rm", "-v", f"{AIR_VOLUME}:{AIR_MOUNT}",
+             "--network", AIR_NETWORK, "-e", "BOARDEMUL_AIR_HOST=auto",
+             "-v", f"{REPO_ROOT.resolve().as_posix()}:/work", "-w", "/work",
+             image, "python3", "tools/ble_central.py",
+             f"{AIR_MOUNT}/{NAMED_AIRS['--ble-air']}/{air}", "ops", "--ops", ops_json])
 
 
 def ensure_air_network() -> None:

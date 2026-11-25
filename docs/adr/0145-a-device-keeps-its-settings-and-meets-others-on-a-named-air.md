@@ -113,3 +113,16 @@ guest 196 s. That is free space over 50 m at 906 MHz from 22 dBm.
   does not arise from the page.
 - The settings a page may pass stay a list in code. A new kind of setting
   needs a line there, with a reason, as ADR 0139 required.
+
+## Amendment — 2026-11-25: a native run's airs are in the temporary folder
+
+A run on this host kept its named airs beside the device folders, in
+`.air`. In the build container those folders are on `/work`, shared from
+Windows, and a Bluetooth air there held the guest still a few seconds into
+its boot, as QEMU's files on that share once did (ADR 0174): found when the
+library first put a device on a Bluetooth air (ADR 0188). An air is a file
+per board saying its port, nothing a user keeps, so a native run's airs are
+now in the machine's temporary folder, under `boardemul-air/` and a tag of
+the devices' folder, so two homes on one machine do not share them. Runs in
+the build container on Windows are unchanged: their airs are the
+`boardemul-air` volume.
