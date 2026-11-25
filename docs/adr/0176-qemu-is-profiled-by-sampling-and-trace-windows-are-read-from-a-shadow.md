@@ -102,3 +102,14 @@ has to raise.
   class says whether it is shadowed, so changing the class does it.
 - The sampler stops each thread a thousand times a second; it slows what it
   measures by a few percent, which the shares above include.
+
+## Amendment — 2026-11-25: link-time optimisation measured, not kept
+
+QEMU built with `--enable-lto` (same sources and flags otherwise) against
+the usual build, `tools/speed.sh 90 3`, runs interleaved: home screen at
+15.7 / 30.1 / 14.0 s plain and 30.5 / 19.1 / 14.0 s with LTO. The best runs
+are equal to the millisecond; the spread between runs of one variant (a
+host busy with other containers) is a factor of two, far larger than any
+difference between them. LTO is not adopted: it lengthens every QEMU build
+for no gain that shows. The profile above stands -- generated code and the
+TB lookup are where the time goes, and neither is a compiler-flag matter.
