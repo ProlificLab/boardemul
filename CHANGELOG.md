@@ -3,6 +3,15 @@
 What changed for someone running BoardEmul, newest first. The reasons are in
 `docs/adr/`, numbered as below.
 
+## 0.3.1 — 2026-11-25
+
+**For firmware developers**
+- Meshtastic's own network services are reachable from a library test: its
+  TCP API on 4403 and its web page on 80 answer through `WiFi(forward=...)`,
+  once the node is on the classic screen. Set that screen after the colour
+  interface has reread its configuration following a boot, or it writes
+  colour back (0164).
+
 ## 0.3.0 — 2026-11-25
 
 **For firmware developers**
