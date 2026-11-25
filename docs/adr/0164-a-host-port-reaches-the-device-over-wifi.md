@@ -131,3 +131,24 @@ only because the interface never finished its configuration then. The
 forward itself is unchanged and its tests pass; reaching Meshtastic's
 servers through it now needs the classic screen set some other way, which
 is not yet found. The attempt is in `logs/wifi-lib/`.
+
+## Amendment — 2026-11-25: the classic screen holds; Meshtastic answers through the library
+
+The way was a matter of timing, not of another path. After each boot the
+colour interface asks its node for the configuration (the log says
+"[PacketAPI] Send config: display") and, when it has it, writes its own
+display setting back, colour included: in a failed run the serial API's
+`display-mode default` landed at 23 s of uptime, before the interface's read
+at 26 s, and a second "Set config: Display" at 26 s undid it. Sent after
+that read, and after the join -- as a person who waits for the screen to
+settle would -- it stays: the node restarts on the classic screen, finds the
+certificate it made on the previous boot, joins and says "API server listen
+on TCP port 4403". Through the host port a `WiFi(forward=...)` gives it,
+that API answers with the node's number, its network and the classic
+screen. `tests/test_library_wifi_meshtastic.py` checks it; it waits for
+those two lines before the display change.
+
+The web
+server on port 80 did not answer in twelve minutes of wall time on the
+classic screen. The TCP API is what the apps use, and it is what the test
+checks.
