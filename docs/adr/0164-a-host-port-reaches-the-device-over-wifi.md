@@ -148,7 +148,8 @@ that API answers with the node's number, its network and the classic
 screen. `tests/test_library_wifi_meshtastic.py` checks it; it waits for
 those two lines before the display change.
 
-The web
-server on port 80 did not answer in twelve minutes of wall time on the
-classic screen. The TCP API is what the apps use, and it is what the test
-checks.
+Its web
+servers start at the same moment ("Web Servers Ready!"), and through the
+forward its page answers 200 on port 80 (and on 443 over TLS); the test
+checks port 80 too. An earlier hand-driven run saw nothing on port 80 for
+twelve minutes; its log was not kept, and why is not known.

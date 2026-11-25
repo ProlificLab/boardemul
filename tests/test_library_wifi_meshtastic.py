@@ -8,7 +8,8 @@ Slow: a Meshtastic node made and started by a Lab with `WiFi(...)`, told
 through its serial API (tools/mesh_api.py, as the apps do) its region, the
 network to join, and the classic screen -- the colour interface starts no
 server on WiFi -- then asked, through the host port the library forwards to
-its TCP API on 4403, for its configuration: the same node, on that network,
+its TCP API on 4403, for its configuration, and through another to its web
+server on 80, for its page: the same node, on that network,
 on the classic screen.
 
     python3 -m pytest tests/test_library_wifi_meshtastic.py -m slow
@@ -86,9 +87,9 @@ def _configuration(address: str) -> dict:
 
 
 def test_meshtastic_answers_on_its_network_api_through_the_library(tmp_path) -> None:
-    serial_port, host_port = _free_port(), _free_port()
+    serial_port, host_port, web_port = _free_port(), _free_port(), _free_port()
     wifi = WiFi("boardemul-lab", password="correct horse battery",
-                forward={host_port: API_PORT})
+                forward={host_port: API_PORT, web_port: 80})
     with Lab() as lab:
         node = lab.device("meshwifi", build=_build(tmp_path / "pio", MESHTASTIC_LITTLEFS),
                           board="tdeck", settings=("--serial-tcp", f"{serial_port}:otg"))
@@ -107,8 +108,10 @@ def test_meshtastic_answers_on_its_network_api_through_the_library(tmp_path) -> 
             node.serial("otg").expect(r"API server listen on TCP port 4403", timeout=1800)
             over_serial = _configuration(f"127.0.0.1:{serial_port}")
             over_wifi = _configuration(f"127.0.0.1:{host_port}")
+            page_status, _page = node.http("/", port=80, timeout=300, expect_status=None)
         finally:
             node.save_logs(tmp_path / "meshwifi.zip")
         assert over_wifi["my_node_num"] == over_serial["my_node_num"]
         assert over_wifi["network"]["wifi_ssid"] == wifi.name
         assert over_wifi["display_mode"] == "default", over_wifi.get("display_mode")
+        assert page_status == 200, page_status
