@@ -108,6 +108,15 @@ body = "ok"                     # the reply must match
 timeout = 600
 ```
 
+Over Bluetooth, a device started with `ble=True` is reached as a phone
+reaches it (ADR 0188):
+
+```python
+node.start(ble=True)
+assert "6ba1b218-15a8-461f-9fa8-5dcae273eafd" in node.ble_services()
+name = node.ble_read("2a00")                  # pair first with passkey=123456
+```
+
 `examples/wifi-http` is a whole one: a PlatformIO project whose firmware
 joins WiFi and serves `/status`, and `check.toml`, which tests it.
 

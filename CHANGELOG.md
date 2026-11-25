@@ -5,6 +5,12 @@ What changed for someone running BoardEmul, newest first. The reasons are in
 
 ## Unreleased
 
+**For firmware developers**
+- Bluetooth in the library: `node.start(ble=True)` puts a device on a
+  Bluetooth air of its own, and `node.ble_services()`,
+  `node.ble_read(uuid)`, `node.ble_write(uuid, data)` and `node.ble(...)`
+  talk to it as a phone would, pairing with `passkey=` (0188).
+
 **Fixed**
 - A PlatformIO build folder works as it comes from `pio run`: its
   `firmware.bin` is the application alone, and BoardEmul now places it
