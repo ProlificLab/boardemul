@@ -563,16 +563,126 @@ def session(central: Central, command: str, passkey: int | None = None) -> int:
     return 0 if seen.get("config_complete_id") == nonce else 1
 
 
+# -- a list of operations, for the page's API (ADR 0188) ----------------------
+
+OPS = ("services", "characteristics", "read", "write", "pair")
+
+
+class OpError(ValueError):
+    """An operation the central cannot do as asked."""
+
+
+def check_ops(ops) -> list[dict]:
+    """The operations a request asks for, refused before any connection if
+    one is not something the central does."""
+    if not isinstance(ops, list) or not ops:
+        raise OpError("ops is a list of operations")
+    for n, op in enumerate(ops, 1):
+        if not isinstance(op, dict) or op.get("op") not in OPS:
+            raise OpError(f"operation {n}: op is one of {', '.join(OPS)}")
+        kind = op["op"]
+        if kind in ("characteristics", "read", "write") and not isinstance(op.get("uuid"), str):
+            raise OpError(f"operation {n}: {kind} needs a uuid")
+        if kind == "write":
+            try:
+                bytes.fromhex(str(op.get("hex", "")))
+            except ValueError:
+                raise OpError(f"operation {n}: write needs hex, the bytes to write") from None
+        if kind == "pair" and not (isinstance(op.get("passkey"), int)
+                                   and 0 <= op["passkey"] <= 999999):
+            raise OpError(f"operation {n}: pair needs a passkey, 0 to 999999")
+    return ops
+
+
+def run_ops(central, ops: list[dict]) -> list[dict]:
+    """Each operation's result, in order, on a connected central. A
+    characteristic is found by its UUID among every service's."""
+    results: list[dict] = []
+    services: list[tuple[int, int, str]] | None = None
+    chars: dict[str, tuple[int, int]] = {}
+
+    def known_services():
+        nonlocal services
+        if services is None:
+            services = central.services()
+        return services
+
+    def handle_of(uuid: str) -> int:
+        uuid = uuid.lower()
+        if not chars:
+            for first, last, _ in known_services():
+                chars.update({u.lower(): v for u, v in central.characteristics(first, last).items()})
+        if uuid not in chars:
+            raise OpError(f"no characteristic {uuid}")
+        return chars[uuid][0]
+
+    for op in ops:
+        kind = op["op"]
+        if kind == "services":
+            results.append({"op": kind, "services": [
+                {"uuid": uuid, "first": first, "last": last}
+                for first, last, uuid in known_services()]})
+        elif kind == "characteristics":
+            wanted = op["uuid"].lower()
+            found = [s for s in known_services() if s[2].lower() == wanted]
+            if not found:
+                raise OpError(f"no service {wanted}")
+            got = central.characteristics(found[0][0], found[0][1])
+            results.append({"op": kind, "characteristics": [
+                {"uuid": uuid, "handle": handle, "properties": props}
+                for uuid, (handle, props) in got.items()]})
+        elif kind == "read":
+            results.append({"op": kind, "uuid": op["uuid"],
+                            "hex": central.read(handle_of(op["uuid"])).hex()})
+        elif kind == "write":
+            central.write(handle_of(op["uuid"]), bytes.fromhex(op["hex"]))
+            results.append({"op": kind, "uuid": op["uuid"]})
+        elif kind == "pair":
+            central.encrypt(central.pair(op["passkey"]))
+            results.append({"op": kind, "encrypted": True})
+    return results
+
+
+def ops_session(air: str, ops: list[dict], attempts: int = 3, wait_s: float = 240) -> dict:
+    """Connect to the board on `air`, do `ops`, and say what came of them."""
+    central = Central(air)
+    try:
+        for attempt in range(attempts):
+            if not central.connect(wait_s):
+                return {"ok": False, "error": "nothing advertised on the air"}
+            try:
+                central.exchange_mtu()
+                return {"ok": True, "results": run_ops(central, ops)}
+            except (LinkLost, TimeoutError) as error:
+                last = f"the link was lost: {error}"
+            except (OpError, AttError, PairingError) as error:
+                return {"ok": False, "error": str(error)}
+        return {"ok": False, "error": last}
+    finally:
+        central.close()
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("air", help="the run's Bluetooth air directory (--ble-air)")
-    ap.add_argument("command", choices=("services", "meshtastic"))
+    ap.add_argument("command", choices=("services", "meshtastic", "ops"))
+    ap.add_argument("--ops", help="with ops: the operations, as JSON (ADR 0188)")
     ap.add_argument("--passkey", type=int,
                     help="pair with this passkey first (the node's PIN), and encrypt")
     ap.add_argument("--attempts", type=int, default=3,
                     help="connections to try if the link is lost (default 3)")
     args = ap.parse_args(argv)
+    if args.command == "ops":
+        import json
+        try:
+            ops = check_ops(json.loads(args.ops or "null"))
+        except (OpError, ValueError) as error:
+            print(json.dumps({"ok": False, "error": str(error)}))
+            return 2
+        answer = ops_session(args.air, ops, args.attempts)
+        print(json.dumps(answer))
+        return 0 if answer["ok"] else 1
     central = Central(args.air)
     try:
         for attempt in range(args.attempts):

@@ -193,3 +193,4 @@ superseded ADR is marked superseded and points forward.
 | [0185](0185-a-scenario-is-a-toml-file-of-devices-and-steps.md) | A scenario is a TOML file of devices and steps | Accepted |
 | [0186](0186-a-dozing-station-wakes-at-its-target-beacon-time.md) | A dozing station wakes at its target beacon time | Accepted |
 | [0187](0187-a-key-is-held-for-its-time-on-the-guest-s-clock.md) | A key is held for its time on the guest's clock | Accepted |
+| [0188](0188-the-library-talks-bluetooth-through-a-central-the-page-runs.md) | The library talks Bluetooth through a central the page runs | Accepted |

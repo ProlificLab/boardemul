@@ -232,16 +232,46 @@ class Device:
         self._forward: dict[int, int] = {}      # device port -> host port
 
     def start(self, air: str | None = None, args: tuple[str, ...] = (),
-              wifi: WiFi | None = None) -> None:
+              wifi: WiFi | None = None, ble: bool = False) -> None:
         """Run it; devices started on the same air hear each other's LoRa
-        radios, and with `wifi` there is an access point to join."""
+        radios, with `wifi` there is an access point to join, and with `ble`
+        a Bluetooth air of its own that `ble()` reaches (ADR 0188)."""
         extra = list(args) + (["--air", air] if air else [])
         if wifi is not None:
             extra += wifi.args()
+        if ble:
+            extra += ["--ble-air", _air_name(self.name)]
         self.lab.api.ok("POST", f"/api/devices/{_q(self.name)}/start", {"args": extra})
         self._serial.clear()
         self._forward = ({device: host for host, device in wifi.forward.items()}
                          if wifi is not None else {})
+
+    def ble(self, *ops: dict) -> list[dict]:
+        """Bluetooth operations on the running device, over one connection
+        (ADR 0188): {"op": "services"}, {"op": "characteristics", "uuid": U},
+        {"op": "read", "uuid": U}, {"op": "write", "uuid": U, "hex": H},
+        {"op": "pair", "passkey": N}. Each one's result, in order."""
+        status, body, _h = self.lab.api.call(
+            "POST", f"/api/runs/{_q(self.name)}/ble", {"ops": list(ops)}, timeout=660)
+        reply = body if isinstance(body, dict) else json.loads(body or b"{}")
+        if status != 200 or not reply.get("ok"):
+            raise LabError(f"{self.name}: Bluetooth: "
+                           f"{reply.get('error', f'status {status}')}")
+        return reply["results"]
+
+    def ble_services(self) -> list[str]:
+        """The UUIDs of the services the device serves over Bluetooth."""
+        return [s["uuid"] for s in self.ble({"op": "services"})[0]["services"]]
+
+    def ble_read(self, uuid: str, passkey: int | None = None) -> bytes:
+        """A characteristic's value, pairing first with `passkey` if given."""
+        ops = ([{"op": "pair", "passkey": passkey}] if passkey is not None else [])
+        return bytes.fromhex(self.ble(*ops, {"op": "read", "uuid": uuid})[-1]["hex"])
+
+    def ble_write(self, uuid: str, data: bytes, passkey: int | None = None) -> None:
+        """Write a characteristic, pairing first with `passkey` if given."""
+        ops = ([{"op": "pair", "passkey": passkey}] if passkey is not None else [])
+        self.ble(*ops, {"op": "write", "uuid": uuid, "hex": bytes(data).hex()})
 
     def http(self, path: str = "/", port: int = 80, timeout: float = 60.0,
              expect_status: int | None = 200) -> tuple[int, bytes]:
@@ -448,3 +478,10 @@ def _board(board: str | Path) -> dict:
         except OSError as exc:
             raise LabError(f"no board description at {path}: {exc.strerror or exc}") from None
     return {"board": str(board)}
+
+
+def _air_name(name: str) -> str:
+    """A device's own air, as the page takes an air's name: lower-case
+    letters, digits and dashes."""
+    cleaned = re.sub(r"[^a-z0-9-]+", "-", name.lower()).strip("-")[:28] or "device"
+    return f"{cleaned}-ble"[:32]

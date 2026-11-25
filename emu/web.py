@@ -642,6 +642,8 @@ class Handler(BaseHTTPRequestHandler):
                     return self._json(device_json(made), 201)
             if segs[:2] == ["api", "runs"] and len(segs) == 4 and segs[3] == "input":
                 return self._input(segs[2])
+            if segs[:2] == ["api", "runs"] and len(segs) == 4 and segs[3] == "ble":
+                return self._ble(segs[2])
             return self._json({"error": "not found"}, 404)
         except Refused as exc:
             return self._json({"error": str(exc)}, exc.status)
@@ -781,6 +783,36 @@ class Handler(BaseHTTPRequestHandler):
                 fh.write(chunk)
                 remaining -= len(chunk)
         self._json({"path": str(path), "bytes": path.stat().st_size})
+
+    def _ble(self, name: str) -> None:
+        """A Bluetooth central's operations on a running device (ADR 0188)."""
+        import json as _json
+        import subprocess
+        from tools import ble_central
+        handle = self.server.state.handle(name)
+        if handle is None or not handle.alive:
+            return self._json({"error": f"no run {name!r}"}, 404)
+        air = device_folder.ble_air(tuple(handle.device.settings) + tuple(handle.extra))
+        if air is None:
+            return self._json({"error": f"{name} is not on a Bluetooth air: start it "
+                                        "with --ble-air NAME (ble=True in the library)"}, 400)
+        try:
+            ops = ble_central.check_ops(self._body().get("ops"))
+        except ble_central.OpError as exc:
+            return self._json({"error": str(exc)}, 400)
+        cmd = device_folder.central_command(handle.device.root, air, _json.dumps(ops))
+        if not device_folder.runs_natively():
+            device_folder.ensure_air_network()
+        try:
+            done = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+        except subprocess.TimeoutExpired:
+            return self._json({"ok": False, "error": "the central did not finish in 600 s"}, 504)
+        lines = [line for line in done.stdout.splitlines() if line.startswith("{")]
+        if not lines:
+            return self._json({"ok": False, "error": "the central said nothing: "
+                               + (done.stderr or done.stdout)[-500:]}, 502)
+        answer = _json.loads(lines[-1])
+        return self._json(answer, 200 if answer.get("ok") else 422)
 
     def _input(self, name: str) -> None:
         writer = self.server.state.writer(name)
