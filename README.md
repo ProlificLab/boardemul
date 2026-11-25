@@ -54,7 +54,7 @@ boardemul test --build .pio/build/t-deck --devices 2 -- python -m pytest tests/
 In a GitHub workflow:
 
 ```yaml
-- uses: prolificlab/boardemul@v0.2.0
+- uses: prolificlab/boardemul@v0.3.0
   with:
     build: .pio/build/t-deck
     run: python -m pytest tests/emulated

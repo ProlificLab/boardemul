@@ -3,7 +3,7 @@
 What changed for someone running BoardEmul, newest first. The reasons are in
 `docs/adr/`, numbered as below.
 
-## Unreleased
+## 0.3.0 — 2026-11-25
 
 **For firmware developers**
 - Bluetooth in the library: `node.start(ble=True)` puts a device on a
