@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Prolific Lab
+# SPDX-License-Identifier: Apache-2.0
 # Emulator speed under -icount (ADR 0189): the guest does the same work in every
 # run, so the host CPU seconds QEMU spends to reach the home screen measure the
 # emulator; a busy host still spreads them (by a factor of two in ADR 0189).
