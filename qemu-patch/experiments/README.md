@@ -214,3 +214,14 @@ ADR 0161's 1 ms turn together, 39 s with the 1 ms turn alone. A turn handed
 over on every failed compare goes to a core that is often waiting too, and
 the boot's milestones follow the guest's real-time waits more than its
 instruction count. ADR 0161 keeps the turn and not this.
+
+## xtensa-goto-ptr.patch (ADR 0189)
+
+This ends a block whose successor `goto_tb` cannot chain (`ret`, `retw`,
+`callx`, `jx`) with `tcg_gen_lookup_and_goto_ptr()`, as Arm and RISC-V
+do, instead of returning to `cpu_exec`'s loop. Operations flagged
+`XTENSA_OP_EXIT_TB_M1` still return there.
+
+**No gain showed.** `tools/speed_icount.sh`, nine interleaved runs each,
+QEMU's CPU seconds to the home screen under `-icount`: 68.6 s as built,
+66.5 s with this, while runs of the same binary spread by a factor of two.
